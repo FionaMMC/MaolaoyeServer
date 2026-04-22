@@ -1,0 +1,25 @@
+# QMT 模拟盘 Pipeline 配置模板
+# 实际使用：cp config/settings.example.yaml config/settings.yaml 后按环境修改
+
+qmt:
+  # QMT 客户端 userdata_mini 目录（xtdata.data_dir 必须设置为此路径）
+  # Windows 实际路径示例：C:/parttime/平安证券量盈QMT策略交易平台/userdata_mini
+  data_dir: "C:/parttime/平安证券量盈QMT策略交易平台/userdata_mini"
+  account_id: "REPLACE_ME"
+
+server:
+  base_url: "https://example.com"
+  api_key: "REPLACE_ME"
+  timeout: 30
+
+paths:
+  data_root: "./data"
+  log_dir: "./logs"
+  sqlite_path: "./data/trading.db"
+
+notify:
+  wecom_webhook: "REPLACE_ME"
+
+market_data:
+  # xtquant 板块名（不是指数代码！）
+  sector_name: "沪深A股"
