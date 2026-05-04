@@ -38,8 +38,12 @@ PUSH_MODE = "local"
 
 # ── 测试用交易日强制覆盖（非交易日联调时使用）────────────────────────────
 # 设置为有效日期字符串（如 "20260430"）时，各模块会使用此日期代替 datetime.now()
-# 并跳过 is_trading_day 检查。生产环境必须设为 None。
-FORCE_TRADE_DATE = "20260430"
+# 并跳过 is_trading_day 检查。**生产环境必须设为 None**。
+FORCE_TRADE_DATE: str | None = None
+
+# mock_qmt 模式专用：QMT 调用全部 mock 时使用的固定交易日
+# 与 FORCE_TRADE_DATE 解耦：FORCE_TRADE_DATE 影响所有模式，MOCK_TRADE_DATE 仅 mock_qmt
+MOCK_TRADE_DATE = "20260430"
 
 # GET /orders 在 local / mock_qmt 模式下读取此文件（格式与真实响应相同）
 LOCAL_ORDERS_MOCK_FILE = os.path.join(MOCK_DATA_DIR, "orders_mock.json")
