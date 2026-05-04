@@ -8,16 +8,10 @@ settings:
   parquet_compression: snappy
 
 # ── 采集频率定义（collector 名 → frequency）────────────────────────────────────
-# frequency 决定默认触发时机：
-#   daily    — 每个交易日
-#   weekly   — 每周第一个交易日
-#   monthly  — 每月第一个交易日
-#   quarterly — 每年1/4/7/10月第一个交易日
-#   on_demand — 仅手动触发
-
 frequencies:
   daily:
     - market_ohlcv
+    - convertible_bonds
     - index_weights
     - macro_lpr
     - macro_shibor
@@ -27,8 +21,10 @@ frequencies:
   weekly:
     - dividends
     - etf_pc
+    - futures
   monthly:
     - instruments
+    - industry_map       # 行业映射随元数据月度更新
     - financial_tables
     - macro_cpi
     - macro_pmi
@@ -48,10 +44,10 @@ frequencies:
   quarterly:
     - macro_gdp
 
-# ── QMT 行情 ──────────────────────────────────────────────────────────────────
+# ── QMT 行情 · 股票/ETF/指数 OHLCV ─────────────────────────────────────────────
 market_ohlcv:
   enabled: true
-  description: "股票+ETF+指数 日线 OHLCV"
+  description: "股票+ETF+指数 日线 OHLCV（前复权）"
   stock_sector: "沪深A股"
   etf_sectors: ["沪深ETF"]
   index_codes:
@@ -72,6 +68,28 @@ market_ohlcv:
     - "399330.SZ"    # 深证100
     - "399905.SZ"    # 中证500（深）
     - "399852.SZ"    # 中证1000（深）
+  download_sleep_seconds: 3
+  dividend_types:            # 复权类型（股票/ETF 用 front，指数用 none）
+    stocks: "front"          # 前复权（默认，对接服务器策略）
+    etfs: "front"
+    indexes: "none"          # 指数不复权
+    # 如需后复权/不复权股票数据，改为 ["front","back","none"] 三元组
+
+# ── QMT 行情 · 可转债 ──────────────────────────────────────────────────────────
+convertible_bonds:
+  enabled: true
+  description: "可转债日线 OHLCV（不复权）"
+  sector: "沪深转债"
+  download_sleep_seconds: 3
+
+# ── QMT 行情 · 期货 ────────────────────────────────────────────────────────────
+futures:
+  enabled: true
+  description: "主力合约期货日线 OHLCV"
+  sectors:
+    - "金融期货"
+    - "商品期货"
+    - "农产品期货"
   download_sleep_seconds: 3
 
 # ── QMT 财务数据 ──────────────────────────────────────────────────────────────
@@ -101,6 +119,20 @@ instruments:
   description: "品种基础信息（名称/市值/股本/ST状态/上市日等）"
   invalidate_days: 30     # 30天后重新拉取元数据
 
+# ── QMT 行业/板块映射 ─────────────────────────────────────────────────────────
+industry_map:
+  enabled: true
+  description: "每只股票 → 所属行业/板块/概念/地域分类映射"
+  classifications:          # 采集哪些分类体系
+    - pattern: "SW1"        # 申万一级行业
+    - pattern: "SW2"        # 申万二级行业
+    - pattern: "CSRC1"      # 证监一级
+    - pattern: "CSRC2"      # 证监二级
+    - pattern: "GICS1"      # 全球行业分类一级
+    - pattern: "DY1"        # 省份
+    - pattern: "DY2"        # 城市
+    - pattern: "SW3"        # 申万三级（粒度细，可选）
+
 # ── QMT 指数权重 ──────────────────────────────────────────────────────────────
 index_weights:
   enabled: true
@@ -121,10 +153,10 @@ etf_pc:
   etf_sector: "沪深ETF"
   top_n: 200           # 仅采集规模最大的前 N 只 ETF
 
-# ── QMT 板块 ──────────────────────────────────────────────────────────────────
+# ── QMT 板块/行业/概念/地域 ──────────────────────────────────────────────────
 sector_list:
   enabled: true
-  description: "板块/行业分类列表及成分股"
+  description: "所有板块/行业/概念/地域分类的完整列表及成分股数量"
 
 # ── 交易日历 ──────────────────────────────────────────────────────────────────
 trading_calendar:
