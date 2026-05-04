@@ -37,3 +37,49 @@ def test_post_trade_result_empty_results_ok(client):
     r = client.post("/trade-result", headers=_AUTH,
                     json={"trade_date": "20260430", "results": []})
     assert r.json()["code"] == 0
+
+
+def test_post_trade_result_unknown_order_returns_unmatched(client):
+    """e2e: 未知 order_id 应被返回到 unmatched_order_ids。"""
+    r = client.post("/trade-result", headers=_AUTH, json={
+        "trade_date": "20260430",
+        "results": [
+            {"order_id": "ghost", "filled_quantity": 100, "filled_price": 10.0,
+             "filled_time": "2026-04-30T09:25:00+08:00", "status": "FILLED"},
+        ],
+    })
+    body = r.json()
+    assert body["code"] == 0
+    assert body["data"]["matched_count"] == 0
+    assert body["data"]["unmatched_order_ids"] == ["ghost"]
+
+
+def test_post_trade_result_marks_seeded_order(client, settings_for_test):
+    """e2e: 直接 seed 一个 order，再 POST 成交回报，验证状态被标记。"""
+    from datetime import datetime, timezone
+
+    from app.db import make_session_factory
+    from app.dependencies import _engine_for_url
+    from app.models import Order
+
+    engine = _engine_for_url(settings_for_test.db_url)
+    sf = make_session_factory(engine)
+    now = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    with sf() as s:
+        s.add(Order(order_id="seed-1", account_group="real_A", symbol="A.SH",
+                    direction="BUY", quantity=100, limit_price=10.0,
+                    valid_date="20260430", status="PENDING", created_at=now))
+        s.commit()
+
+    r = client.post("/trade-result", headers=_AUTH, json={
+        "trade_date": "20260430",
+        "results": [
+            {"order_id": "seed-1", "filled_quantity": 100, "filled_price": 10.0,
+             "filled_time": "2026-04-30T09:25:00+08:00", "status": "FILLED"},
+        ],
+    })
+    body = r.json()
+    assert body["data"]["matched_count"] == 1
+
+    with sf() as s:
+        assert s.get(Order, "seed-1").status == "FILLED"

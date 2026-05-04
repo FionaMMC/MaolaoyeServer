@@ -43,3 +43,12 @@ def get_orders_queue_service(
     sf: sessionmaker = Depends(get_session_factory),
 ) -> OrdersQueueService:
     return OrdersQueueService(session_factory=sf)
+
+
+from app.services.settlement import SettlementService
+
+
+def get_settlement_service(
+    sf: sessionmaker = Depends(get_session_factory),
+) -> SettlementService:
+    return SettlementService(session_factory=sf)
