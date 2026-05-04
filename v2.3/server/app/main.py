@@ -4,16 +4,18 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
-from app.api import health
+from app.api import health, market_data, orders, trade_result
+from app.exceptions import APIError, ErrorCode
 from app.logging_setup import get_logger, setup_logging
 from app.settings import Settings, get_settings
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """应用启停时的资源管理。"""
     log = get_logger("app")
     log.info("server_starting", version="2.3.0")
     yield
@@ -21,7 +23,6 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app(settings_override: Settings | None = None) -> FastAPI:
-    """工厂函数。测试时传 settings_override 注入隔离配置。"""
     if settings_override is not None:
         get_settings.cache_clear()
 
@@ -33,7 +34,29 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
         version="2.3.0",
         lifespan=_lifespan,
     )
+
+    @app.exception_handler(APIError)
+    async def _api_error_handler(request: Request, exc: APIError):
+        return JSONResponse(
+            status_code=exc.http_status,
+            content={"code": int(exc.code), "message": exc.message, "data": None},
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_handler(request: Request, exc: RequestValidationError):
+        return JSONResponse(
+            status_code=200,
+            content={
+                "code": int(ErrorCode.BAD_REQUEST),
+                "message": f"请求参数不合法: {exc.errors()}",
+                "data": None,
+            },
+        )
+
     app.include_router(health.router, tags=["health"])
+    app.include_router(market_data.router, tags=["market-data"])
+    app.include_router(orders.router, tags=["orders"])
+    app.include_router(trade_result.router, tags=["trade-result"])
 
     if settings_override is not None:
         app.dependency_overrides[get_settings] = lambda: settings_override
@@ -41,16 +64,10 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
     return app
 
 
-# uvicorn 入口：uvicorn app.main:app --host 0.0.0.0 --port 8000
 app = create_app()
 
 
 if __name__ == "__main__":
     import uvicorn
     settings = get_settings()
-    uvicorn.run(
-        "app.main:app",
-        host=settings.host,
-        port=settings.port,
-        reload=False,
-    )
+    uvicorn.run("app.main:app", host=settings.host, port=settings.port, reload=False)
