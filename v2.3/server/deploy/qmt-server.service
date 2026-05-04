@@ -1,0 +1,23 @@
+[Unit]
+Description=QMT Pipeline Server v2.3
+Documentation=https://github.com/FionaMMC/MaolaoyeServer
+After=network.target
+
+[Service]
+Type=simple
+User=qmtserver
+Group=qmtserver
+WorkingDirectory=/opt/qmt-server/v2.3/server
+EnvironmentFile=/opt/qmt-server/v2.3/server/.env
+ExecStart=/opt/qmt-server/venv/bin/uvicorn app.main:app \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --workers 2 \
+    --log-level info
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/qmt-server/server.log
+StandardError=append:/var/log/qmt-server/server.log
+
+[Install]
+WantedBy=multi-user.target
