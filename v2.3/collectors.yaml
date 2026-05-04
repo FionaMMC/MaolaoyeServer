@@ -1,0 +1,276 @@
+# v2.3 采集任务清单
+# 声明所有数据源及其采集频率、参数
+
+# ── 全局设置 ──────────────────────────────────────────────────────────────────
+settings:
+  data_root: "data"          # 数据存储根目录（相对于 v2.3 目录）
+  qmt_data_dir: "C:\\parttime\\平安证券量盈QMT策略交易平台\\userdata_mini"
+  parquet_compression: snappy
+
+# ── 采集频率定义（collector 名 → frequency）────────────────────────────────────
+# frequency 决定默认触发时机：
+#   daily    — 每个交易日
+#   weekly   — 每周第一个交易日
+#   monthly  — 每月第一个交易日
+#   quarterly — 每年1/4/7/10月第一个交易日
+#   on_demand — 仅手动触发
+
+frequencies:
+  daily:
+    - market_ohlcv
+    - index_weights
+    - macro_lpr
+    - macro_shibor
+    - macro_margin
+    - sector_list
+    - trading_calendar
+  weekly:
+    - dividends
+    - etf_pc
+  monthly:
+    - instruments
+    - financial_tables
+    - macro_cpi
+    - macro_pmi
+    - macro_money_supply
+    - macro_social_finance
+    - macro_trade_balance
+    - macro_industrial_production
+    - macro_house_price
+    - macro_electricity
+    - macro_unemployment
+    - macro_gold_fx
+    - macro_pboc_balance
+    - macro_real_estate
+    - macro_bond_yield
+    - macro_insurance
+    - macro_global
+  quarterly:
+    - macro_gdp
+
+# ── QMT 行情 ──────────────────────────────────────────────────────────────────
+market_ohlcv:
+  enabled: true
+  description: "股票+ETF+指数 日线 OHLCV"
+  stock_sector: "沪深A股"
+  etf_sectors: ["沪深ETF"]
+  index_codes:
+    - "000001.SH"    # 上证指数
+    - "000002.SH"    # 上证A指
+    - "000003.SH"    # 上证B指
+    - "000016.SH"    # 上证50
+    - "000300.SH"    # 沪深300
+    - "000688.SH"    # 科创50
+    - "000852.SH"    # 中证1000
+    - "000905.SH"    # 中证500
+    - "000906.SH"    # 中证800
+    - "399001.SZ"    # 深证成指
+    - "399005.SZ"    # 中小100
+    - "399006.SZ"    # 创业板指
+    - "399016.SZ"    # 深证创新
+    - "399102.SZ"    # 创业板综
+    - "399330.SZ"    # 深证100
+    - "399905.SZ"    # 中证500（深）
+    - "399852.SZ"    # 中证1000（深）
+  download_sleep_seconds: 3
+
+# ── QMT 财务数据 ──────────────────────────────────────────────────────────────
+financial_tables:
+  enabled: true
+  description: "财务数据 7 张表（利润表/资产负债表/现金流量表/每股指标/股本/股东人数/十大股东）"
+  tables:
+    - Income
+    - Balance
+    - CashFlow
+    - PershareIndex
+    - Capital
+    - HolderNum
+    - Top10Holder
+  start_time: ""          # 空 = 下载全量；"20200101" = 从2020年起
+  download_sleep_seconds: 5
+  batch_size: 100         # 每批下载的股票数（避免内存溢出）
+
+# ── QMT 分红送配 ──────────────────────────────────────────────────────────────
+dividends:
+  enabled: true
+  description: "分红送配因子（除权除息/送转股/配股/股息）"
+
+# ── QMT 品种元数据 ────────────────────────────────────────────────────────────
+instruments:
+  enabled: true
+  description: "品种基础信息（名称/市值/股本/ST状态/上市日等）"
+  invalidate_days: 30     # 30天后重新拉取元数据
+
+# ── QMT 指数权重 ──────────────────────────────────────────────────────────────
+index_weights:
+  enabled: true
+  description: "核心指数成分股及权重"
+  indexes:
+    - "000016.SH"    # 上证50
+    - "000300.SH"    # 沪深300
+    - "000852.SH"    # 中证1000
+    - "000905.SH"    # 中证500
+    - "000688.SH"    # 科创50
+    - "399006.SZ"    # 创业板指
+    - "399330.SZ"    # 深证100
+
+# ── QMT ETF 申赎清单 ─────────────────────────────────────────────────────────
+etf_pc:
+  enabled: true
+  description: "ETF 申购赎回清单（PCF），含净值与成分股"
+  etf_sector: "沪深ETF"
+  top_n: 200           # 仅采集规模最大的前 N 只 ETF
+
+# ── QMT 板块 ──────────────────────────────────────────────────────────────────
+sector_list:
+  enabled: true
+  description: "板块/行业分类列表及成分股"
+
+# ── 交易日历 ──────────────────────────────────────────────────────────────────
+trading_calendar:
+  enabled: true
+  description: "交易日历缓存"
+  years_ahead: 1       # 缓存未来 N 年的交易日
+
+# ── AKShare 宏观 · 中国 ───────────────────────────────────────────────────────
+macro_cpi:
+  enabled: true
+  description: "中国 CPI 同比（月频）"
+  function: macro_china_cpi_monthly
+
+macro_gdp:
+  enabled: true
+  description: "中国 GDP 同比（季频）"
+  function: macro_china_gdp_yearly
+
+macro_pmi:
+  enabled: true
+  description: "中国官方制造业 PMI（月频）"
+  function: macro_china_pmi_yearly
+
+macro_ppi:
+  enabled: true
+  description: "中国 PPI 同比（月频）"
+  function: macro_china_ppi_yearly
+
+macro_money_supply:
+  enabled: true
+  description: "中国 M0/M1/M2 货币供应量（月频）"
+  function: macro_china_money_supply
+
+macro_lpr:
+  enabled: true
+  description: "中国 LPR 利率（日频）"
+  function: macro_china_lpr
+
+macro_shibor:
+  enabled: true
+  description: "中国 Shibor 全期限利率（日频）"
+  function: macro_china_shibor_all
+
+macro_social_finance:
+  enabled: true
+  description: "中国社会融资规模增量（月频）"
+  function: macro_china_shrzgm
+
+macro_fx_reserves:
+  enabled: true
+  description: "中国外汇储备（月频）"
+  function: macro_china_fx_reserves_yearly
+
+macro_trade_balance:
+  enabled: true
+  description: "中国贸易差额（月频）"
+  function: macro_china_trade_balance
+
+macro_industrial_production:
+  enabled: true
+  description: "中国规模以上工业增加值（月频）"
+  function: macro_china_industrial_production_yoy
+
+macro_house_price:
+  enabled: true
+  description: "中国新建商品住宅价格指数（月频）"
+  function: macro_china_new_house_price
+
+macro_electricity:
+  enabled: true
+  description: "中国全社会用电量（月频）"
+  function: macro_china_society_electricity
+
+macro_unemployment:
+  enabled: true
+  description: "中国城镇调查失业率（月频）"
+  function: macro_china_urban_unemployment
+
+macro_margin:
+  enabled: true
+  description: "中国融资融券余额（日频）"
+  function: macro_china_market_margin_sh
+
+macro_gold_fx:
+  enabled: true
+  description: "中国黄金与外汇储备（月频）"
+  function: macro_china_fx_gold
+
+macro_pboc_balance:
+  enabled: true
+  description: "中国人民银行资产负债表（月频）"
+  function: macro_china_central_bank_balance
+
+macro_real_estate:
+  enabled: true
+  description: "中国房地产景气指数（月频）"
+  function: macro_china_real_estate
+
+macro_bond_yield:
+  enabled: true
+  description: "中国国债收益率（月频）"
+  function: macro_china_gyzjz
+
+macro_insurance:
+  enabled: true
+  description: "中国保险业保费收入（月频）"
+  function: macro_china_insurance_income
+
+macro_stock_market_cap:
+  enabled: true
+  description: "中国股市总市值（月频）"
+  function: macro_china_stock_market_cap
+
+macro_consumer_retail:
+  enabled: true
+  description: "中国社会消费品零售总额（月频）"
+  function: macro_china_consumer_goods_retail
+
+# ── AKShare 宏观 · 全球 ───────────────────────────────────────────────────────
+macro_global:
+  enabled: true
+  description: "全球主要经济体宏观指标"
+  indicators:
+    - name: usa_gdp
+      function: macro_usa_gdp_monthly
+    - name: usa_cpi
+      function: macro_usa_cpi_monthly
+    - name: usa_unemployment
+      function: macro_usa_unemployment_rate
+    - name: usa_ism_pmi
+      function: macro_usa_ism_pmi
+    - name: usa_ppi
+      function: macro_usa_ppi
+    - name: usa_retail
+      function: macro_usa_retail_sales
+    - name: usa_industrial
+      function: macro_usa_industrial_production
+    - name: usa_nonfarm
+      function: macro_usa_non_farm
+    - name: usa_rate
+      function: macro_bank_usa_interest_rate
+    - name: eu_rate
+      function: macro_bank_euro_interest_rate
+    - name: jp_rate
+      function: macro_bank_japan_interest_rate
+    - name: cn_rate
+      function: macro_bank_china_interest_rate
+    - name: shipping_bdi
+      function: macro_shipping_bdi

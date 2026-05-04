@@ -1,0 +1,37 @@
+{
+  "trade_date": "20260430",
+  "stocks": [
+    {
+      "symbol": "600519.SH",
+      "open": 1520.00,
+      "high": 1548.00,
+      "low": 1515.00,
+      "close": 1540.00,
+      "volume": 12345678,
+      "amount": 19012345678.00,
+      "is_suspended": false
+    },
+    {
+      "symbol": "000001.SZ",
+      "open": 14.50,
+      "high": 15.10,
+      "low": 14.40,
+      "close": 14.80,
+      "volume": 56789012,
+      "amount": 841157377.60,
+      "is_suspended": false
+    }
+  ],
+  "indexes": [
+    {
+      "symbol": "000300.SH",
+      "open": 3800.00,
+      "high": 3850.00,
+      "low": 3780.00,
+      "close": 3820.00,
+      "volume": 0,
+      "amount": 0
+    }
+  ],
+  "etfs": []
+}

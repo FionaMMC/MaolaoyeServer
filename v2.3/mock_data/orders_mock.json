@@ -1,0 +1,27 @@
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "date": "20260430",
+    "orders": [
+      {
+        "order_id": "550e8400-e29b-41d4-a716-446655440000",
+        "account_group": "real_A",
+        "symbol": "600519.SH",
+        "direction": "BUY",
+        "quantity": 100,
+        "limit_price": 1540.00,
+        "valid_date": "20260430"
+      },
+      {
+        "order_id": "550e8400-e29b-41d4-a716-446655440001",
+        "account_group": "real_A",
+        "symbol": "000001.SZ",
+        "direction": "SELL",
+        "quantity": 200,
+        "limit_price": 14.80,
+        "valid_date": "20260430"
+      }
+    ]
+  }
+}
