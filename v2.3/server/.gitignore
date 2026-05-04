@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+venv/
+.venv/
+
+# 配置 (含密钥)
+.env
+.env.local
+
+# 运行期数据
+pipeline-server.db
+pipeline-server.db-journal
+logs/
+data/  # Parquet 仓库由 rsync bootstrap 而来；不入库
