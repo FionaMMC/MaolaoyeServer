@@ -62,3 +62,36 @@ def get_perf_service(
     store: ParquetStore = Depends(get_parquet_store),
 ) -> PerfService:
     return PerfService(session_factory=sf, parquet_store=store)
+
+
+from pathlib import Path
+
+from app.scheduler.pipeline import StrategyPipeline
+from app.services.aggregate import AggregateService
+from app.services.precheck import PrecheckService
+from app.strategy.loader import load_plugins
+
+
+# 全局策略注册表（启动时一次性加载）
+@lru_cache(maxsize=1)
+def _strategy_registry(plugins_dir: str) -> dict:
+    return load_plugins(Path(plugins_dir))
+
+
+def get_strategy_pipeline(
+    settings: Settings = Depends(get_settings),
+    sf: sessionmaker = Depends(get_session_factory),
+    store: ParquetStore = Depends(get_parquet_store),
+    orders_queue: OrdersQueueService = Depends(get_orders_queue_service),
+    perf: PerfService = Depends(get_perf_service),
+) -> StrategyPipeline:
+    return StrategyPipeline(
+        registry=_strategy_registry(str(settings.plugins_dir)),
+        parquet_store=store,
+        session_factory=sf,
+        precheck=PrecheckService(fee_rate=0.001),
+        aggregate=AggregateService(),
+        orders_queue=orders_queue,
+        perf=perf,
+        strategies_yaml_path=Path(settings.strategies_file),
+    )

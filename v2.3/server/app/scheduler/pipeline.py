@@ -1,0 +1,189 @@
+"""StrategyPipeline：策略 → 预检 → 归集 → 写订单 → NAV 快照 一站式编排。"""
+from __future__ import annotations
+
+import logging
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Type
+
+import yaml
+from sqlalchemy import select
+
+from app.models import InstanceState, RawSignal
+from app.services.aggregate import AggregateService, TaggedSignal
+from app.services.orders_queue import OrdersQueueService
+from app.services.perf import PerfService
+from app.services.precheck import PrecheckResult, PrecheckService
+from app.storage.parquet import ParquetStore
+from app.strategy.base import RawSignal as RawSignalModel
+from app.strategy.base import Strategy
+from app.strategy.runner import StrategyRunner
+
+logger = logging.getLogger(__name__)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+class StrategyPipeline:
+    """同步执行：策略 → 预检 → 归集 → 落库 → NAV 快照。"""
+
+    def __init__(
+        self,
+        registry: dict[str, Type[Strategy]],
+        parquet_store: ParquetStore,
+        session_factory,
+        precheck: PrecheckService,
+        aggregate: AggregateService,
+        orders_queue: OrdersQueueService,
+        perf: PerfService,
+        strategies_yaml_path: Path,
+    ):
+        self.registry = registry
+        self.store = parquet_store
+        self.session_factory = session_factory
+        self.precheck = precheck
+        self.aggregate = aggregate
+        self.orders_queue = orders_queue
+        self.perf = perf
+        self.strategies_yaml_path = Path(strategies_yaml_path)
+
+    def run(self, trade_date: int) -> dict:
+        """完整管线。返回执行摘要。"""
+        valid_date_str = str(trade_date)
+        logger.info("pipeline_start trade_date=%s", trade_date)
+
+        # 1. 加载 strategies.yaml
+        instances = self._load_instances()
+        if not instances:
+            logger.warning("strategies.yaml 无 instance 定义，pipeline 退出")
+            return {"signals": 0, "passed": 0, "orders": 0, "instances": 0}
+
+        # 2. 加载/创建 instance_state
+        states = self._ensure_instance_states(instances)
+
+        # 3. 跑策略
+        runner = StrategyRunner(registry=self.registry, parquet_store=self.store)
+        signals_by_instance = runner.run_all(
+            trade_date,
+            instances=[
+                {
+                    "instance_id": inst["instance_id"],
+                    "strategy_id": inst["strategy_id"],
+                    "virtual_cash": states[inst["instance_id"]]["cash"],
+                    "virtual_positions": states[inst["instance_id"]]["positions"],
+                }
+                for inst in instances
+            ],
+        )
+
+        # 4. 预检 + 写 raw_signals 表 + 收集 PASS 的
+        all_pass_tagged: list[TaggedSignal] = []
+        signals_total = 0
+        passed_total = 0
+        with self.session_factory() as session:
+            for inst in instances:
+                instance_id = inst["instance_id"]
+                signals = signals_by_instance.get(instance_id, [])
+                state = states[instance_id]
+                for sig in signals:
+                    signals_total += 1
+                    pre = self.precheck.check(
+                        sig, state["cash"], state["positions"],
+                    )
+                    signal_id = uuid.uuid4().hex
+                    limit_price = sig.reference_price * (1 + sig.price_offset)
+                    session.add(RawSignal(
+                        signal_id=signal_id,
+                        instance_id=instance_id,
+                        symbol=sig.symbol,
+                        direction=sig.direction,
+                        quantity=sig.quantity,
+                        reference_price=sig.reference_price,
+                        price_offset=sig.price_offset,
+                        limit_price=round(limit_price, 4),
+                        valid_date=valid_date_str,
+                        signal_time=_now_iso(),
+                        precheck_status=pre.status,
+                        precheck_reason=pre.reason,
+                    ))
+                    if pre.status == "PASS":
+                        passed_total += 1
+                        all_pass_tagged.append(TaggedSignal(
+                            signal_id=signal_id,
+                            account_group=inst["account_group"],
+                            raw=sig,
+                        ))
+            session.commit()
+
+        # 5. 归集
+        agg = self.aggregate.aggregate(all_pass_tagged, valid_date=valid_date_str)
+
+        # 6. 写订单 + 映射
+        self.orders_queue.write_aggregated(agg.orders, agg.mappings)
+
+        # 7. NAV 快照（即使本日无信号也算）
+        self.perf.snapshot_all(trade_date)
+
+        summary = {
+            "trade_date": trade_date,
+            "instances": len(instances),
+            "signals": signals_total,
+            "passed": passed_total,
+            "orders": len(agg.orders),
+        }
+        logger.info("pipeline_done %s", summary)
+        return summary
+
+    # ── 内部 ──────────────────────────────────────────────────────────
+    def _load_instances(self) -> list[dict]:
+        """从 strategies.yaml 解析出扁平化的实例列表。"""
+        if not self.strategies_yaml_path.exists():
+            logger.warning("strategies.yaml 不存在: %s", self.strategies_yaml_path)
+            return []
+        with self.strategies_yaml_path.open(encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+
+        instances: list[dict] = []
+        for ag in cfg.get("account_groups", []):
+            group_id = ag["group_id"]
+            for strat in ag.get("strategies", []):
+                instances.append({
+                    "instance_id": f"{group_id}_{strat['strategy_id']}",
+                    "account_group": group_id,
+                    "strategy_id": strat["strategy_id"],
+                    "virtual_initial_cash": float(strat.get("virtual_initial_cash", 0)),
+                })
+        return instances
+
+    def _ensure_instance_states(
+        self, instances: list[dict],
+    ) -> dict[str, dict]:
+        """加载 InstanceState；缺失的用 yaml 里的 virtual_initial_cash 创建。"""
+        result: dict[str, dict] = {}
+        with self.session_factory() as session:
+            existing = {
+                row.instance_id: row
+                for row in session.execute(select(InstanceState)).scalars().all()
+            }
+            for inst in instances:
+                instance_id = inst["instance_id"]
+                if instance_id in existing:
+                    row = existing[instance_id]
+                    result[instance_id] = {
+                        "cash": float(row.virtual_cash),
+                        "positions": dict(row.virtual_positions or {}),
+                    }
+                else:
+                    cash = inst["virtual_initial_cash"]
+                    session.add(InstanceState(
+                        instance_id=instance_id,
+                        virtual_cash=cash,
+                        virtual_positions={},
+                        last_update=_now_iso(),
+                    ))
+                    result[instance_id] = {"cash": cash, "positions": {}}
+            session.commit()
+        return result

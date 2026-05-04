@@ -1,0 +1,9 @@
+# v2.3 server 策略账户组配置示例
+# 每个 (account_group, strategy_id) 形成一个独立的策略实例
+
+account_groups:
+  - group_id: real_A
+    qmt_account_id: "1234567890"
+    strategies:
+      - strategy_id: buy_on_dip_example
+        virtual_initial_cash: 500000
