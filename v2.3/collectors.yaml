@@ -47,7 +47,7 @@ frequencies:
 # ── QMT 行情 · 股票/ETF/指数 OHLCV ─────────────────────────────────────────────
 market_ohlcv:
   enabled: true
-  description: "股票+ETF+指数 日线 OHLCV（前复权）"
+  description: "股票+ETF+指数 日线 OHLCV（前复权+后复权）"
   stock_sector: "沪深A股"
   etf_sectors: ["沪深ETF"]
   index_codes:

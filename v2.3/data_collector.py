@@ -112,9 +112,10 @@ class MarketOHLCVCollector(BaseCollector):
     支持前/后复权和不复权，默认前复权。
     """
 
-    STOCK_DIR = "market/daily/stocks"
-    ETF_DIR   = "market/daily/etfs"
-    INDEX_DIR = "market/daily/indexes"
+    STOCK_DIR      = "market/daily/stocks"       # 前复权
+    STOCK_DIR_BACK = "market/daily/stocks_back"  # 后复权
+    ETF_DIR        = "market/daily/etfs"
+    INDEX_DIR      = "market/daily/indexes"
 
     OHLCV_FIELDS = ["open", "high", "low", "close", "volume", "amount", "suspendFlag"]
 
@@ -143,13 +144,11 @@ class MarketOHLCVCollector(BaseCollector):
         index_list = list(self.index_codes)
         return stock_list, etf_list, index_list
 
-    def _download_and_save(self, xtdata, codes: list, dvd_type: str,
-                           trade_date: str, out_dir: str) -> int:
-        """下载一批标的并将数据写入 parquet。"""
+    def _read_and_save(self, xtdata, codes: list, dvd_type: str,
+                       trade_date: str, out_dir: str) -> int:
+        """读取已下载的缓存数据并写入 parquet（需先 bulk download）。"""
         if not codes:
             return 0
-        xtdata.download_history_data2(codes, "1d", trade_date, trade_date)
-        time.sleep(self.sleep_sec)
 
         total = 0
         for symbol in codes:
@@ -186,7 +185,7 @@ class MarketOHLCVCollector(BaseCollector):
         all_codes = stock_list + etf_list + index_list
         log.info(f"标的: 股票 {len(stock_list)}, ETF {len(etf_list)}, 指数 {len(index_list)}, 合计 {len(all_codes)}")
 
-        # 批量下载所有标的（不复权，一次搞定）
+        # 批量下载所有标的原始数据，复权在 get_market_data_ex 中按 dividend_type 处理
         xtdata.download_history_data2(all_codes, "1d", trade_date, trade_date)
         time.sleep(max(self.sleep_sec, 5))
 
@@ -194,22 +193,28 @@ class MarketOHLCVCollector(BaseCollector):
 
         # 股票（前复权）
         dvd = self.dividend_types.get("stocks", "front")
-        log.info(f"股票 OHLCV: dividend_type={dvd}")
-        n = self._download_and_save(xtdata, stock_list, dvd, trade_date, self.STOCK_DIR)
+        log.info(f"股票 OHLCV（前复权）: dividend_type={dvd}")
+        n = self._read_and_save(xtdata, stock_list, dvd, trade_date, self.STOCK_DIR)
         total_new += n
-        log.info(f"  股票: {n} 行新增")
+        log.info(f"  股票前复权: {n} 行新增")
+
+        # 股票（后复权）
+        log.info(f"股票 OHLCV（后复权）: dividend_type=back")
+        n = self._read_and_save(xtdata, stock_list, "back", trade_date, self.STOCK_DIR_BACK)
+        total_new += n
+        log.info(f"  股票后复权: {n} 行新增")
 
         # ETF（前复权）
         dvd = self.dividend_types.get("etfs", "front")
         log.info(f"ETF OHLCV: dividend_type={dvd}")
-        n = self._download_and_save(xtdata, etf_list, dvd, trade_date, self.ETF_DIR)
+        n = self._read_and_save(xtdata, etf_list, dvd, trade_date, self.ETF_DIR)
         total_new += n
         log.info(f"  ETF: {n} 行新增")
 
         # 指数（不复权）
         dvd = self.dividend_types.get("indexes", "none")
         log.info(f"指数 OHLCV: dividend_type={dvd}")
-        n = self._download_and_save(xtdata, index_list, dvd, trade_date, self.INDEX_DIR)
+        n = self._read_and_save(xtdata, index_list, dvd, trade_date, self.INDEX_DIR)
         total_new += n
         log.info(f"  指数: {n} 行新增")
 
@@ -614,8 +619,12 @@ class IndexWeightCollector(BaseCollector):
                 rows = [{"symbol": k, "weight": v, "index_code": idx_code,
                          "update_date": int(trade_date)} for k, v in weights.items()]
                 df = pd.DataFrame(rows)
+                if df.empty:
+                    continue
+                # 复合主键：symbol + update_date（保留历史权重）
+                df["_pk"] = df["symbol"] + "_" + df["update_date"].astype(str)
                 filepath = os.path.join(config.DATA_DIR, self.BASE_DIR, f"{idx_code}.parquet")
-                n = append_to_parquet(filepath, df, pk_col="symbol")
+                n = append_to_parquet(filepath, df, pk_col="_pk")
                 total_new += n
                 log.info(f"  指数 {idx_code}: {n} 行新增")
             except Exception as e:
@@ -963,9 +972,10 @@ def show_stats():
     print(f"{'='*65}")
 
     categories = {
-        "行情-股票":        "market/daily/stocks",
-        "行情-ETF":         "market/daily/etfs",
-        "行情-指数":        "market/daily/indexes",
+        "行情-股票(前复权)":  "market/daily/stocks",
+        "行情-股票(后复权)":  "market/daily/stocks_back",
+        "行情-ETF":          "market/daily/etfs",
+        "行情-指数":         "market/daily/indexes",
         "行情-可转债":      "market/daily/convertible_bonds",
         "行情-期货":        "market/daily/futures",
         "财务":             "fundamentals/financial_tables",
