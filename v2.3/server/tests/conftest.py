@@ -27,7 +27,10 @@ def settings_for_test(tmp_path: Path) -> Settings:
 
 @pytest.fixture
 def client(settings_for_test, monkeypatch) -> TestClient:
-    """FastAPI TestClient + override settings。"""
+    """FastAPI TestClient + override settings + clear engine cache between tests."""
+    from app.dependencies import _engine_for_url
+
     get_settings.cache_clear()
+    _engine_for_url.cache_clear()
     app = create_app(settings_override=settings_for_test)
     return TestClient(app)
