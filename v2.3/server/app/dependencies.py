@@ -52,3 +52,13 @@ def get_settlement_service(
     sf: sessionmaker = Depends(get_session_factory),
 ) -> SettlementService:
     return SettlementService(session_factory=sf)
+
+
+from app.services.perf import PerfService
+
+
+def get_perf_service(
+    sf: sessionmaker = Depends(get_session_factory),
+    store: ParquetStore = Depends(get_parquet_store),
+) -> PerfService:
+    return PerfService(session_factory=sf, parquet_store=store)
