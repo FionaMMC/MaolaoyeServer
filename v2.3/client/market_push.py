@@ -10,6 +10,10 @@ from datetime import datetime
 import requests
 from xtquant import xtdata
 
+# 子目录 client/ 运行需补 v2.3/ 到 sys.path 才能 import config
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import config
 
 xtdata.data_dir = config.QMT_USERDATA_DIR

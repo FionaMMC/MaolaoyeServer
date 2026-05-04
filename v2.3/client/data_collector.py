@@ -22,6 +22,10 @@ from typing import Any, Optional
 import pandas as pd
 import yaml
 
+# 子目录 client/ 运行需补 v2.3/ 到 sys.path 才能 import config
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import config
 
 log = config.setup_logger("data_collector")
