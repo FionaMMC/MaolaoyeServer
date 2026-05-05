@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import abc
 from dataclasses import dataclass
+from pathlib import Path
+from typing import ClassVar
 
 from app.strategy.context import Context
 
@@ -29,6 +31,8 @@ class Strategy(abc.ABC):
     """所有策略插件必须继承此基类。"""
 
     name: str = ""
+    data_dir: ClassVar[Path | None] = None
+    data_files: ClassVar[list[str]] = []
 
     @abc.abstractmethod
     def run(self, ctx: Context, trade_date: int) -> list[RawSignal]:

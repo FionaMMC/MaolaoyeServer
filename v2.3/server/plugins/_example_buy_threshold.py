@@ -7,6 +7,8 @@ from app.strategy.context import Context
 
 class BuyOnDipExample(Strategy):
     name = "buy_on_dip_example"
+    data_dir = None
+    data_files = []
 
     LOOKBACK = 5
     DROP_THRESHOLD = 0.95

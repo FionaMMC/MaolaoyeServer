@@ -39,6 +39,14 @@ class V20HAdapter(Strategy):
     """V20H v1.3 适配器 — Phase 14a dry-run。"""
 
     name = "v20h_v1_3"
+    data_dir = _V20H_DIR / "data"
+    data_files = [
+        "pred_csi1000.parquet",
+        "v12_exp_hs300.parquet",
+        "stock_close.parquet",
+        "stock_returns.parquet",
+        "index_csi1000.parquet",
+    ]
 
     # 配置缓存（懒加载）
     _cfg: StrategyConfig | None = None

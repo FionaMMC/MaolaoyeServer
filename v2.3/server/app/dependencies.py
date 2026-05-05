@@ -95,3 +95,13 @@ def get_strategy_pipeline(
         perf=perf,
         strategies_yaml_path=Path(settings.strategies_file),
     )
+
+
+from app.services.data_upload import DataUploadService
+
+
+def get_data_upload_service(
+    settings: Settings = Depends(get_settings),
+) -> DataUploadService:
+    registry = _strategy_registry(str(settings.plugins_dir))
+    return DataUploadService(registry=registry)
