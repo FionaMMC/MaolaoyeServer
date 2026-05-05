@@ -149,8 +149,8 @@ class MarketOHLCVCollector(BaseCollector):
         return stock_list, etf_list, index_list
 
     def _read_and_save(self, xtdata, codes: list, dvd_type: str,
-                       trade_date: str, out_dir: str) -> int:
-        """读取已下载的缓存数据并写入 parquet（需先 bulk download）。"""
+                       out_dir: str) -> int:
+        """读取缓存中的全量历史数据并写入 parquet（append_to_parquet 按 trade_date 去重）。"""
         if not codes:
             return 0
 
@@ -159,7 +159,7 @@ class MarketOHLCVCollector(BaseCollector):
             try:
                 raw = xtdata.get_market_data_ex(
                     self.OHLCV_FIELDS, [symbol], "1d",
-                    trade_date, trade_date, dividend_type=dvd_type
+                    "", "", dividend_type=dvd_type
                 )
                 if not raw or symbol not in raw or raw[symbol].empty:
                     continue
@@ -189,8 +189,8 @@ class MarketOHLCVCollector(BaseCollector):
         all_codes = stock_list + etf_list + index_list
         log.info(f"标的: 股票 {len(stock_list)}, ETF {len(etf_list)}, 指数 {len(index_list)}, 合计 {len(all_codes)}")
 
-        # 批量下载所有标的原始数据，复权在 get_market_data_ex 中按 dividend_type 处理
-        xtdata.download_history_data2(all_codes, "1d", trade_date, trade_date)
+        # 批量下载全量历史数据（QMT 缓存机制：已有数据跳过）
+        xtdata.download_history_data2(all_codes, "1d", "", "")
         time.sleep(max(self.sleep_sec, 5))
 
         total_new = 0
@@ -198,27 +198,27 @@ class MarketOHLCVCollector(BaseCollector):
         # 股票（前复权）
         dvd = self.dividend_types.get("stocks", "front")
         log.info(f"股票 OHLCV（前复权）: dividend_type={dvd}")
-        n = self._read_and_save(xtdata, stock_list, dvd, trade_date, self.STOCK_DIR)
+        n = self._read_and_save(xtdata, stock_list, dvd, self.STOCK_DIR)
         total_new += n
         log.info(f"  股票前复权: {n} 行新增")
 
         # 股票（后复权）
         log.info(f"股票 OHLCV（后复权）: dividend_type=back")
-        n = self._read_and_save(xtdata, stock_list, "back", trade_date, self.STOCK_DIR_BACK)
+        n = self._read_and_save(xtdata, stock_list, "back", self.STOCK_DIR_BACK)
         total_new += n
         log.info(f"  股票后复权: {n} 行新增")
 
         # ETF（前复权）
         dvd = self.dividend_types.get("etfs", "front")
         log.info(f"ETF OHLCV: dividend_type={dvd}")
-        n = self._read_and_save(xtdata, etf_list, dvd, trade_date, self.ETF_DIR)
+        n = self._read_and_save(xtdata, etf_list, dvd, self.ETF_DIR)
         total_new += n
         log.info(f"  ETF: {n} 行新增")
 
         # 指数（不复权）
         dvd = self.dividend_types.get("indexes", "none")
         log.info(f"指数 OHLCV: dividend_type={dvd}")
-        n = self._read_and_save(xtdata, index_list, dvd, trade_date, self.INDEX_DIR)
+        n = self._read_and_save(xtdata, index_list, dvd, self.INDEX_DIR)
         total_new += n
         log.info(f"  指数: {n} 行新增")
 
@@ -258,7 +258,7 @@ class ConvertibleBondCollector(BaseCollector):
         if not cb_list:
             return 0
 
-        xtdata.download_history_data2(cb_list, "1d", trade_date, trade_date)
+        xtdata.download_history_data2(cb_list, "1d", "", "")
         time.sleep(self.sleep_sec)
 
         total = 0
@@ -266,7 +266,7 @@ class ConvertibleBondCollector(BaseCollector):
             try:
                 raw = xtdata.get_market_data_ex(
                     self.OHLCV_FIELDS, [symbol], "1d",
-                    trade_date, trade_date, dividend_type="none"
+                    "", "", dividend_type="none"
                 )
                 if not raw or symbol not in raw or raw[symbol].empty:
                     continue
@@ -326,7 +326,7 @@ class FuturesCollector(BaseCollector):
         if not contract_list:
             return 0
 
-        xtdata.download_history_data2(contract_list, "1d", trade_date, trade_date)
+        xtdata.download_history_data2(contract_list, "1d", "", "")
         time.sleep(self.sleep_sec)
 
         total = 0
@@ -334,7 +334,7 @@ class FuturesCollector(BaseCollector):
             try:
                 raw = xtdata.get_market_data_ex(
                     self.OHLCV_FIELDS, [symbol], "1d",
-                    trade_date, trade_date, dividend_type="none"
+                    "", "", dividend_type="none"
                 )
                 if not raw or symbol not in raw or raw[symbol].empty:
                     continue
