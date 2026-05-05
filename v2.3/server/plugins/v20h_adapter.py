@@ -2,6 +2,8 @@
 
 Phase 14a: dry-run mode — 日志输出今日决策，不发 RawSignal（永远返回空 list）。
 Phase 14c: 实盘 mode — 输出真实 RawSignal[]，期货部分仍 skip 直到 v2.4。
+
+当前版本：Phase 14c（实盘）。
 """
 from __future__ import annotations
 
@@ -36,7 +38,7 @@ def _qmt_to_v20h_code(qmt: str) -> str:
 
 
 class V20HAdapter(Strategy):
-    """V20H v1.3 适配器 — Phase 14a dry-run。"""
+    """V20H v1.3 适配器 — Phase 14c 实盘。"""
 
     name = "v20h_v1_3"
     data_dir = _V20H_DIR / "data"
@@ -75,7 +77,7 @@ class V20HAdapter(Strategy):
             type(self)._v12_series = v12
 
     def run(self, ctx: Context, trade_date: int) -> list[RawSignal]:
-        """Dry-run: 日志输出决策，返回空 list 不下单。"""
+        """Phase 14c 实盘：输出真实 RawSignal[]，期货部分仍 skip 直到 v2.4。"""
         try:
             self._load_resources()
         except Exception as e:
@@ -150,27 +152,56 @@ class V20HAdapter(Strategy):
                    if c in before and before[c] > q}
         to_close = {c: before[c] for c in before if c not in target_positions}
 
+        # Phase 14c：实盘 — 输出 RawSignal[]
+        signals: list[RawSignal] = []
+
+        # 先 SELL（卖出 V20H 不要的标的；含 close 全部）
+        for code6, qty in to_sell.items():
+            qmt = _v20h_to_qmt_code(code6)
+            price = prices_today.get(code6)
+            if price is None or price <= 0:
+                continue
+            signals.append(RawSignal(
+                symbol=qmt,
+                direction="SELL",
+                quantity=qty,
+                reference_price=price,
+                price_offset=-0.005,
+            ))
+
+        for code6, qty in to_close.items():
+            qmt = _v20h_to_qmt_code(code6)
+            price = prices_today.get(code6)
+            if price is None or price <= 0:
+                continue
+            signals.append(RawSignal(
+                symbol=qmt,
+                direction="SELL",
+                quantity=qty,
+                reference_price=price,
+                price_offset=-0.005,
+            ))
+
+        # 后 BUY
+        for code6, qty in to_buy.items():
+            qmt = _v20h_to_qmt_code(code6)
+            price = prices_today.get(code6)
+            if price is None or price <= 0:
+                continue
+            signals.append(RawSignal(
+                symbol=qmt,
+                direction="BUY",
+                quantity=qty,
+                reference_price=price,
+                price_offset=+0.005,
+            ))
+
         logger.info(
-            "V20H[%s] dry-run trade_date=%s n_target=%d cash=%.0f "
-            "buy=%d sell=%d close=%d v12=%.3f vol_scale=%.2f hedge_target=%.2f",
+            "V20H[%s] go-live trade_date=%s emitted=%d (buy=%d sell=%d close=%d)",
             ctx.instance_id, trade_date,
-            len(target_positions), strategy.cash,
-            len(to_buy), len(to_sell), len(to_close),
-            v12_val, log_entry.get("vol_scale", 1.0),
-            log_entry.get("target_hedge", 0.0),
+            len(signals), len(to_buy), len(to_sell), len(to_close),
         )
-
-        # 详细日志（最多打印 5 条避免刷屏）
-        for code, qty in list(to_buy.items())[:5]:
-            logger.info("  BUY  %s qty=%d (price=%.2f)",
-                        _v20h_to_qmt_code(code), qty,
-                        prices_today.get(code, 0.0))
-        for code, qty in list(to_close.items())[:5]:
-            logger.info("  SELL %s qty=%d (close)",
-                        _v20h_to_qmt_code(code), qty)
-
-        # Phase 14a：永远返回空，不下单
-        return []
+        return signals
 
     # ── 内部：行情读取/转换 ──────────────────────────────────────────
     def _build_prices_today(
