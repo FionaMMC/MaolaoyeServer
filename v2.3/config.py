@@ -16,7 +16,7 @@ QMT_USERDATA_DIR = r"C:\parttime\平安证券量盈QMT策略交易平台\userdat
 
 _V23_DIR        = os.path.dirname(os.path.abspath(__file__))
 DB_PATH         = os.path.join(_V23_DIR, "pipeline.db")
-STRATEGIES_FILE = os.path.join(_V23_DIR, "strategies.yaml")
+STRATEGIES_FILE = os.path.join(_V23_DIR, "server", "strategies.yaml")
 LOG_DIR         = os.path.join(_V23_DIR, "logs")
 LOCAL_PUSH_DIR  = os.path.join(_V23_DIR, "local_push")
 MOCK_DATA_DIR   = os.path.join(_V23_DIR, "mock_data")
@@ -27,14 +27,16 @@ COLLECTORS_YAML = os.path.join(_V23_DIR, "collectors.yaml")
 QMT_SESSION_ID = 12345681   # 与 v2(12345678)、v2.1(12345679)、v2.2(12345680) 不同
 
 # ── 服务器配置 ────────────────────────────────────────────────────────────────
-SERVER_BASE_URL = ""
-API_KEY         = ""
+# 跑 PUSH_MODE="server" 时必须填这俩；建议 .env 里 export 后在此读取。
+# 例：export QMT_PIPELINE_BASE_URL=http://120.26.138.82:8000
+SERVER_BASE_URL = os.environ.get("QMT_PIPELINE_BASE_URL", "")
+API_KEY         = os.environ.get("QMT_PIPELINE_API_KEY", "")
 
 # ── 推送模式 ──────────────────────────────────────────────────────────────────
-# "server"   : 真实服务器（生产）
-# "local"    : POST 写本地文件，GET 读 mock；QMT 走真实连接（本文件默认值）
+# "server"   : 真实服务器（生产 / 实盘联调）— 默认
+# "local"    : POST 写本地文件，GET 读 mock；QMT 走真实连接（v2.2 离线 dev 用）
 # "mock_qmt" : local 基础上，所有 QMT API 调用改为读 mock_data/ JSON
-PUSH_MODE = "local"
+PUSH_MODE = os.environ.get("QMT_PIPELINE_PUSH_MODE", "server")
 
 # ── 测试用交易日强制覆盖（非交易日联调时使用）────────────────────────────
 # 设置为有效日期字符串（如 "20260430"）时，各模块会使用此日期代替 datetime.now()
