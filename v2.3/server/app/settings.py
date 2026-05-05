@@ -32,7 +32,7 @@ class Settings(BaseSettings):
 
     # 策略
     plugins_dir: Path = Path("./plugins")
-    strategies_file: Path = Path("../strategies.yaml")
+    strategies_file: Path = Path("strategies.yaml")
 
     # 日志
     log_level: str = "INFO"
