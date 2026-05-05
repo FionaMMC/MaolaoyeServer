@@ -18,3 +18,6 @@ config/settings.local.yaml
 # 运行期数据
 data/
 logs/
+
+# V20H 策略私有数据（47 MB，部署时 rsync 上去）
+v2.3/server/plugins/v20h/data/*.parquet

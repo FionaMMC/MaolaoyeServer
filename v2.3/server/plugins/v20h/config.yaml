@@ -1,0 +1,42 @@
+# V20-H Production V2 配置
+# ============================================
+# 策略: CUT10 + V12 期货对冲 (graduated_4) + 42天调仓 + 1.5x cap-weight + Vol Target 15%
+# 真实可实盘: α +12.50%, Sharpe 1.12, DD -17.22%
+
+# ─── 资金 ───
+capital_init: 10_000_000  # 1000 万 (典型专户规模)
+
+# ─── 选股 ───
+cut_pct: 0.10             # 剔除底部 10%
+rebal_freq: 42            # 42 天调仓 (实证最稳定)
+weight_cap: 1.5           # 单股权重上限 = 1.5 × 1/N
+
+# ─── V12 对冲 (graduated_4) ───
+q10_quantile: 0.10        # V12 < Q10 → hedge 100%
+q20_quantile: 0.20        # V12 < Q20 → hedge 70%
+q40_quantile: 0.40        # V12 < Q40 → hedge 30%
+q_warmup_days: 180        # expanding Q 最少历史
+
+# ─── Vol Targeting ───
+use_vol_target: true
+target_vol_ann: 0.15      # 目标年化波动率 15%
+vol_lookback: 20          # 滚动 20 天
+
+# ─── 股票成本 ───
+stock_cmn_rate: 0.0003    # 万三佣金
+min_stock_cmn: 5.0        # 最低 5 元
+stamp_duty: 0.0005        # 印花税 0.05% (卖出)
+bond_yield: 0.035         # 现金 3.5%/yr
+
+# ─── 期货成本 ───
+fut_cmn_rate: 0.0005      # 万五
+basis_cost: 0.03          # IC 基差年化 3% (5年均值)
+fut_margin_ratio: 0.15    # 保证金 15%
+roll_cost_bps: 10         # 季度展期 10 bps
+
+# ─── 执行约束 ───
+lot_size: 100             # A 股 100 股一手
+cash_buffer: 0.02         # 2% 现金缓冲
+
+# ─── 时间范围 ───
+start_date: "2021-04-01"  # 回测起始日 (V12 warmup 已完成)
