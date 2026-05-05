@@ -54,6 +54,7 @@ class V20HAdapter(Strategy):
     _cfg: StrategyConfig | None = None
     _pred_df: pd.DataFrame | None = None
     _v12_series: pd.Series | None = None
+    _index_close: pd.Series | None = None
 
     def _load_resources(self) -> None:
         """懒加载 config + 外部数据。失败则记日志后续 run() 返回空。"""
@@ -75,6 +76,12 @@ class V20HAdapter(Strategy):
             v12 = pd.read_parquet(v12_path).squeeze()
             v12.index = pd.to_datetime(v12.index)
             type(self)._v12_series = v12
+
+        if self._index_close is None:
+            idx_path = _V20H_DIR / "data" / "index_csi1000.parquet"
+            idx_df = pd.read_parquet(idx_path)
+            idx_df.index = pd.to_datetime(idx_df.index)
+            type(self)._index_close = idx_df["close"]
 
     def run(self, ctx: Context, trade_date: int) -> list[RawSignal]:
         """Phase 14c 实盘：输出真实 RawSignal[]，期货部分仍 skip 直到 v2.4。"""
@@ -207,20 +214,24 @@ class V20HAdapter(Strategy):
     def _build_prices_today(
         self, ctx: Context, pred_today: pd.DataFrame,
     ) -> dict[str, float]:
-        """从 ctx.market() 拼出 {6位code: today_close} dict。"""
-        prices = {}
-        for code6 in pred_today["code"].unique():
-            qmt = _v20h_to_qmt_code(code6)
-            df = ctx.market(qmt, fields=["close"], category="stocks")
-            if df.empty:
-                continue
-            prices[code6] = float(df["close"].iloc[-1])
-        return prices
+        """{6位code: today_close} — 直接用 pred_today.close，bundled 数据是 V20H 训练时的真值。
+
+        ctx 参数保留是为了未来扩展（如运行时覆盖某些价格）。
+        """
+        return {
+            row["code"]: float(row["close"])
+            for _, row in pred_today.iterrows()
+            if pd.notna(row["close"]) and float(row["close"]) > 0
+        }
 
     def _read_index_close(
         self, ctx: Context, qmt_code: str, trade_date: int,
     ) -> float | None:
-        df = ctx.market(qmt_code, fields=["close"], category="indexes")
-        if df.empty:
+        """从 bundled index_csi1000.parquet 读取目标日期的 close。"""
+        if self._index_close is None:
             return None
-        return float(df["close"].iloc[-1])
+        target_date = pd.to_datetime(str(trade_date), format="%Y%m%d")
+        v = self._index_close.get(target_date)
+        if v is None or pd.isna(v):
+            return None
+        return float(v)

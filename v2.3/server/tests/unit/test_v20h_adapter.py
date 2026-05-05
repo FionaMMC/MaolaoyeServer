@@ -44,6 +44,7 @@ def test_adapter_handles_missing_external_data(tmp_path, monkeypatch):
     V20HAdapter._cfg = None
     V20HAdapter._pred_df = None
     V20HAdapter._v12_series = None
+    V20HAdapter._index_close = None
 
 
 def test_adapter_emits_buy_signals_for_target_positions(tmp_path, monkeypatch):
@@ -82,6 +83,16 @@ def test_adapter_emits_buy_signals_for_target_positions(tmp_path, monkeypatch):
     v12.index.name = None
     v12.to_parquet(fake_data_dir / "v12_exp_hs300.parquet")
 
+    # index_csi1000：覆盖 trade_date 20240403
+    idx_dates = pd.date_range("20240401", periods=5, freq="B")
+    idx_df = pd.DataFrame({
+        "open": [5950.0] * 5, "high": [6010.0] * 5,
+        "low": [5940.0] * 5, "close": [6005.0] * 5,
+        "volume": [0] * 5,
+    }, index=idx_dates)
+    idx_df.index.name = "date"
+    idx_df.to_parquet(fake_data_dir / "index_csi1000.parquet")
+
     # 2) 把 V20HAdapter 的 _V20H_DIR 临时指向 tmp_path
     monkeypatch.setattr(adapter_mod, "_V20H_DIR", tmp_path)
 
@@ -89,6 +100,7 @@ def test_adapter_emits_buy_signals_for_target_positions(tmp_path, monkeypatch):
     V20HAdapter._cfg = None
     V20HAdapter._pred_df = None
     V20HAdapter._v12_series = None
+    V20HAdapter._index_close = None
 
     # 写最小 config.yaml（q_warmup_days=1 以绕过 180 天暖机期）
     cfg_yaml = """
@@ -155,3 +167,4 @@ start_date: "2024-04-03"
     V20HAdapter._cfg = None
     V20HAdapter._pred_df = None
     V20HAdapter._v12_series = None
+    V20HAdapter._index_close = None
