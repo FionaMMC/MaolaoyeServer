@@ -97,11 +97,20 @@ class V20HAdapter(Strategy):
 
         target_date = pd.to_datetime(str(trade_date), format="%Y%m%d")
 
-        # 当日预测
-        pred_today = pred_df[pred_df["date"] == target_date]
-        if pred_today.empty:
-            logger.warning("V20H pred_csi1000 无 %s 数据，跳过", trade_date)
+        # 找 ≤ target_date 的最近一条 pred；如果 target_date 本身有就用它
+        # 实盘逻辑：T 收盘后才能算 pred[T]，T+1 早盘下单时只能用 pred[T] 或更早
+        applicable_dates = pred_df[pred_df["date"] <= target_date]["date"]
+        if applicable_dates.empty:
+            logger.warning("V20H pred_csi1000 无 %s 之前的数据，跳过", trade_date)
             return []
+        latest_pred_date = applicable_dates.max()
+        pred_today = pred_df[pred_df["date"] == latest_pred_date]
+        if latest_pred_date != target_date:
+            lag_days = (target_date - latest_pred_date).days
+            logger.info(
+                "V20H pred staleness: trade_date=%s 用 pred[%s] (lag %d days)",
+                trade_date, latest_pred_date.strftime("%Y%m%d"), lag_days,
+            )
 
         # ── 重建 V20H 状态（无状态版本：从 ctx 派生）──────────────
         # 把当前 ctx.positions(QMT 格式) 转成 V20H 6 位 code
