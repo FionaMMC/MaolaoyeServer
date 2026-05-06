@@ -215,22 +215,27 @@ git status  # 应该看到 modified 但不要 git add 这俩
 ```
 T-1 收盘 后（晚上）
 ─ [我]   Mac 上跑 V20H ML pipeline → 上传 5 个 .parquet 到云端
-─ [我]   curl /admin/run-pipeline?trade_date=T 触发信号生成
+─ [你]   Windows: python v2.3\client\trigger_pipeline.py   ← 让服务器算 T 信号
 
 T 早上 09:00 之前
-─ [你]   Windows: python order_query.py     ← 拉信号到 SQLite
-─ [你]   Windows: 09:14 跑 python order_submit.py  ← 等到 09:15 自动提交
+─ [你]   Windows: python order_query.py        ← 拉信号到 SQLite
+─ [你]   Windows: 09:14 跑 python order_submit.py    ← 等到 09:15 自动提交
 ─ [你]   QMT 9:25 集合竞价 → 9:30 开盘成交
 
 T 收盘 后
 ─ [你]   Windows: python trade_result.py    ← 推成交回服务器
 ```
 
-可以全用 Windows Task Scheduler 自动化：
-- 09:14 → `python order_submit.py`
-- 15:30 → `python trade_result.py`
+`trigger_pipeline.py` 会自动算"下一交易日"作为 trade_date 调
+`POST /admin/run-pipeline`，无需手 curl。结尾输出 `signals=N orders=N`
+就证明触发成功；如果 `orders=0` 脚本会提示去查 `/admin/data-status`
+排查 pred 是否覆盖目标日期。
 
-`order_query.py` 可以早点跑（比如 8:30），或者直接靠 `order_submit` 自己里面那段拉取也行（看你怎么编排）。
+可以全用 Windows Task Scheduler 自动化：
+- T-1 晚上 22:00 → `python v2.3\client\trigger_pipeline.py`（等我刷完 pred 之后）
+- T 早上 08:30 → `python order_query.py`
+- T 09:14 → `python order_submit.py`
+- T 15:30 → `python trade_result.py`
 
 ---
 
