@@ -13,6 +13,7 @@ from app.models.order import Order  # noqa: E402, F401
 from app.models.order_signal_map import OrderSignalMap  # noqa: E402, F401
 from app.models.trade import Trade  # noqa: E402, F401
 from app.models.perf_snapshot import PerfSnapshot  # noqa: E402, F401
+from app.models.risk_blacklist import RiskBlacklistEntry  # noqa: E402, F401
 
 __all__ = [
     "Base",
@@ -22,4 +23,5 @@ __all__ = [
     "OrderSignalMap",
     "Trade",
     "PerfSnapshot",
+    "RiskBlacklistEntry",
 ]

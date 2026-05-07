@@ -62,7 +62,13 @@ class StrategyPipeline:
         valid_date_str = str(trade_date)
         logger.info("pipeline_start trade_date=%s", trade_date)
 
-        # 0. 幂等：清同一 trade_date 的旧 raw_signals + orders + order_signal_map
+        # 0a. 自动晋升：把最近 REJECTED 的 symbol 持久化到 risk_blacklist 表
+        #     这样即使后面 clear-state 清了 orders，黑名单不丢
+        promoted = self.blacklist.auto_promote()
+        if promoted["promoted"]:
+            logger.info("pipeline blacklist auto-promote: %s", promoted)
+
+        # 0b. 幂等：清同一 trade_date 的旧 raw_signals + orders + order_signal_map
         cleared = self._clear_for_date(valid_date_str)
         if any(cleared.values()):
             logger.info("pipeline cleared stale data for %s: %s", trade_date, cleared)
@@ -76,7 +82,7 @@ class StrategyPipeline:
         # 2. 加载/创建 instance_state
         states = self._ensure_instance_states(instances)
 
-        # 2.5. 计算 risk blacklist（过去 30 天 REJECTED 过的 symbol）
+        # 2.5. 计算 risk blacklist（自动 + 手工）
         risk_bl = self.blacklist.compute()
 
         # 3. 跑策略

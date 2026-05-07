@@ -70,14 +70,19 @@ async def clear_state(
     date: str = Query(min_length=8, max_length=8, pattern=r"^\d{8}$"),
     include_instance_state: bool = Query(False),
     pipeline: StrategyPipeline = Depends(get_strategy_pipeline),
+    blacklist: BlacklistService = Depends(get_blacklist_service),
 ):
     """清除指定 trade_date 的 raw_signals + orders + order_signal_map。
+
+    在删除前会自动把 REJECTED 的 symbol 晋升到持久 risk_blacklist 表
+    （这样 clear-state 不会让黑名单丢）。
 
     include_instance_state=true 时还会把所有 InstanceState 的 virtual_cash 还原成
     strategies.yaml 初始值、virtual_positions 清空。**慎用**——会丢失累计仓位状态。
     """
+    promoted = blacklist.auto_promote()
     cleared = pipeline._clear_for_date(date)
-    info = {"date": date, "cleared": cleared}
+    info = {"date": date, "blacklist_promoted": promoted, "cleared": cleared}
     if include_instance_state:
         reset = pipeline.reset_instance_states()
         info["reset_instances"] = reset
@@ -93,5 +98,39 @@ async def blacklist_status(
     lookback_days: int = Query(30, ge=1, le=3650),
     service: BlacklistService = Depends(get_blacklist_service),
 ):
-    """诊断用：返回过去 N 天 REJECTED orders 的 symbol 频次。"""
+    """诊断：自动派生（过去 N 天 REJECTED orders）+ 手工维护 entries。"""
     return APIResponse[dict](code=0, message="ok", data=service.stats(lookback_days))
+
+
+@router.post(
+    "/blacklist-add",
+    response_model=APIResponse[dict],
+    dependencies=[Depends(verify_api_key)],
+)
+async def blacklist_add(
+    symbols: str = Query(min_length=1, description="逗号分隔的 QMT 代码，如 600063.SH,002001.SZ"),
+    reason: str = Query("", max_length=200, description="备注，如 'delisting' / 'ST'"),
+    service: BlacklistService = Depends(get_blacklist_service),
+):
+    """批量加入持久黑名单（不被 clear-state 影响）。已存在则更新 reason。"""
+    sym_list = [s.strip() for s in symbols.split(",") if s.strip()]
+    info = service.add_manual(sym_list, reason)
+    return APIResponse[dict](code=0, message="ok", data=info)
+
+
+@router.delete(
+    "/blacklist-remove",
+    response_model=APIResponse[dict],
+    dependencies=[Depends(verify_api_key)],
+)
+async def blacklist_remove(
+    symbol: str = Query(min_length=1, max_length=20),
+    service: BlacklistService = Depends(get_blacklist_service),
+):
+    """从持久黑名单删一个 symbol。"""
+    removed = service.remove_manual(symbol)
+    return APIResponse[dict](
+        code=0 if removed else 404,
+        message="ok" if removed else "symbol not found",
+        data={"symbol": symbol, "removed": removed},
+    )

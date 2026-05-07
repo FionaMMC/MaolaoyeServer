@@ -94,7 +94,76 @@ def test_blacklist_stats_returns_counts(sf):
 
     svc = BlacklistService(sf)
     stats = svc.stats(lookback_days=3650)
-    assert stats["rejected_total"] == 3
-    assert stats["unique_symbols"] == 2
-    assert stats["by_symbol"]["600002.SH"] == 2
-    assert stats["by_symbol"]["600001.SH"] == 1
+    assert stats["auto_rejected_total"] == 3
+    assert stats["auto_unique_symbols"] == 2
+    assert stats["auto_by_symbol"]["600002.SH"] == 2
+    assert stats["auto_by_symbol"]["600001.SH"] == 1
+    assert stats["manual_count"] == 0
+
+
+def test_blacklist_manual_add_and_remove(sf):
+    svc = BlacklistService(sf)
+
+    info = svc.add_manual(["600063.SH", "002001.SZ"], reason="delisting")
+    assert info == {"added": 2, "updated": 0, "total_input": 2}
+    assert svc.compute() == {"600063.SH", "002001.SZ"}
+
+    # 重复 add 是 update
+    info2 = svc.add_manual(["600063.SH"], reason="ST")
+    assert info2 == {"added": 0, "updated": 1, "total_input": 1}
+
+    assert svc.remove_manual("600063.SH") is True
+    assert svc.compute() == {"002001.SZ"}
+    assert svc.remove_manual("does_not_exist") is False
+
+
+def test_blacklist_compute_unions_auto_and_manual(sf):
+    """compute() 返回（自动派生 ∪ 手工）的并集。"""
+    _add_order(sf, symbol="600001.SH", status="REJECTED", valid_date="20260507", order_id="a")
+    svc = BlacklistService(sf)
+    svc.add_manual(["600002.SH"], reason="ST")
+    assert svc.compute() == {"600001.SH", "600002.SH"}
+
+
+def test_blacklist_auto_promote_persists_rejected(sf):
+    """auto_promote 把过去 REJECTED 的 symbol 永久存进 risk_blacklist 表。"""
+    from app.models import RiskBlacklistEntry
+
+    _add_order(sf, symbol="600001.SH", status="REJECTED", valid_date="20260507", order_id="a")
+    _add_order(sf, symbol="600002.SH", status="REJECTED", valid_date="20260507", order_id="b")
+    _add_order(sf, symbol="600003.SH", status="FILLED", valid_date="20260507", order_id="c")
+
+    svc = BlacklistService(sf)
+    info = svc.auto_promote()
+    assert info["promoted"] == 2
+
+    # 查持久表：应该有 600001 + 600002，没有 600003（FILLED 的不进）
+    with sf() as s:
+        from sqlalchemy import select
+        rows = s.execute(select(RiskBlacklistEntry.symbol)).all()
+        assert {r[0] for r in rows} == {"600001.SH", "600002.SH"}
+
+    # 重复 promote 不重复加
+    info2 = svc.auto_promote()
+    assert info2["promoted"] == 0
+    assert info2["already_present"] == 2
+
+
+def test_blacklist_auto_promote_survives_clear_state(sf):
+    """关键回归：clear-state 把 orders 表清空后，黑名单仍能拿到原 REJECTED symbol。"""
+    from sqlalchemy import delete
+    _add_order(sf, symbol="600001.SH", status="REJECTED", valid_date="20260507", order_id="a")
+    svc = BlacklistService(sf)
+
+    # auto_promote 把 600001 永久化
+    svc.auto_promote()
+    assert svc.compute() == {"600001.SH"}
+
+    # 模拟 clear-state 清掉 orders 表
+    with sf() as s:
+        from app.models import Order
+        s.execute(delete(Order))
+        s.commit()
+
+    # 即便 orders 表空了，compute 还是返回 600001（来自手工/持久部分）
+    assert svc.compute() == {"600001.SH"}
