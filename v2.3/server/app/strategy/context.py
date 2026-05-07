@@ -14,12 +14,14 @@ class Context:
         virtual_cash: float,
         virtual_positions: dict[str, int],
         parquet_store: ParquetStore,
+        risk_blacklist: set[str] | None = None,
     ):
         self.instance_id = instance_id
         self.trade_date = trade_date
         self._cash = float(virtual_cash)
         self._positions = dict(virtual_positions)
         self._store = parquet_store
+        self._risk_blacklist = set(risk_blacklist or ())
 
     def cash(self) -> float:
         return self._cash
@@ -29,6 +31,13 @@ class Context:
 
     def positions(self) -> dict[str, int]:
         return dict(self._positions)
+
+    def risk_blacklist(self) -> set[str]:
+        """QMT 历史拒单的 symbol 集合（ST/退市/协议未签 等），策略不应再下单。"""
+        return set(self._risk_blacklist)
+
+    def is_blacklisted(self, symbol: str) -> bool:
+        return symbol in self._risk_blacklist
 
     def market(
         self,

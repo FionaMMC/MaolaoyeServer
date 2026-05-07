@@ -8,10 +8,11 @@ from pathlib import Path
 from typing import Type
 
 import yaml
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
-from app.models import InstanceState, RawSignal
+from app.models import InstanceState, Order, OrderSignalMap, RawSignal
 from app.services.aggregate import AggregateService, TaggedSignal
+from app.services.blacklist import BlacklistService
 from app.services.orders_queue import OrdersQueueService
 from app.services.perf import PerfService
 from app.services.precheck import PrecheckResult, PrecheckService
@@ -40,6 +41,7 @@ class StrategyPipeline:
         orders_queue: OrdersQueueService,
         perf: PerfService,
         strategies_yaml_path: Path,
+        blacklist: BlacklistService | None = None,
     ):
         self.registry = registry
         self.store = parquet_store
@@ -49,11 +51,21 @@ class StrategyPipeline:
         self.orders_queue = orders_queue
         self.perf = perf
         self.strategies_yaml_path = Path(strategies_yaml_path)
+        self.blacklist = blacklist or BlacklistService(session_factory)
 
     def run(self, trade_date: int) -> dict:
-        """完整管线。返回执行摘要。"""
+        """完整管线。返回执行摘要。
+
+        幂等：本日（trade_date）已有 raw_signals/orders/order_signal_map 一律先清掉，
+        再写新一批。重复触发不会造 dupe。
+        """
         valid_date_str = str(trade_date)
         logger.info("pipeline_start trade_date=%s", trade_date)
+
+        # 0. 幂等：清同一 trade_date 的旧 raw_signals + orders + order_signal_map
+        cleared = self._clear_for_date(valid_date_str)
+        if any(cleared.values()):
+            logger.info("pipeline cleared stale data for %s: %s", trade_date, cleared)
 
         # 1. 加载 strategies.yaml
         instances = self._load_instances()
@@ -63,6 +75,9 @@ class StrategyPipeline:
 
         # 2. 加载/创建 instance_state
         states = self._ensure_instance_states(instances)
+
+        # 2.5. 计算 risk blacklist（过去 30 天 REJECTED 过的 symbol）
+        risk_bl = self.blacklist.compute()
 
         # 3. 跑策略
         runner = StrategyRunner(registry=self.registry, parquet_store=self.store)
@@ -77,6 +92,7 @@ class StrategyPipeline:
                 }
                 for inst in instances
             ],
+            risk_blacklist=risk_bl,
         )
 
         # 4. 预检 + 写 raw_signals 表 + 收集 PASS 的
@@ -185,5 +201,66 @@ class StrategyPipeline:
                         last_update=_now_iso(),
                     ))
                     result[instance_id] = {"cash": cash, "positions": {}}
+            session.commit()
+        return result
+
+    def _clear_for_date(self, valid_date: str) -> dict[str, int]:
+        """清除指定 valid_date 的 raw_signals + orders + order_signal_map。
+
+        order_signal_map 通过 raw_signals 的 signal_id 反查删除。
+        """
+        with self.session_factory() as session:
+            sig_ids = [
+                r[0]
+                for r in session.execute(
+                    select(RawSignal.signal_id).where(RawSignal.valid_date == valid_date)
+                ).all()
+            ]
+            order_ids = [
+                r[0]
+                for r in session.execute(
+                    select(Order.order_id).where(Order.valid_date == valid_date)
+                ).all()
+            ]
+            mapping_count = 0
+            if sig_ids:
+                mapping_count = session.execute(
+                    delete(OrderSignalMap).where(OrderSignalMap.signal_id.in_(sig_ids))
+                ).rowcount or 0
+            sig_count = session.execute(
+                delete(RawSignal).where(RawSignal.valid_date == valid_date)
+            ).rowcount or 0
+            order_count = session.execute(
+                delete(Order).where(Order.valid_date == valid_date)
+            ).rowcount or 0
+            session.commit()
+        return {
+            "raw_signals": sig_count,
+            "orders": order_count,
+            "order_signal_map": mapping_count,
+        }
+
+    def reset_instance_states(self) -> dict[str, dict]:
+        """把所有 instance_state 的 virtual_cash 还原成 strategies.yaml 初始值，
+        virtual_positions 清空。配合 /admin/clear-state?include_instance_state=true。
+        """
+        instances = self._load_instances()
+        result = {}
+        with self.session_factory() as session:
+            existing = {
+                row.instance_id: row
+                for row in session.execute(select(InstanceState)).scalars().all()
+            }
+            for inst in instances:
+                instance_id = inst["instance_id"]
+                if instance_id in existing:
+                    row = existing[instance_id]
+                    row.virtual_cash = inst["virtual_initial_cash"]
+                    row.virtual_positions = {}
+                    row.last_update = _now_iso()
+                    result[instance_id] = {
+                        "cash": inst["virtual_initial_cash"],
+                        "positions": {},
+                    }
             session.commit()
         return result

@@ -8,6 +8,7 @@ from sqlalchemy import Engine
 from sqlalchemy.orm import sessionmaker
 
 from app.db import init_db, make_engine, make_session_factory
+from app.services.blacklist import BlacklistService
 from app.services.ingest import IngestService
 from app.services.orders_queue import OrdersQueueService
 from app.settings import Settings, get_settings
@@ -43,6 +44,12 @@ def get_orders_queue_service(
     sf: sessionmaker = Depends(get_session_factory),
 ) -> OrdersQueueService:
     return OrdersQueueService(session_factory=sf)
+
+
+def get_blacklist_service(
+    sf: sessionmaker = Depends(get_session_factory),
+) -> BlacklistService:
+    return BlacklistService(session_factory=sf)
 
 
 from app.services.settlement import SettlementService
@@ -84,6 +91,7 @@ def get_strategy_pipeline(
     store: ParquetStore = Depends(get_parquet_store),
     orders_queue: OrdersQueueService = Depends(get_orders_queue_service),
     perf: PerfService = Depends(get_perf_service),
+    blacklist: BlacklistService = Depends(get_blacklist_service),
 ) -> StrategyPipeline:
     return StrategyPipeline(
         registry=_strategy_registry(str(settings.plugins_dir)),
@@ -94,6 +102,7 @@ def get_strategy_pipeline(
         orders_queue=orders_queue,
         perf=perf,
         strategies_yaml_path=Path(settings.strategies_file),
+        blacklist=blacklist,
     )
 
 

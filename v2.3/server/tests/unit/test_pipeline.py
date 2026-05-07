@@ -180,3 +180,114 @@ def test_pipeline_runs_perf_snapshot(setup):
         snap = s.get(PerfSnapshot, ("real_A_noop", "20260430"))
         assert snap is not None
         assert snap.nav == 1000.0
+
+
+def test_pipeline_idempotent_same_date_no_dupes(setup):
+    """同一 trade_date 调 pipeline 多次，不应出现重复 raw_signals/orders。
+
+    Regression：2026-05-07 凌晨触发了两次 trade_date=20260507 → 1346 dupe orders。
+    """
+    pipeline, sf, store, yaml_path = setup
+    _write_yaml(yaml_path, {
+        "account_groups": [{
+            "group_id": "real_A",
+            "qmt_account_id": "X",
+            "strategies": [{"strategy_id": "always_buy", "virtual_initial_cash": 100000}],
+        }],
+    })
+
+    summary1 = pipeline.run(20260430)
+    assert summary1["signals"] == 1
+    assert summary1["orders"] == 1
+
+    # 第二次触发：应清掉第一次的 + 写一份新的
+    summary2 = pipeline.run(20260430)
+    assert summary2["signals"] == 1
+    assert summary2["orders"] == 1
+
+    # 数据库里只有 1 条 raw_signal + 1 条 order（不是 2 条）
+    with sf() as s:
+        sigs = s.execute(
+            __import__("sqlalchemy").select(RawSignalRow)
+            .where(RawSignalRow.valid_date == "20260430")
+        ).scalars().all()
+        assert len(sigs) == 1, f"幂等失效：第二次跑后 raw_signals 应该 1 条，实际 {len(sigs)}"
+
+        orders = s.execute(
+            __import__("sqlalchemy").select(Order)
+            .where(Order.valid_date == "20260430")
+        ).scalars().all()
+        assert len(orders) == 1, f"幂等失效：第二次跑后 orders 应该 1 条，实际 {len(orders)}"
+
+
+def test_pipeline_blacklist_filters_strategy(setup):
+    """pipeline 应自动从过去 N 天 REJECTED orders 提取黑名单，传给 ctx。"""
+    from app.models import Order as OrderRow
+
+    pipeline, sf, store, yaml_path = setup
+
+    # 注入历史 REJECTED：模拟 600519.SH 之前被 QMT 拒过
+    with sf() as s:
+        s.add(OrderRow(
+            order_id="hist-rej-1", account_group="real_A",
+            symbol="600519.SH", direction="BUY", quantity=100, limit_price=10.0,
+            valid_date="20260501", status="REJECTED", created_at=_now(),
+        ))
+        s.commit()
+
+    # 写一个会读 ctx.is_blacklisted 的策略
+    class BlacklistAwareStrategy(Strategy):
+        name = "bl_aware"
+        def run(self, ctx, trade_date):
+            if ctx.is_blacklisted("600519.SH"):
+                return []
+            return [RawSignal(
+                symbol="600519.SH", direction="BUY", quantity=100,
+                reference_price=10.0, price_offset=0.005,
+            )]
+
+    pipeline.registry["bl_aware"] = BlacklistAwareStrategy
+    _write_yaml(yaml_path, {
+        "account_groups": [{
+            "group_id": "real_A",
+            "qmt_account_id": "X",
+            "strategies": [{"strategy_id": "bl_aware", "virtual_initial_cash": 100000}],
+        }],
+    })
+
+    summary = pipeline.run(20260507)
+    # 黑名单生效 → 0 signals
+    assert summary["signals"] == 0
+    assert summary["orders"] == 0
+
+
+def test_pipeline_reset_instance_states(setup):
+    """reset_instance_states 应把 cash 还原成 yaml 初始值，positions 清空。"""
+    pipeline, sf, store, yaml_path = setup
+    _write_yaml(yaml_path, {
+        "account_groups": [{
+            "group_id": "real_A",
+            "qmt_account_id": "X",
+            "strategies": [{"strategy_id": "always_buy", "virtual_initial_cash": 100000}],
+        }],
+    })
+    # 先创建 instance_state（通过 run 一次）
+    pipeline.run(20260430)
+
+    # 手动改成异常状态
+    with sf() as s:
+        inst = s.get(InstanceState, "real_A_always_buy")
+        inst.virtual_cash = -999999.0
+        inst.virtual_positions = {"600519.SH": 1000}
+        s.commit()
+
+    # reset
+    result = pipeline.reset_instance_states()
+    assert "real_A_always_buy" in result
+    assert result["real_A_always_buy"]["cash"] == 100000.0
+    assert result["real_A_always_buy"]["positions"] == {}
+
+    with sf() as s:
+        inst = s.get(InstanceState, "real_A_always_buy")
+        assert inst.virtual_cash == 100000.0
+        assert inst.virtual_positions == {}

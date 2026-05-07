@@ -147,11 +147,28 @@ class SettlementService:
             sym = order.symbol
             cash_delta = filled_price * split_qty
             if order.direction == "BUY":
+                # 防穿仓：现金不够就拒绝（避免重复 fill 把虚拟账本扣穿）
+                if inst.virtual_cash < cash_delta:
+                    logger.warning(
+                        "instance %s 现金不足拒绝 BUY fill: cash=%.2f < cost=%.2f sym=%s qty=%d "
+                        "（可能是 dupe orders 导致；已忽略此 fill 的账本更新）",
+                        sig.instance_id, inst.virtual_cash, cash_delta, sym, split_qty,
+                    )
+                    continue
                 inst.virtual_cash = inst.virtual_cash - cash_delta
                 positions[sym] = positions.get(sym, 0) + split_qty
             else:  # SELL
+                # 防超卖：持仓不够就拒绝
+                cur_qty = positions.get(sym, 0)
+                if cur_qty < split_qty:
+                    logger.warning(
+                        "instance %s 持仓不足拒绝 SELL fill: holding=%d < sell=%d sym=%s "
+                        "（可能是 dupe orders；已忽略此 fill 的账本更新）",
+                        sig.instance_id, cur_qty, split_qty, sym,
+                    )
+                    continue
                 inst.virtual_cash = inst.virtual_cash + cash_delta
-                new_qty = positions.get(sym, 0) - split_qty
+                new_qty = cur_qty - split_qty
                 if new_qty <= 0:
                     positions.pop(sym, None)
                 else:

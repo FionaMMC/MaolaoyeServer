@@ -168,3 +168,110 @@ start_date: "2024-04-03"
     V20HAdapter._pred_df = None
     V20HAdapter._v12_series = None
     V20HAdapter._index_close = None
+
+
+def test_adapter_filters_blacklisted_symbols(tmp_path, monkeypatch):
+    """ctx.risk_blacklist 里的 symbol 不应出现在输出 signals 里。"""
+    import plugins.v20h_adapter as adapter_mod
+    from plugins.v20h_adapter import V20HAdapter
+    from app.storage.parquet import ParquetStore
+    from app.strategy.context import Context
+
+    fake_data_dir = tmp_path / "data"
+    fake_data_dir.mkdir()
+
+    n_stocks = 20
+    codes6 = [f"60{i:04d}" for i in range(n_stocks)]
+    closes = [float(10 + i) for i in range(n_stocks)]
+    pred = pd.DataFrame({
+        "date": [pd.Timestamp("20240403")] * n_stocks,
+        "code": codes6,
+        "close": closes,
+        "prob_top": [0.9 - i * 0.01 for i in range(n_stocks)],
+        "excess_ret": [0.01 - i * 0.0005 for i in range(n_stocks)],
+    })
+    pred.to_parquet(fake_data_dir / "pred_csi1000.parquet")
+
+    v12_dates = pd.date_range("20240401", periods=5, freq="B")
+    v12 = pd.DataFrame({"exposure": [0.5] * 5}, index=v12_dates)
+    v12.index.name = None
+    v12.to_parquet(fake_data_dir / "v12_exp_hs300.parquet")
+
+    idx_dates = pd.date_range("20240401", periods=5, freq="B")
+    idx_df = pd.DataFrame({
+        "open": [5950.0] * 5, "high": [6010.0] * 5,
+        "low": [5940.0] * 5, "close": [6005.0] * 5,
+        "volume": [0] * 5,
+    }, index=idx_dates)
+    idx_df.index.name = "date"
+    idx_df.to_parquet(fake_data_dir / "index_csi1000.parquet")
+
+    monkeypatch.setattr(adapter_mod, "_V20H_DIR", tmp_path)
+    V20HAdapter._cfg = None
+    V20HAdapter._pred_df = None
+    V20HAdapter._v12_series = None
+    V20HAdapter._index_close = None
+
+    cfg_yaml = """
+capital_init: 10_000_000
+cut_pct: 0.10
+rebal_freq: 42
+weight_cap: 1.5
+q10_quantile: 0.10
+q20_quantile: 0.20
+q40_quantile: 0.40
+q_warmup_days: 1
+use_vol_target: false
+target_vol_ann: 0.15
+vol_lookback: 20
+stock_cmn_rate: 0.0003
+min_stock_cmn: 5.0
+stamp_duty: 0.0005
+bond_yield: 0.035
+fut_cmn_rate: 0.0005
+basis_cost: 0.03
+fut_margin_ratio: 0.15
+roll_cost_bps: 10
+lot_size: 100
+cash_buffer: 0.02
+start_date: "2024-04-03"
+"""
+    (tmp_path / "config.yaml").write_text(cfg_yaml, encoding="utf-8")
+
+    store = ParquetStore(root=tmp_path / "parquet")
+    for code6, close in zip(codes6, closes):
+        store.append("stocks", f"{code6}.SH", pd.DataFrame([{
+            "trade_date": 20240403, "open": close, "high": close,
+            "low": close * 0.99, "close": close,
+            "volume": 1000, "amount": close * 1000, "suspendFlag": 0,
+        }]))
+    store.append("indexes", "000852.SH", pd.DataFrame([{
+        "trade_date": 20240403, "open": 6000, "high": 6010,
+        "low": 5990, "close": 6005, "volume": 0, "amount": 0,
+    }]))
+
+    # 拉黑前 5 只（QMT 格式 .SH）
+    blacklisted_qmt = {f"60{i:04d}.SH" for i in range(5)}
+
+    ctx = Context(
+        instance_id="paper_v20h_v20h_v1_3",
+        trade_date=20240403,
+        virtual_cash=10_000_000.0,
+        virtual_positions={},
+        parquet_store=store,
+        risk_blacklist=blacklisted_qmt,
+    )
+
+    adapter = V20HAdapter()
+    signals = adapter.run(ctx, 20240403)
+
+    output_symbols = {s.symbol for s in signals}
+    # 拉黑的 5 只完全不应出现
+    assert output_symbols.isdisjoint(blacklisted_qmt), (
+        f"黑名单未生效，仍出现: {output_symbols & blacklisted_qmt}"
+    )
+
+    V20HAdapter._cfg = None
+    V20HAdapter._pred_df = None
+    V20HAdapter._v12_series = None
+    V20HAdapter._index_close = None

@@ -4,9 +4,14 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 
 from app.auth import verify_api_key
-from app.dependencies import get_data_upload_service, get_strategy_pipeline
+from app.dependencies import (
+    get_blacklist_service,
+    get_data_upload_service,
+    get_strategy_pipeline,
+)
 from app.scheduler.pipeline import StrategyPipeline
 from app.schemas.common import APIResponse
+from app.services.blacklist import BlacklistService
 from app.services.data_upload import DataUploadService
 
 router = APIRouter(prefix="/admin")
@@ -54,3 +59,39 @@ async def data_status(
 ):
     info = service.status(strategy_name=strategy)
     return APIResponse[dict](code=0, message="ok", data=info)
+
+
+@router.post(
+    "/clear-state",
+    response_model=APIResponse[dict],
+    dependencies=[Depends(verify_api_key)],
+)
+async def clear_state(
+    date: str = Query(min_length=8, max_length=8, pattern=r"^\d{8}$"),
+    include_instance_state: bool = Query(False),
+    pipeline: StrategyPipeline = Depends(get_strategy_pipeline),
+):
+    """清除指定 trade_date 的 raw_signals + orders + order_signal_map。
+
+    include_instance_state=true 时还会把所有 InstanceState 的 virtual_cash 还原成
+    strategies.yaml 初始值、virtual_positions 清空。**慎用**——会丢失累计仓位状态。
+    """
+    cleared = pipeline._clear_for_date(date)
+    info = {"date": date, "cleared": cleared}
+    if include_instance_state:
+        reset = pipeline.reset_instance_states()
+        info["reset_instances"] = reset
+    return APIResponse[dict](code=0, message="ok", data=info)
+
+
+@router.get(
+    "/blacklist",
+    response_model=APIResponse[dict],
+    dependencies=[Depends(verify_api_key)],
+)
+async def blacklist_status(
+    lookback_days: int = Query(30, ge=1, le=3650),
+    service: BlacklistService = Depends(get_blacklist_service),
+):
+    """诊断用：返回过去 N 天 REJECTED orders 的 symbol 频次。"""
+    return APIResponse[dict](code=0, message="ok", data=service.stats(lookback_days))

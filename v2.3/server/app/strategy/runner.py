@@ -24,8 +24,10 @@ class StrategyRunner:
         self,
         trade_date: int,
         instances: list[dict],
+        risk_blacklist: set[str] | None = None,
     ) -> dict[str, list[RawSignal]]:
         results: dict[str, list[RawSignal]] = {}
+        bl = set(risk_blacklist or ())
 
         for inst in instances:
             instance_id = inst["instance_id"]
@@ -46,6 +48,7 @@ class StrategyRunner:
                 virtual_cash=inst["virtual_cash"],
                 virtual_positions=inst.get("virtual_positions", {}),
                 parquet_store=self.store,
+                risk_blacklist=bl,
             )
 
             try:

@@ -112,6 +112,19 @@ class V20HAdapter(Strategy):
                 trade_date, latest_pred_date.strftime("%Y%m%d"), lag_days,
             )
 
+        # ── 风险黑名单过滤（QMT 历史拒单的 ST/退市/未签协议 等）──────
+        blacklist_qmt = ctx.risk_blacklist()
+        if blacklist_qmt:
+            blacklist_v20h = {_qmt_to_v20h_code(s) for s in blacklist_qmt}
+            n_before = len(pred_today)
+            pred_today = pred_today[~pred_today["code"].isin(blacklist_v20h)]
+            n_dropped = n_before - len(pred_today)
+            if n_dropped > 0:
+                logger.info(
+                    "V20H risk blacklist: dropped %d/%d symbols (blacklist size=%d)",
+                    n_dropped, n_before, len(blacklist_qmt),
+                )
+
         # ── 重建 V20H 状态（无状态版本：从 ctx 派生）──────────────
         # 把当前 ctx.positions(QMT 格式) 转成 V20H 6 位 code
         ctx_positions = {

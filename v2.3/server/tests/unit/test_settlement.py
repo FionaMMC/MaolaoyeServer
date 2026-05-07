@@ -210,3 +210,65 @@ def test_settle_partial_filled_largest_remainder(tmp_path: Path):
         assert m.virtual_positions["600519.SH"] == 117
         assert r.virtual_positions["600519.SH"] == 233
         # 总合 350 ✓
+
+
+def test_settle_buy_rejects_when_cash_insufficient(tmp_path: Path):
+    """防穿仓：BUY fill 需要的现金 > virtual_cash，应跳过更新。
+
+    Regression: 5/7 凌晨 dupe orders 把 paper_v20h 现金扣到 -5.4M。修复后，重复
+    fill 进来时 settlement 应拒绝，不让账本进一步穿仓。
+    """
+    sf = _factory(tmp_path)
+    _seed(sf)
+    # 让 m 实例的现金少到不够买 100 股 × 10 元 = 1000
+    with sf() as s:
+        s.get(InstanceState, "real_A_m").virtual_cash = 500.0
+        s.commit()
+
+    svc = SettlementService(session_factory=sf)
+    svc.settle("20260430", [
+        TradeResult(order_id="oid1", filled_quantity=300, filled_price=10.0,
+                    status="FILLED"),
+    ])
+    with sf() as s:
+        m = s.get(InstanceState, "real_A_m")
+        r = s.get(InstanceState, "real_A_r")
+        # m 钱不够 → 整个 BUY fill 被忽略；现金不动，没建仓
+        assert m.virtual_cash == 500.0
+        assert m.virtual_positions == {}
+        # r 正常，扣 200 股×10 = 2000
+        assert r.virtual_cash == 2_000_000.0 - 2000.0
+        assert r.virtual_positions == {"600519.SH": 200}
+
+
+def test_settle_sell_rejects_when_position_insufficient(tmp_path: Path):
+    """防超卖：SELL fill 需要的持仓 > positions[symbol]，应跳过更新。"""
+    sf = _factory(tmp_path)
+    _seed(sf, with_state=False)
+    with sf() as s:
+        s.get(Order, "oid1").direction = "SELL"
+        s.query(RawSignal).filter_by(signal_id="s1").update({"direction": "SELL"})
+        s.query(RawSignal).filter_by(signal_id="s2").update({"direction": "SELL"})
+        # m 持仓只有 50 股（不够卖 100），r 正常
+        s.add(InstanceState(instance_id="real_A_m", virtual_cash=0.0,
+                            virtual_positions={"600519.SH": 50},
+                            last_update=_now()))
+        s.add(InstanceState(instance_id="real_A_r", virtual_cash=0.0,
+                            virtual_positions={"600519.SH": 200},
+                            last_update=_now()))
+        s.commit()
+
+    svc = SettlementService(session_factory=sf)
+    svc.settle("20260430", [
+        TradeResult(order_id="oid1", filled_quantity=300, filled_price=10.0,
+                    status="FILLED"),
+    ])
+    with sf() as s:
+        m = s.get(InstanceState, "real_A_m")
+        r = s.get(InstanceState, "real_A_r")
+        # m 持仓不够 → fill 被忽略
+        assert m.virtual_cash == 0.0
+        assert m.virtual_positions == {"600519.SH": 50}
+        # r 正常成交
+        assert r.virtual_cash == 2000.0
+        assert r.virtual_positions == {"600519.SH": 0} or r.virtual_positions == {}
