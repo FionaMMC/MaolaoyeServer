@@ -191,6 +191,9 @@ def _risk_check(trader, acc, qmt_account_id: str, orders: list[dict]) -> tuple[l
 
     pass_orders: list[dict] = []
     fail_orders: list[dict] = []
+    # 关键：依赖调用方已经把 SELL 排在 BUY 前面。
+    # SELL 通过时 += 预期回笼现金（乐观假设全成交），让后面的 BUY 能用上。
+    # 集合竞价场景下 SELL/BUY 同步匹配，这个乐观估计接近真实。
     for order in orders:
         sym   = order["symbol"]
         qty   = order["quantity"]
@@ -203,7 +206,7 @@ def _risk_check(trader, acc, qmt_account_id: str, orders: list[dict]) -> tuple[l
             else:
                 reason = (
                     f"资金不足：{sym} BUY {qty}@{price} 需 {required:.2f} 元，"
-                    f"账户剩余可用 {remaining_cash:.2f} 元"
+                    f"账户剩余可用 {remaining_cash:.2f} 元（含预期 SELL 回笼）"
                 )
                 log.warning(reason)
                 fail_orders.append({**order, "fail_reason": reason})
@@ -211,6 +214,7 @@ def _risk_check(trader, acc, qmt_account_id: str, orders: list[dict]) -> tuple[l
             available = remaining_pos.get(sym, 0)
             if available >= qty:
                 remaining_pos[sym] = available - qty
+                remaining_cash += qty * price  # 预期 SELL 回笼现金给后面 BUY 用
                 pass_orders.append(order)
             else:
                 reason = f"持仓不足：{sym} SELL {qty} 股，账户可用 {available} 股"
@@ -254,7 +258,16 @@ def main():
     if not orders:
         log.info(f"{trade_date} 无 server_orders 记录，退出")
         return
-    log.info(f"{trade_date} 共 {len(orders)} 条订单")
+
+    # 关键：SELL 排在 BUY 前面执行
+    # V20H 的 SELL→BUY 周转逻辑依赖卖出回笼现金来覆盖 BUY 成本。
+    # FIFO 风控如果先吃 BUY，会因 cash 不足误拒 BUY，且这些 BUY 会被服务器
+    # auto-promote 进黑名单（错杀好股票）。SELL 优先能避免这个问题。
+    orders.sort(key=lambda o: (0 if o["direction"] == "SELL" else 1,
+                                o["account_group"], o["symbol"]))
+    n_sell = sum(1 for o in orders if o["direction"] == "SELL")
+    n_buy = sum(1 for o in orders if o["direction"] == "BUY")
+    log.info(f"{trade_date} 共 {len(orders)} 条订单 (SELL={n_sell} BUY={n_buy}, SELL 优先排序)")
 
     group_qmt_map: dict[str, str | None] = {}
     for order in orders:
