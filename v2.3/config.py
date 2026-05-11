@@ -9,10 +9,11 @@ import logging
 import os
 from logging.handlers import TimedRotatingFileHandler
 
+import requests
 import yaml
 
 # ── 路径 ──────────────────────────────────────────────────────────────────────
-QMT_USERDATA_DIR = r"C:\parttime\平安证券量盈QMT策略交易平台\userdata_mini"
+QMT_USERDATA_DIR = r"C:\parttime\pazq_qmt_simulate\平安证券量盈QMT策略交易平台\userdata_mini"
 
 _V23_DIR        = os.path.dirname(os.path.abspath(__file__))
 DB_PATH         = os.path.join(_V23_DIR, "pipeline.db")
@@ -31,6 +32,11 @@ QMT_SESSION_ID = 12345681   # 与 v2(12345678)、v2.1(12345679)、v2.2(12345680)
 # 例：export QMT_PIPELINE_BASE_URL=http://120.26.138.82:8000
 SERVER_BASE_URL = os.environ.get("QMT_PIPELINE_BASE_URL", "")
 API_KEY         = os.environ.get("QMT_PIPELINE_API_KEY", "")
+
+# ── 微信通知（企业微信机器人 webhook）─────────────────────────────────────────
+# 创建方式：企业微信 → 建群（可以只有自己）→ 群设置 → 群机器人 → 添加 → 复制 webhook 地址
+# 填入环境变量 QMT_PIPELINE_WECOM_WEBHOOK；留空则只记日志不发微信。
+WECOM_WEBHOOK_URL = os.environ.get("QMT_PIPELINE_WECOM_WEBHOOK", "")
 
 # ── 推送模式 ──────────────────────────────────────────────────────────────────
 # "server"   : 真实服务器（生产 / 实盘联调）— 默认
@@ -145,3 +151,34 @@ def get_qmt_account_id(account_group: str) -> str | None:
         if ag["group_id"] == account_group:
             return ag.get("qmt_account_id") or None
     return None
+
+
+# ── 微信通知 ──────────────────────────────────────────────────────────────────
+def notify_wecom(message: str, level: str = "info") -> bool:
+    """企业微信 webhook 推送。level: "info"（通知）或 "alert"（报警）。
+
+    Returns: True=推送成功，False=失败或未配置。不抛异常。
+    """
+    if not WECOM_WEBHOOK_URL:
+        # 不记录日志——未配置 webhook 是正常场景
+        return False
+    prefix = "[报警] " if level == "alert" else ""
+    try:
+        resp = requests.post(
+            WECOM_WEBHOOK_URL,
+            json={"msgtype": "text", "text": {"content": prefix + message}},
+            timeout=10,
+        )
+        data = resp.json()
+        errcode = data.get("errcode", -1)
+        if errcode != 0:
+            import logging
+            logging.getLogger("v23.config").error(
+                f"[微信通知失败] errcode={errcode} errmsg={data.get('errmsg','')} msg_len={len(message)}"
+            )
+            return False
+        return True
+    except Exception as e:
+        import logging
+        logging.getLogger("v23.config").error(f"[微信通知异常] {e}")
+        return False

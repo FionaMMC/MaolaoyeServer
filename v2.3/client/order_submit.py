@@ -6,7 +6,6 @@ mock_qmt 模式：跳过 QMT 连接，从 mock_data/qmt_state_mock.json 读取�
 
 import os
 import sqlite3
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 from xtquant import xtconstant, xtdata
@@ -25,8 +24,15 @@ log = config.setup_logger("order_submit")
 _mock_order_seq = 10000   # mock_qmt 模式下的委托编号起始值
 
 
-def _wechat_alert(msg: str) -> None:  log.error(f"[微信报警（占位）] {msg}")
-def _wechat_notify(msg: str) -> None: log.info(f"[微信通知（占位）] {msg}")
+def _wechat_alert(msg: str) -> None:
+    log.error(f"[微信报警] {msg}")
+    if not config.notify_wecom(msg, level="alert"):
+        log.error(f"[微信报警] 推送失败：{msg}")
+
+def _wechat_notify(msg: str) -> None:
+    log.info(f"[微信通知] {msg}")
+    if not config.notify_wecom(msg, level="info"):
+        log.error(f"[微信通知] 推送失败：{msg}")
 
 
 def startup_check() -> None:
@@ -39,8 +45,8 @@ def _init_local_orders_table() -> None:
     with sqlite3.connect(config.DB_PATH) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS local_orders (
-                local_order_id     TEXT PRIMARY KEY,
-                order_id           TEXT,
+                local_order_id     TEXT,
+                order_id           TEXT PRIMARY KEY,
                 account_group      TEXT,
                 qmt_account_id     TEXT,
                 symbol             TEXT,
@@ -62,6 +68,21 @@ def _load_today_orders(trade_date: str) -> list[dict]:
             "SELECT * FROM server_orders WHERE valid_date = ?", (trade_date,)
         )
         return [dict(row) for row in cur.fetchall()]
+
+
+def _get_already_submitted_order_ids(trade_date: str) -> set[str]:
+    """查询当天已成功提交过的 order_id（防止重复下单）。"""
+    try:
+        trade_date_str = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}"
+        with sqlite3.connect(config.DB_PATH) as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT order_id FROM local_orders "
+                "WHERE DATE(submitted_at) = ? AND submit_status = 'SUCCESS'",
+                (trade_date_str,)
+            ).fetchall()
+            return {r[0] for r in rows}
+    except Exception:
+        return set()
 
 
 def _sleep_until(hhmm: str) -> None:
@@ -229,7 +250,7 @@ def _write_local_orders(records: list[dict]) -> None:
     with sqlite3.connect(config.DB_PATH) as conn:
         for r in records:
             conn.execute("""
-                INSERT OR IGNORE INTO local_orders (
+                INSERT INTO local_orders (
                     local_order_id, order_id, account_group, qmt_account_id,
                     symbol, direction, submitted_price, submitted_quantity,
                     submitted_at, submit_status, fail_reason
@@ -257,6 +278,20 @@ def main():
     orders = _load_today_orders(trade_date)
     if not orders:
         log.info(f"{trade_date} 无 server_orders 记录，退出")
+        return
+    log.info(f"{trade_date} 从 server_orders 加载 {len(orders)} 条订单")
+
+    # 去重：跳过已在 local_orders 中成功提交过的 order_id
+    already_submitted = _get_already_submitted_order_ids(trade_date)
+    if already_submitted:
+        orders_before = len(orders)
+        orders = [o for o in orders if o["order_id"] not in already_submitted]
+        skipped = orders_before - len(orders)
+        if skipped > 0:
+            log.warning(f"去重：跳过 {skipped} 条已成功提交的订单，剩余 {len(orders)} 条待提交")
+            _wechat_notify(f"去重检查：{trade_date} 已提交 {skipped} 条，跳过，剩余 {len(orders)} 条")
+    if not orders:
+        log.info(f"{trade_date} 全部订单已提交过，退出")
         return
 
     # 关键：SELL 排在 BUY 前面执行
@@ -344,21 +379,16 @@ def main():
                     })
                 if not pass_orders:
                     continue
-                with ThreadPoolExecutor(max_workers=min(len(pass_orders), 8)) as executor:
-                    futures = {
-                        executor.submit(_submit_single, xt_trader, acc, qmt_id, o, submitted_at): o
-                        for o in pass_orders
-                    }
-                    for future in as_completed(futures):
-                        record = future.result()
-                        all_records.append(record)
-                        log.info(
-                            f"  {record['symbol']} {record['direction']} "
-                            f"qty={record['submitted_quantity']} price={record['submitted_price']} "
-                            f"→ {record['submit_status']}"
-                        )
-                        if record["submit_status"] == "FAILED":
-                            _wechat_alert(f"QMT 下单失败：{record['symbol']} account={ag}，{record['fail_reason']}")
+                for o in pass_orders:
+                    record = _submit_single(xt_trader, acc, qmt_id, o, submitted_at)
+                    all_records.append(record)
+                    log.info(
+                        f"  {record['symbol']} {record['direction']} "
+                        f"qty={record['submitted_quantity']} price={record['submitted_price']} "
+                        f"→ {record['submit_status']}"
+                    )
+                    if record["submit_status"] == "FAILED":
+                        _wechat_alert(f"QMT 下单失败：{record['symbol']} account={ag}，{record['fail_reason']}")
         finally:
             xt_trader.stop()
 

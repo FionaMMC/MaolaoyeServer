@@ -9,7 +9,7 @@ account_groups:
         virtual_initial_cash: 500000
 
   - group_id: paper_v20h          # 新加：纯虚拟测试组
-    qmt_account_id: ""             # 留空，dry-run 不下单
+    qmt_account_id: "301300148788"             # 留空，dry-run 不下单
     strategies:
       - strategy_id: v20h_v1_3
         virtual_initial_cash: 10000000

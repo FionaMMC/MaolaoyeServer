@@ -22,8 +22,15 @@ xtdata.data_dir = config.QMT_USERDATA_DIR
 log = config.setup_logger("order_query")
 
 
-def _wechat_alert(msg: str) -> None:  log.error(f"[微信报警（占位）] {msg}")
-def _wechat_notify(msg: str) -> None: log.info(f"[微信通知（占位）] {msg}")
+def _wechat_alert(msg: str) -> None:
+    log.error(f"[微信报警] {msg}")
+    if not config.notify_wecom(msg, level="alert"):
+        log.error(f"[微信报警] 推送失败：{msg}")
+
+def _wechat_notify(msg: str) -> None:
+    log.info(f"[微信通知] {msg}")
+    if not config.notify_wecom(msg, level="info"):
+        log.error(f"[微信通知] 推送失败：{msg}")
 
 
 def startup_check() -> None:

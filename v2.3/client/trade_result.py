@@ -32,8 +32,15 @@ _CANCELLED_STATUSES = {
 }
 
 
-def _wechat_alert(msg: str) -> None:  log.error(f"[微信报警（占位）] {msg}")
-def _wechat_notify(msg: str) -> None: log.info(f"[微信通知（占位）] {msg}")
+def _wechat_alert(msg: str) -> None:
+    log.error(f"[微信报警] {msg}")
+    if not config.notify_wecom(msg, level="alert"):
+        log.error(f"[微信报警] 推送失败：{msg}")
+
+def _wechat_notify(msg: str) -> None:
+    log.info(f"[微信通知] {msg}")
+    if not config.notify_wecom(msg, level="info"):
+        log.error(f"[微信通知] 推送失败：{msg}")
 
 
 def startup_check() -> None:
@@ -50,8 +57,8 @@ def _init_trades_table() -> None:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS trades (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                local_order_id  TEXT UNIQUE,
-                order_id        TEXT,
+                local_order_id  TEXT,
+                order_id        TEXT UNIQUE,
                 filled_quantity INTEGER,
                 filled_price    REAL,
                 filled_time     TEXT,
@@ -61,6 +68,41 @@ def _init_trades_table() -> None:
             )
         """)
         conn.commit()
+    # 兼容旧表：如果旧表 local_order_id 有 UNIQUE 约束，做迁移
+    _migrate_trades_if_needed()
+
+
+def _migrate_trades_if_needed() -> None:
+    """如果 trades 表还在用 local_order_id TEXT UNIQUE，迁移到 order_id TEXT UNIQUE。"""
+    with sqlite3.connect(config.DB_PATH) as conn:
+        c = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='trades'")
+        row = c.fetchone()
+        if not row:
+            return
+        sql = row[0]
+        # 已迁移的标志：sql 中没有 'local_order_id  TEXT UNIQUE'
+        if 'local_order_id  TEXT UNIQUE' not in sql:
+            return
+        # 执行迁移：备份→建新表→复制→删备份
+        conn.execute("DROP TABLE IF EXISTS trades_backup")
+        conn.execute("ALTER TABLE trades RENAME TO trades_backup")
+        conn.execute("""
+            CREATE TABLE trades (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                local_order_id  TEXT,
+                order_id        TEXT UNIQUE,
+                filled_quantity INTEGER,
+                filled_price    REAL,
+                filled_time     TEXT,
+                status          TEXT,
+                reported_at     TEXT,
+                report_status   TEXT
+            )
+        """)
+        conn.execute("INSERT OR IGNORE INTO trades SELECT * FROM trades_backup")
+        conn.execute("DROP TABLE trades_backup")
+        conn.commit()
+        log.info("trades 表已迁移：UNIQUE 从 local_order_id 改为 order_id")
 
 
 def _load_today_local_orders(trade_date: str) -> list[dict]:
@@ -86,7 +128,89 @@ def _to_iso(traded_time: int) -> str:
     return datetime.fromtimestamp(traded_time).isoformat()
 
 
-def _connect_qmt_and_query(qmt_account_ids: list[str]) -> tuple[list, dict]:
+def _auto_backfill_from_qmt(trade_date: str, qmt_orders: list) -> int:
+    """以 QMT 实际委托为准，将缺失的委托补录到 local_orders。
+    只处理 strategy_name='pipeline_v21' 的竞价订单，
+    通过 order_remark（截断的 UUID）前缀匹配 server_orders。
+    返回补录条数。"""
+    pipeline = [o for o in qmt_orders
+                if getattr(o, 'strategy_name', None) == 'pipeline_v21']
+    if not pipeline:
+        return 0
+
+    remark_map = {}
+    for o in pipeline:
+        remark = getattr(o, 'order_remark', None) or getattr(o, 'm_strOrderRemark', None)
+        if remark and len(remark) >= 20:
+            qmt_oid = getattr(o, 'order_id', None) or getattr(o, 'm_nOrderID', None)
+            ot = getattr(o, 'order_time', None) or getattr(o, 'm_nOrderTime', None)
+            remark_map[remark] = (qmt_oid, ot)
+
+    if not remark_map:
+        return 0
+
+    with sqlite3.connect(config.DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute("""
+            SELECT * FROM server_orders
+            WHERE valid_date = ? AND order_id NOT IN (
+                SELECT order_id FROM local_orders
+            )
+        """, (trade_date,))
+        missing = [dict(r) for r in cur.fetchall()]
+
+    if not missing:
+        return 0
+
+    records = []
+    submitted_at = datetime.now().isoformat()
+    qmt_account_id = config.get_qmt_account_id("paper_v20h") or "301300148788"
+
+    for m in missing:
+        oid_prefix = m["order_id"][:20]
+        for remark, (qmt_oid, order_time) in remark_map.items():
+            if remark.startswith(oid_prefix):
+                iso_time = submitted_at
+                if order_time and order_time > 1000000000:
+                    iso_time = datetime.fromtimestamp(order_time).isoformat()
+                records.append({
+                    "local_order_id": str(qmt_oid),
+                    "order_id": m["order_id"],
+                    "account_group": m["account_group"],
+                    "qmt_account_id": qmt_account_id,
+                    "symbol": m["symbol"],
+                    "direction": m["direction"],
+                    "submitted_price": m["limit_price"],
+                    "submitted_quantity": m["quantity"],
+                    "submitted_at": iso_time,
+                    "submit_status": "SUCCESS",
+                    "fail_reason": None,
+                })
+                break
+
+    if records:
+        with sqlite3.connect(config.DB_PATH) as conn:
+            for r in records:
+                try:
+                    conn.execute("""
+                        INSERT INTO local_orders (
+                            local_order_id, order_id, account_group, qmt_account_id,
+                            symbol, direction, submitted_price, submitted_quantity,
+                            submitted_at, submit_status, fail_reason
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                    """, (r["local_order_id"], r["order_id"], r["account_group"],
+                         r["qmt_account_id"], r["symbol"], r["direction"],
+                         r["submitted_price"], r["submitted_quantity"],
+                         r["submitted_at"], r["submit_status"], r["fail_reason"]))
+                except sqlite3.IntegrityError:
+                    pass
+            conn.commit()
+        log.warning(f"自动补录 {len(records)} 笔缺失委托（QMT 有但本地 DB 无）")
+
+    return len(records)
+
+
+def _connect_qmt_and_query(qmt_account_ids: list[str]) -> tuple[list, dict, list]:
     xt_trader = XtQuantTrader(config.QMT_USERDATA_DIR, config.QMT_SESSION_ID)
     xt_trader.register_callback(XtQuantTraderCallback())
     xt_trader.start()
@@ -114,7 +238,7 @@ def _connect_qmt_and_query(qmt_account_ids: list[str]) -> tuple[list, dict]:
     if all_trades:
         log.info(f"[诊断] traded_time 样例原始值：{all_trades[0].traded_time}")
     orders_map = {o.order_id: o for o in all_orders}
-    return all_trades, orders_map
+    return all_trades, orders_map, all_orders
 
 
 def _mock_qmt_query(local_orders: list[dict]) -> tuple[list, dict]:
@@ -278,15 +402,22 @@ def main():
 
     if config.PUSH_MODE == "mock_qmt":
         xt_trades, orders_map = _mock_qmt_query(local_orders)
+        all_orders_raw = []
     else:
         qmt_account_ids = list({lo["qmt_account_id"] for lo in local_orders})
         log.info(f"涉及账户：{qmt_account_ids}")
         try:
-            xt_trades, orders_map = _connect_qmt_and_query(qmt_account_ids)
+            xt_trades, orders_map, all_orders_raw = _connect_qmt_and_query(qmt_account_ids)
         except RuntimeError as e:
             _wechat_alert(str(e))
             return
         log.info(f"QMT 返回：成交 {len(xt_trades)} 笔，委托 {len(orders_map)} 笔")
+        # 以 QMT 实际委托为准，自动补录本地缺失的订单
+        backfilled = _auto_backfill_from_qmt(trade_date, all_orders_raw)
+        if backfilled > 0:
+            _wechat_notify(f"成交回报：自动补录 {backfilled} 笔缺失委托（QMT 实际有但本地 DB 无）")
+            local_orders = _load_today_local_orders(trade_date)
+            log.info(f"补录后委托 {len(local_orders)} 笔")
 
     agg_trades = _aggregate_trades(xt_trades)
     log.info(f"聚合后：{len(agg_trades)} 个委托有成交")
