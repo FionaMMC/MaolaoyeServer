@@ -7,6 +7,7 @@ mock_qmt 模式：跳过 xtdata.get_trading_calendar()，直接用 config.MOCK_T
 import os
 import sqlite3
 import time
+from collections import defaultdict
 from datetime import datetime, timedelta
 
 import requests
@@ -183,10 +184,18 @@ def main():
     written     = _write_server_orders(orders, next_date, received_at)
     log.info(f"写入 server_orders：新增 {written} 条")
 
-    symbols = [o.get("symbol", "") for o in orders if o.get("valid_date") == next_date]
-    suffix  = "..." if len(symbols) > 5 else ""
+    # 按账户/方向汇总
+    by_acct = defaultdict(lambda: {"BUY": 0, "SELL": 0})
+    for o in orders:
+        d = o.get("direction", "")
+        if d in ("BUY", "SELL"):
+            by_acct[o.get("account_group", "?")][d] += 1
+    parts = []
+    for acct in sorted(by_acct.keys()):
+        b = by_acct[acct]
+        parts.append(f"{acct} 买入{b['BUY']}笔，卖出{b['SELL']}笔")
     _wechat_notify(
-        f"订单拉取 {next_date}：共 {len(orders)} 条委托（{', '.join(symbols[:5])}{suffix}）"
+        f"order_query {next_date}：共 {len(orders)} 条委托，其中 {'；'.join(parts)}"
     )
     log.info("=== order_query 完成 ===")
 

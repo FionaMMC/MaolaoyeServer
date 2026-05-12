@@ -3,7 +3,7 @@
 
 account_groups:
   - group_id: real_A
-    qmt_account_id: "1234567890"
+    qmt_account_id: ""             # 示例策略，不下单
     strategies:
       - strategy_id: buy_on_dip_example
         virtual_initial_cash: 500000

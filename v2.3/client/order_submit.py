@@ -6,6 +6,7 @@ mock_qmt 模式：跳过 QMT 连接，从 mock_data/qmt_state_mock.json 读取�
 
 import os
 import sqlite3
+from collections import defaultdict
 from datetime import datetime
 
 from xtquant import xtconstant, xtdata
@@ -395,9 +396,22 @@ def main():
     _write_local_orders(all_records)
     success = sum(1 for r in all_records if r["submit_status"] == "SUCCESS")
     failed  = sum(1 for r in all_records if r["submit_status"] == "FAILED")
-    summary = f"成功 {success} 笔，失败 {failed} 笔"
+    # 按账户/方向汇总成功订单
+    by_acct = defaultdict(lambda: {"BUY": 0, "SELL": 0})
+    for r in all_records:
+        if r["submit_status"] == "SUCCESS":
+            d = r.get("direction", "")
+            if d in ("BUY", "SELL"):
+                by_acct[r.get("account_group", "?")][d] += 1
+    parts = []
+    for acct in sorted(by_acct.keys()):
+        b = by_acct[acct]
+        parts.append(f"{acct} 买入{b['BUY']}笔，卖出{b['SELL']}笔")
+    summary = f"成功 {success} 笔" + (f"，失败 {failed} 笔" if failed else "")
     log.info(f"下单汇总：{summary}")
-    _wechat_notify(f"{trade_date} 竞价下单：{summary}")
+    _wechat_notify(
+        f"order_submit {trade_date}：{summary}，其中 {'；'.join(parts)}"
+    )
     log.info("=== order_submit 完成 ===")
 
 

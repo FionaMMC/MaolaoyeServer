@@ -18,6 +18,7 @@
 import argparse
 import os
 import sys
+from collections import defaultdict
 from datetime import datetime, timedelta
 
 import requests
@@ -87,6 +88,28 @@ def trigger(trade_date: str) -> dict | None:
     return body["data"]
 
 
+def _fetch_order_breakdown(trade_date: str) -> dict[str, dict[str, int]]:
+    """调 GET /orders 并按 (account_group, direction) 汇总。"""
+    url = config.SERVER_BASE_URL.rstrip("/") + "/orders"
+    headers = {"Authorization": f"Bearer {config.API_KEY}"}
+    try:
+        resp = requests.get(url, params={"date": trade_date}, headers=headers, timeout=30)
+        body = resp.json()
+        if body.get("code") != 0:
+            log.warning(f"GET /orders 返回 code={body.get('code')}，无法获取订单明细")
+            return {}
+        orders = body.get("data", {}).get("orders") or []
+    except Exception as e:
+        log.warning(f"GET /orders 请求异常：{e}")
+        return {}
+    by_acct: dict[str, dict[str, int]] = defaultdict(lambda: {"BUY": 0, "SELL": 0})
+    for o in orders:
+        d = o.get("direction", "")
+        if d in ("BUY", "SELL"):
+            by_acct[o["account_group"]][d] += 1
+    return dict(by_acct)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--date", help="trade_date YYYYMMDD（默认下一交易日）")
@@ -135,9 +158,17 @@ def main():
         )
         _wechat_notify(f"trigger_pipeline {trade_date}：信号 0，请检查上游 pred")
     else:
-        _wechat_notify(
-            f"trigger_pipeline {trade_date}：成功生成 {data['orders']} 单"
-        )
+        # 拉取订单明细按账户/方向汇总
+        breakdown = _fetch_order_breakdown(trade_date)
+        if breakdown:
+            parts = []
+            for acct in sorted(breakdown.keys()):
+                b = breakdown[acct]
+                parts.append(f"{acct} 买入{b['BUY']}笔，卖出{b['SELL']}笔")
+            msg = f"trigger_pipeline {trade_date}：成功生成 {data['orders']} 单，其中 {'；'.join(parts)}"
+        else:
+            msg = f"trigger_pipeline {trade_date}：成功生成 {data['orders']} 单"
+        _wechat_notify(msg)
 
     log.info("=== trigger_pipeline 完成 ===")
 
