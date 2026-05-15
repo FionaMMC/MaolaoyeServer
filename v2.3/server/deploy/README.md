@@ -208,7 +208,58 @@ systemctl restart qmt-server
 
 ---
 
-## 10. 切换 nginx + HTTPS（可选，上线推荐）
+## 10. 服务硬化（生产必做）
+
+### 10a. systemd 沙箱
+
+unit 已带（参见 `qmt-server.service` `[Service]` 末尾）：
+
+- `NoNewPrivileges` `PrivateTmp` `ProtectSystem=strict` `ProtectHome`
+- `ReadWritePaths=/opt/qmt-server/v2.3/server /var/log/qmt-server`
+- `ProtectKernel{Tunables,Modules}` `ProtectControlGroups`
+- `RestrictNamespaces` `RestrictRealtime` `LockPersonality`
+- `SystemCallArchitectures=native`
+
+部署时只需 `cp qmt-server.service /etc/systemd/system/ && systemctl daemon-reload && systemctl restart qmt-server`。
+
+### 10b. 日志轮转
+
+```bash
+cp /opt/qmt-server/v2.3/server/deploy/logrotate-qmt-server.conf \
+   /etc/logrotate.d/qmt-server
+logrotate -v -d /etc/logrotate.d/qmt-server   # 干跑验证
+```
+
+每天滚一次，保 14 天，gzip 压缩，`copytruncate` 避免重启服务。
+
+### 10c. UFW 白名单（推荐）
+
+```bash
+# 删僵尸规则（如装机时阿里云模板留下的）
+for p in 20 21 888 37415 39000:40000; do ufw --force delete allow $p/tcp; done
+
+# 宝塔面板 8888 收紧到管理员 IP
+ufw --force delete allow 8888/tcp
+ufw allow from <你的固定IP> to any port 8888 proto tcp
+ufw allow from 127.0.0.1 to any port 8888 proto tcp
+
+# 业务端口保留
+# 22, 80, 443, 8000 都 ALLOW Anywhere（8000 在 §11 nginx 上线后再收紧）
+
+ufw reload
+ufw status numbered
+```
+
+### 10d. 阿里云安全组（手动 console）
+
+UFW 是 OS 层，阿里云 SG 是云网层。两层都要：
+
+- 8888 → 删 `0.0.0.0/0`，加你 Mac IP/32
+- 22 → 建议也收紧到你 Mac IP/32
+
+---
+
+## 11. 切换 nginx + HTTPS（可选，上线推荐）
 
 ```bash
 apt install -y nginx certbot python3-certbot-nginx
