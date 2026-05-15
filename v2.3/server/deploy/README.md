@@ -232,30 +232,27 @@ logrotate -v -d /etc/logrotate.d/qmt-server   # 干跑验证
 
 每天滚一次，保 14 天，gzip 压缩，`copytruncate` 避免重启服务。
 
-### 10c. UFW 白名单（推荐）
+### 10c. UFW 清理（推荐）
 
 ```bash
-# 删僵尸规则（如装机时阿里云模板留下的）
+# 删僵尸规则（装机时模板留下的、没真用的端口）
 for p in 20 21 888 37415 39000:40000; do ufw --force delete allow $p/tcp; done
 
-# 宝塔面板 8888 收紧到管理员 IP
-ufw --force delete allow 8888/tcp
-ufw allow from <你的固定IP> to any port 8888 proto tcp
-ufw allow from 127.0.0.1 to any port 8888 proto tcp
-
-# 业务端口保留
-# 22, 80, 443, 8000 都 ALLOW Anywhere（8000 在 §11 nginx 上线后再收紧）
+# 业务端口保留:
+# 22 (SSH), 80, 443, 8000 (业务), 8888 (宝塔) 都 ALLOW Anywhere
 
 ufw reload
 ufw status numbered
 ```
 
-### 10d. 阿里云安全组（手动 console）
+### 10d. 端口收紧（可选，需要 server 实际持有者决策）
 
-UFW 是 OS 层，阿里云 SG 是云网层。两层都要：
+22 (SSH) 和 8888 (BT-Panel) 是否要 IP 白名单，取决于**持有者**自己是不是固定 IP 上网：
 
-- 8888 → 删 `0.0.0.0/0`，加你 Mac IP/32
-- 22 → 建议也收紧到你 Mac IP/32
+- **有固定 IP**：UFW + 阿里云 SG 双层各加 `allow from <持有者IP>/32`，公网默认 deny
+- **动态 IP / 经常出差换网**：保持 ALLOW Anywhere，靠 BT-Panel `/<entry_path>/` + 强密码 + 22 SSH key-only（禁密码登录）
+
+> ⚠️ 不要把白名单设成"运维助理"（非持有者）的 IP——会把持有者自己锁出去。
 
 ---
 
