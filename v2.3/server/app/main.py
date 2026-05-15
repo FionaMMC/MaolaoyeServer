@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.api import admin, admin_query, health, market_data, orders, trade_result
+from app.api import admin, admin_query, dashboard, health, market_data, orders, trade_result
 from app.exceptions import APIError, ErrorCode
 from app.logging_setup import get_logger, setup_logging
 from app.settings import Settings, get_settings
@@ -73,6 +73,7 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
     app.include_router(trade_result.router, tags=["trade-result"])
     app.include_router(admin.router, tags=["admin"])
     app.include_router(admin_query.router, tags=["admin-query"])
+    app.include_router(dashboard.router, tags=["dashboard"])
 
     if settings_override is not None:
         app.dependency_overrides[get_settings] = lambda: settings_override
