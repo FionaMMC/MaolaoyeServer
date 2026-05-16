@@ -38,5 +38,11 @@ roll_cost_bps: 10         # 季度展期 10 bps
 lot_size: 100             # A 股 100 股一手
 cash_buffer: 0.02         # 2% 现金缓冲
 
+# 账户权限：剔除账户不能交易的板块前缀
+# 默认科创板 688/689（QMT 无开通时永远 REJECTED）
+excluded_symbol_prefixes:
+  - "688"
+  - "689"
+
 # ─── 时间范围 ───
 start_date: "2021-04-01"  # 回测起始日 (V12 warmup 已完成)

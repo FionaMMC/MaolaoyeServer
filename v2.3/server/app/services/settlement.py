@@ -17,6 +17,16 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
+def _flag_bookkeeping_divergence(order: Order) -> None:
+    """标记一笔 order 的真账户成交与虚拟账本对账失败。
+
+    用法：settlement 在防穿仓/超卖触发时调用。order.status 保持真账户上报的值
+    （通常 FILLED/PARTIAL）；这个 flag 让 admin 端能快速找出"账面成功但账本未
+    同步"的订单做人工对账。
+    """
+    order.bookkeeping_divergence = True
+
+
 def largest_remainder_split(total: int, weights: list[int]) -> list[int]:
     """最大余数法把 total 按 weights 比例拆为整数列表（保证 sum == total）。
 
@@ -44,8 +54,30 @@ def largest_remainder_split(total: int, weights: list[int]) -> list[int]:
 class SettlementService:
     """成交回报处理服务。"""
 
-    def __init__(self, session_factory):
+    def __init__(
+        self,
+        session_factory,
+        *,
+        commission_rate: float = 0.0003,
+        min_commission: float = 5.0,
+        stamp_duty_sell: float = 0.0005,
+    ):
+        """
+        Args:
+            commission_rate: 双边佣金率（默认万三）
+            min_commission: 单笔最低佣金（默认 5 元）
+            stamp_duty_sell: 印花税（仅卖出收，默认千五）
+        """
         self.session_factory = session_factory
+        self.commission_rate = commission_rate
+        self.min_commission = min_commission
+        self.stamp_duty_sell = stamp_duty_sell
+
+    def _calc_fees(self, gross: float, direction: str) -> float:
+        """计算单边交易费用：佣金（双边）+ 印花税（仅 SELL）。"""
+        commission = max(self.min_commission, gross * self.commission_rate)
+        duty = gross * self.stamp_duty_sell if direction == "SELL" else 0.0
+        return commission + duty
 
     def settle(
         self,
@@ -145,29 +177,40 @@ class SettlementService:
             # 复制 dict（SQLAlchemy mutable JSON 需要新对象）
             positions = dict(inst.virtual_positions or {})
             sym = order.symbol
-            cash_delta = filled_price * split_qty
+            gross = filled_price * split_qty
+            fees = self._calc_fees(gross, order.direction)
             if order.direction == "BUY":
+                # BUY 总现金消耗 = 成交金额 + 佣金
+                total_cost = gross + fees
                 # 防穿仓：现金不够就拒绝（避免重复 fill 把虚拟账本扣穿）
-                if inst.virtual_cash < cash_delta:
-                    logger.warning(
-                        "instance %s 现金不足拒绝 BUY fill: cash=%.2f < cost=%.2f sym=%s qty=%d "
-                        "（可能是 dupe orders 导致；已忽略此 fill 的账本更新）",
-                        sig.instance_id, inst.virtual_cash, cash_delta, sym, split_qty,
+                if inst.virtual_cash < total_cost:
+                    # Bug C 修复：升级为 ERROR 级日志 + 标记 order 状态，方便对账
+                    logger.error(
+                        "BOOKKEEPING_DIVERGENCE: instance %s 现金不足拒绝 BUY fill: "
+                        "cash=%.2f < total_cost=%.2f (gross=%.2f fees=%.2f) "
+                        "sym=%s qty=%d order=%s — QMT 真账户已 FILL，请人工对账",
+                        sig.instance_id, inst.virtual_cash, total_cost, gross, fees,
+                        sym, split_qty, order.order_id,
                     )
+                    _flag_bookkeeping_divergence(order)
                     continue
-                inst.virtual_cash = inst.virtual_cash - cash_delta
+                inst.virtual_cash = inst.virtual_cash - total_cost
                 positions[sym] = positions.get(sym, 0) + split_qty
             else:  # SELL
+                # SELL 净收入 = 成交金额 - 佣金 - 印花税
+                net_proceeds = gross - fees
                 # 防超卖：持仓不够就拒绝
                 cur_qty = positions.get(sym, 0)
                 if cur_qty < split_qty:
-                    logger.warning(
-                        "instance %s 持仓不足拒绝 SELL fill: holding=%d < sell=%d sym=%s "
-                        "（可能是 dupe orders；已忽略此 fill 的账本更新）",
-                        sig.instance_id, cur_qty, split_qty, sym,
+                    logger.error(
+                        "BOOKKEEPING_DIVERGENCE: instance %s 持仓不足拒绝 SELL fill: "
+                        "holding=%d < sell=%d sym=%s order=%s — "
+                        "QMT 真账户已 FILL，请人工对账",
+                        sig.instance_id, cur_qty, split_qty, sym, order.order_id,
                     )
+                    _flag_bookkeeping_divergence(order)
                     continue
-                inst.virtual_cash = inst.virtual_cash + cash_delta
+                inst.virtual_cash = inst.virtual_cash + net_proceeds
                 new_qty = cur_qty - split_qty
                 if new_qty <= 0:
                     positions.pop(sym, None)

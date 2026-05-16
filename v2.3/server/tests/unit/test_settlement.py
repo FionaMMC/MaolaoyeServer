@@ -47,6 +47,14 @@ def _factory(tmp_path: Path):
     return make_session_factory(engine)
 
 
+def _make_svc(sf, **fee_overrides):
+    """统一构造 SettlementService。默认无费率，保持老测试断言简洁；新增费用相关
+    测试显式传入费率。"""
+    defaults = dict(commission_rate=0.0, min_commission=0.0, stamp_duty_sell=0.0)
+    defaults.update(fee_overrides)
+    return SettlementService(session_factory=sf, **defaults)
+
+
 def _seed(sf, *, with_signals: bool = True, with_state: bool = True):
     """种一个完整数据：1 个 order，2 条 mapping，2 条 raw_signal，1 个 instance_state。"""
     with sf() as s:
@@ -78,7 +86,7 @@ def _seed(sf, *, with_signals: bool = True, with_state: bool = True):
 
 def test_settle_unknown_order_in_unmatched(tmp_path: Path):
     sf = _factory(tmp_path)
-    svc = SettlementService(session_factory=sf)
+    svc = _make_svc(sf)
     resp = svc.settle("20260430", [
         TradeResult(order_id="ghost", filled_quantity=100, filled_price=10.0,
                     status="FILLED"),
@@ -90,7 +98,7 @@ def test_settle_unknown_order_in_unmatched(tmp_path: Path):
 def test_settle_writes_trade_record(tmp_path: Path):
     sf = _factory(tmp_path)
     _seed(sf)
-    svc = SettlementService(session_factory=sf)
+    svc = _make_svc(sf)
     svc.settle("20260430", [
         TradeResult(order_id="oid1", filled_quantity=300, filled_price=10.05,
                     filled_time="2026-04-30T09:25:00+08:00", status="FILLED"),
@@ -105,7 +113,7 @@ def test_settle_writes_trade_record(tmp_path: Path):
 def test_settle_marks_order_status(tmp_path: Path):
     sf = _factory(tmp_path)
     _seed(sf)
-    svc = SettlementService(session_factory=sf)
+    svc = _make_svc(sf)
     svc.settle("20260430", [
         TradeResult(order_id="oid1", filled_quantity=200, filled_price=10.0,
                     status="PARTIAL"),
@@ -118,7 +126,7 @@ def test_settle_buy_updates_virtual_state_proportionally(tmp_path: Path):
     """成交 300 股全部 fill；按 100:200 比例拆 → 100/200 给 m/r 实例。"""
     sf = _factory(tmp_path)
     _seed(sf)
-    svc = SettlementService(session_factory=sf)
+    svc = _make_svc(sf)
     svc.settle("20260430", [
         TradeResult(order_id="oid1", filled_quantity=300, filled_price=10.0,
                     status="FILLED"),
@@ -151,7 +159,7 @@ def test_settle_sell_updates_virtual_state_proportionally(tmp_path: Path):
                             last_update=_now()))
         s.commit()
 
-    svc = SettlementService(session_factory=sf)
+    svc = _make_svc(sf)
     svc.settle("20260430", [
         TradeResult(order_id="oid1", filled_quantity=300, filled_price=10.0,
                     status="FILLED"),
@@ -171,7 +179,7 @@ def test_settle_zero_filled_skips_state_update(tmp_path: Path):
     """filled_quantity=0 (CANCELLED) 不应改虚拟账本。"""
     sf = _factory(tmp_path)
     _seed(sf)
-    svc = SettlementService(session_factory=sf)
+    svc = _make_svc(sf)
     svc.settle("20260430", [
         TradeResult(order_id="oid1", filled_quantity=0, filled_price=0.0,
                     status="CANCELLED"),
@@ -186,7 +194,7 @@ def test_settle_missing_raw_signal_warns_but_continues(tmp_path: Path):
     """raw_signals 缺失不应 crash。"""
     sf = _factory(tmp_path)
     _seed(sf, with_signals=False)
-    svc = SettlementService(session_factory=sf)
+    svc = _make_svc(sf)
     resp = svc.settle("20260430", [
         TradeResult(order_id="oid1", filled_quantity=300, filled_price=10.0,
                     status="FILLED"),
@@ -198,7 +206,7 @@ def test_settle_partial_filled_largest_remainder(tmp_path: Path):
     """成交 350 股（如果 order 实际只下 300 股，这是不太合理的；但测试拆分逻辑）。"""
     sf = _factory(tmp_path)
     _seed(sf)
-    svc = SettlementService(session_factory=sf)
+    svc = _make_svc(sf)
     svc.settle("20260430", [
         TradeResult(order_id="oid1", filled_quantity=350, filled_price=10.0,
                     status="FILLED"),
@@ -225,7 +233,7 @@ def test_settle_buy_rejects_when_cash_insufficient(tmp_path: Path):
         s.get(InstanceState, "real_A_m").virtual_cash = 500.0
         s.commit()
 
-    svc = SettlementService(session_factory=sf)
+    svc = _make_svc(sf)
     svc.settle("20260430", [
         TradeResult(order_id="oid1", filled_quantity=300, filled_price=10.0,
                     status="FILLED"),
@@ -258,7 +266,7 @@ def test_settle_sell_rejects_when_position_insufficient(tmp_path: Path):
                             last_update=_now()))
         s.commit()
 
-    svc = SettlementService(session_factory=sf)
+    svc = _make_svc(sf)
     svc.settle("20260430", [
         TradeResult(order_id="oid1", filled_quantity=300, filled_price=10.0,
                     status="FILLED"),
@@ -272,3 +280,136 @@ def test_settle_sell_rejects_when_position_insufficient(tmp_path: Path):
         # r 正常成交
         assert r.virtual_cash == 2000.0
         assert r.virtual_positions == {"600519.SH": 0} or r.virtual_positions == {}
+
+
+# ── Bug B: 手续费 + 印花税 ────────────────────────────────────────────────
+def test_settle_buy_deducts_commission(tmp_path: Path):
+    """BUY 成交：现金消耗 = gross + 佣金（max(min, gross × rate)）。"""
+    sf = _factory(tmp_path)
+    _seed(sf)
+    svc = _make_svc(sf, commission_rate=0.0003, min_commission=5.0)
+    svc.settle("20260430", [
+        TradeResult(order_id="oid1", filled_quantity=300, filled_price=10.0,
+                    status="FILLED"),
+    ])
+    with sf() as s:
+        m = s.get(InstanceState, "real_A_m")
+        r = s.get(InstanceState, "real_A_r")
+        # m: 100 股 × 10 = 1000 gross, 佣金 max(5, 1000×0.0003=0.3) = 5
+        assert m.virtual_cash == 1_000_000.0 - 1000.0 - 5.0
+        # r: 200 股 × 10 = 2000 gross, 佣金 max(5, 2000×0.0003=0.6) = 5
+        assert r.virtual_cash == 2_000_000.0 - 2000.0 - 5.0
+
+
+def test_settle_buy_large_amount_uses_rate_commission(tmp_path: Path):
+    """大额 BUY：佣金 = gross × rate（超过 min）"""
+    sf = _factory(tmp_path)
+    _seed(sf)
+    # 修 mapping，让 m 拿到 100 股、r 拿到 200 股，但价格放大到让佣金超过 min
+    with sf() as s:
+        s.get(Order, "oid1").limit_price = 1000.0
+        s.commit()
+    svc = _make_svc(sf, commission_rate=0.0003, min_commission=5.0)
+    svc.settle("20260430", [
+        TradeResult(order_id="oid1", filled_quantity=300, filled_price=1000.0,
+                    status="FILLED"),
+    ])
+    with sf() as s:
+        m = s.get(InstanceState, "real_A_m")
+        # m: 100 × 1000 = 100000 gross, 佣金 max(5, 100000×0.0003=30) = 30
+        assert m.virtual_cash == 1_000_000.0 - 100000.0 - 30.0
+
+
+def test_settle_sell_deducts_commission_and_stamp_duty(tmp_path: Path):
+    """SELL 成交：净收入 = gross - 佣金 - 印花税。"""
+    sf = _factory(tmp_path)
+    _seed(sf, with_state=False)
+    with sf() as s:
+        s.get(Order, "oid1").direction = "SELL"
+        s.query(RawSignal).filter_by(signal_id="s1").update({"direction": "SELL"})
+        s.query(RawSignal).filter_by(signal_id="s2").update({"direction": "SELL"})
+        # 用大额，让佣金按 rate 算
+        s.get(Order, "oid1").limit_price = 1000.0
+        s.add(InstanceState(instance_id="real_A_m", virtual_cash=0.0,
+                            virtual_positions={"600519.SH": 100},
+                            last_update=_now()))
+        s.add(InstanceState(instance_id="real_A_r", virtual_cash=0.0,
+                            virtual_positions={"600519.SH": 200},
+                            last_update=_now()))
+        s.commit()
+
+    svc = _make_svc(sf, commission_rate=0.0003, min_commission=5.0,
+                   stamp_duty_sell=0.0005)
+    svc.settle("20260430", [
+        TradeResult(order_id="oid1", filled_quantity=300, filled_price=1000.0,
+                    status="FILLED"),
+    ])
+    with sf() as s:
+        m = s.get(InstanceState, "real_A_m")
+        # m: 100 × 1000 = 100000 gross
+        # 佣金 max(5, 100000×0.0003=30) = 30, 印花税 100000×0.0005 = 50
+        # 净收入 = 100000 - 30 - 50 = 99920
+        assert m.virtual_cash == 99920.0
+
+
+# ── Bug C: 防穿仓 / 防超卖触发后，order.bookkeeping_divergence = True ──────
+def test_settle_buy_insufficient_cash_flags_divergence(tmp_path: Path):
+    """虚拟现金不够时跳过账本更新，但 order.bookkeeping_divergence 被置 True，
+    方便人工对账。"""
+    sf = _factory(tmp_path)
+    _seed(sf)
+    with sf() as s:
+        s.get(InstanceState, "real_A_m").virtual_cash = 500.0
+        s.commit()
+
+    svc = _make_svc(sf, commission_rate=0.0003, min_commission=5.0)
+    svc.settle("20260430", [
+        TradeResult(order_id="oid1", filled_quantity=300, filled_price=10.0,
+                    status="FILLED"),
+    ])
+    with sf() as s:
+        order = s.get(Order, "oid1")
+        # order 状态仍是 FILLED（QMT 真实成交了）
+        assert order.status == "FILLED"
+        # 但 bookkeeping_divergence 被置 True
+        assert order.bookkeeping_divergence is True
+
+
+def test_settle_sell_insufficient_position_flags_divergence(tmp_path: Path):
+    """虚拟持仓不够卖 → 跳过账本 + 标记 divergence。"""
+    sf = _factory(tmp_path)
+    _seed(sf, with_state=False)
+    with sf() as s:
+        s.get(Order, "oid1").direction = "SELL"
+        s.query(RawSignal).filter_by(signal_id="s1").update({"direction": "SELL"})
+        s.query(RawSignal).filter_by(signal_id="s2").update({"direction": "SELL"})
+        s.add(InstanceState(instance_id="real_A_m", virtual_cash=0.0,
+                            virtual_positions={"600519.SH": 50},  # 只有 50 股
+                            last_update=_now()))
+        s.add(InstanceState(instance_id="real_A_r", virtual_cash=0.0,
+                            virtual_positions={"600519.SH": 200},
+                            last_update=_now()))
+        s.commit()
+
+    svc = _make_svc(sf)
+    svc.settle("20260430", [
+        TradeResult(order_id="oid1", filled_quantity=300, filled_price=10.0,
+                    status="FILLED"),
+    ])
+    with sf() as s:
+        order = s.get(Order, "oid1")
+        assert order.bookkeeping_divergence is True
+
+
+def test_settle_normal_fill_no_divergence(tmp_path: Path):
+    """正常成交，bookkeeping_divergence 保持 False。"""
+    sf = _factory(tmp_path)
+    _seed(sf)
+    svc = _make_svc(sf)
+    svc.settle("20260430", [
+        TradeResult(order_id="oid1", filled_quantity=300, filled_price=10.0,
+                    status="FILLED"),
+    ])
+    with sf() as s:
+        order = s.get(Order, "oid1")
+        assert order.bookkeeping_divergence is False

@@ -87,7 +87,7 @@ class StrategyPipeline:
 
         # 3. 跑策略
         runner = StrategyRunner(registry=self.registry, parquet_store=self.store)
-        signals_by_instance = runner.run_all(
+        signals_by_instance, next_states_by_instance = runner.run_all(
             trade_date,
             instances=[
                 {
@@ -95,13 +95,31 @@ class StrategyPipeline:
                     "strategy_id": inst["strategy_id"],
                     "virtual_cash": states[inst["instance_id"]]["cash"],
                     "virtual_positions": states[inst["instance_id"]]["positions"],
+                    "strategy_state": states[inst["instance_id"]].get("strategy_state"),
                 }
                 for inst in instances
             ],
             risk_blacklist=risk_bl,
         )
 
+        # 3.5. 写回 strategy_state（仅在策略 set_strategy_state 时）
+        if any(s is not None for s in next_states_by_instance.values()):
+            with self.session_factory() as session:
+                for inst_id, new_state in next_states_by_instance.items():
+                    if new_state is None:
+                        continue
+                    row = session.get(InstanceState, inst_id)
+                    if row is None:
+                        continue
+                    row.strategy_state = new_state
+                    row.last_update = _now_iso()
+                session.commit()
+
         # 4. 预检 + 写 raw_signals 表 + 收集 PASS 的
+        # 关键顺序（Bug A 修复）：每个实例内 SELL 先 precheck，
+        # 把 SELL 净收入累加到 running_cash，再 precheck BUY。
+        # 否则 BUY 会因为没看到同日待执行的 SELL 释放出来的现金而误报"cash 不足"。
+        # （客户端早就修了同样的 SELL-first 风控，commit 8984f0f。）
         all_pass_tagged: list[TaggedSignal] = []
         signals_total = 0
         passed_total = 0
@@ -110,11 +128,40 @@ class StrategyPipeline:
                 instance_id = inst["instance_id"]
                 signals = signals_by_instance.get(instance_id, [])
                 state = states[instance_id]
-                for sig in signals:
+
+                # 排序：SELL 先 BUY 后；同方向保持原序（stable sort）
+                ordered = sorted(signals, key=lambda s: 0 if s.direction == "SELL" else 1)
+
+                # 每个实例独立的 running cash/positions（不修改 instance_state，
+                # 只供 precheck 链式累积）
+                running_cash = float(state["cash"])
+                running_positions = dict(state["positions"])
+
+                for sig in ordered:
                     signals_total += 1
                     pre = self.precheck.check(
-                        sig, state["cash"], state["positions"],
+                        sig, running_cash, running_positions,
                     )
+
+                    # 若 PASS，预扣 running 现金/持仓供下一笔同实例 signal 使用
+                    if pre.status == "PASS":
+                        limit_p = sig.reference_price * (1.0 + sig.price_offset)
+                        gross = sig.quantity * limit_p
+                        if sig.direction == "SELL":
+                            # 卖出净收入：扣佣金（rate, min）+ 印花税
+                            running_cash += gross * (1.0 - self.precheck.fee_rate)
+                            cur = running_positions.get(sig.symbol, 0)
+                            new_qty = cur - sig.quantity
+                            if new_qty <= 0:
+                                running_positions.pop(sig.symbol, None)
+                            else:
+                                running_positions[sig.symbol] = new_qty
+                        else:  # BUY
+                            running_cash -= gross * (1.0 + self.precheck.fee_rate)
+                            running_positions[sig.symbol] = (
+                                running_positions.get(sig.symbol, 0) + sig.quantity
+                            )
+
                     signal_id = uuid.uuid4().hex
                     limit_price = sig.reference_price * (1 + sig.price_offset)
                     session.add(RawSignal(
@@ -197,6 +244,9 @@ class StrategyPipeline:
                     result[instance_id] = {
                         "cash": float(row.virtual_cash),
                         "positions": dict(row.virtual_positions or {}),
+                        "strategy_state": (
+                            dict(row.strategy_state) if row.strategy_state else None
+                        ),
                     }
                 else:
                     cash = inst["virtual_initial_cash"]
@@ -206,7 +256,9 @@ class StrategyPipeline:
                         virtual_positions={},
                         last_update=_now_iso(),
                     ))
-                    result[instance_id] = {"cash": cash, "positions": {}}
+                    result[instance_id] = {
+                        "cash": cash, "positions": {}, "strategy_state": None,
+                    }
             session.commit()
         return result
 

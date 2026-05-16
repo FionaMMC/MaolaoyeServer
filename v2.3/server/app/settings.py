@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_json: bool = False
 
+    # 交易成本（A 股标准；和 plugins/v20h/config.yaml 保持一致）
+    # settlement 写虚拟账本时按此扣费，避免账本相对真账户高估 cash
+    stock_commission_rate: float = 0.0003   # 万三佣金（双边）
+    stock_min_commission: float = 5.0       # 单笔最低 5 元
+    stock_stamp_duty_sell: float = 0.0005   # 千五印花税（仅卖出收）
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

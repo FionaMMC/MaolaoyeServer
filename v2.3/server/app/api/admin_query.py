@@ -399,3 +399,77 @@ async def admin_health(
             "instances": instance_navs,
         },
     )
+
+
+# ── 8. /admin/strategy-state : 实例的策略持久状态 ─────────────────────────
+@router.get(
+    "/strategy-state",
+    response_model=APIResponse[dict],
+    dependencies=[Depends(verify_api_key)],
+)
+async def strategy_state(
+    instance_id: str | None = None,
+    sf=Depends(get_session_factory),
+):
+    """看实例的 strategy_state JSON（V20H 的 last_rb_idx / equity_history 等）。"""
+    with sf() as session:
+        stmt = select(InstanceState)
+        if instance_id:
+            stmt = stmt.where(InstanceState.instance_id == instance_id)
+        rows = session.execute(stmt).scalars().all()
+        items = [
+            {
+                "instance_id": r.instance_id,
+                "virtual_cash": r.virtual_cash,
+                "holdings_count": len(r.virtual_positions or {}),
+                "last_update": r.last_update,
+                "strategy_state": r.strategy_state,
+            }
+            for r in rows
+        ]
+    return APIResponse[dict](
+        code=0, message="ok",
+        data={"items": items, "count": len(items)},
+    )
+
+
+# ── 9. /admin/bookkeeping-divergence : 真账户与虚拟账本对账分叉 ─────────
+@router.get(
+    "/bookkeeping-divergence",
+    response_model=APIResponse[dict],
+    dependencies=[Depends(verify_api_key)],
+)
+async def bookkeeping_divergence(
+    sf=Depends(get_session_factory),
+    limit: int = Query(200, ge=1, le=10000),
+):
+    """列出所有 bookkeeping_divergence=True 的 orders。
+
+    这些订单 QMT 真账户已 FILL，但虚拟账本（instance_state）因防穿仓/超卖跳过了
+    更新。需要人工对账：检查 QMT 真账户的现金 + 持仓，对齐 instance_state。
+    """
+    with sf() as session:
+        stmt = (
+            select(Order)
+            .where(Order.bookkeeping_divergence == True)  # noqa: E712
+            .order_by(desc(Order.valid_date), Order.symbol)
+            .limit(limit)
+        )
+        rows = session.execute(stmt).scalars().all()
+        items = [
+            {
+                "order_id": o.order_id,
+                "valid_date": o.valid_date,
+                "account_group": o.account_group,
+                "symbol": o.symbol,
+                "direction": o.direction,
+                "quantity": o.quantity,
+                "limit_price": o.limit_price,
+                "status": o.status,
+            }
+            for o in rows
+        ]
+    return APIResponse[dict](
+        code=0, message="ok",
+        data={"items": items, "count": len(items)},
+    )
