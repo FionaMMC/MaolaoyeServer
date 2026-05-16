@@ -45,55 +45,57 @@ def _runner(tmp_path: Path) -> StrategyRunner:
 
 def test_runner_runs_single_instance(tmp_path: Path):
     runner = _runner(tmp_path)
-    out = runner.run_all(20260430, instances=[{
+    sigs_by_inst, states_by_inst = runner.run_all(20260430, instances=[{
         "instance_id": "real_A_fixed_buy",
         "strategy_id": "fixed_buy",
         "virtual_cash": 1_000_000.0,
         "virtual_positions": {},
     }])
-    assert "real_A_fixed_buy" in out
-    sigs = out["real_A_fixed_buy"]
+    assert "real_A_fixed_buy" in sigs_by_inst
+    sigs = sigs_by_inst["real_A_fixed_buy"]
     assert len(sigs) == 1
     assert sigs[0].symbol == "600519.SH"
+    # 策略未调 set_strategy_state → state 为 None（不写回）
+    assert states_by_inst["real_A_fixed_buy"] is None
 
 
 def test_runner_iterates_multiple_instances(tmp_path: Path):
     runner = _runner(tmp_path)
-    out = runner.run_all(20260430, instances=[
+    sigs_by_inst, _ = runner.run_all(20260430, instances=[
         {"instance_id": "i1", "strategy_id": "fixed_buy",
          "virtual_cash": 100.0, "virtual_positions": {}},
         {"instance_id": "i2", "strategy_id": "empty",
          "virtual_cash": 100.0, "virtual_positions": {}},
     ])
-    assert len(out["i1"]) == 1
-    assert out["i2"] == []
+    assert len(sigs_by_inst["i1"]) == 1
+    assert sigs_by_inst["i2"] == []
 
 
 def test_runner_unknown_strategy_id_logs_and_returns_empty(tmp_path: Path):
     runner = _runner(tmp_path)
-    out = runner.run_all(20260430, instances=[
+    sigs_by_inst, _ = runner.run_all(20260430, instances=[
         {"instance_id": "i1", "strategy_id": "nonexistent",
          "virtual_cash": 0.0, "virtual_positions": {}},
     ])
-    assert out["i1"] == []
+    assert sigs_by_inst["i1"] == []
 
 
 def test_runner_crashing_strategy_isolated(tmp_path: Path):
     runner = _runner(tmp_path)
-    out = runner.run_all(20260430, instances=[
+    sigs_by_inst, _ = runner.run_all(20260430, instances=[
         {"instance_id": "crash_i", "strategy_id": "crash",
          "virtual_cash": 0.0, "virtual_positions": {}},
         {"instance_id": "good_i", "strategy_id": "fixed_buy",
          "virtual_cash": 0.0, "virtual_positions": {}},
     ])
-    assert out["crash_i"] == []
-    assert len(out["good_i"]) == 1
+    assert sigs_by_inst["crash_i"] == []
+    assert len(sigs_by_inst["good_i"]) == 1
 
 
 def test_runner_bad_return_type_isolated(tmp_path: Path):
     runner = _runner(tmp_path)
-    out = runner.run_all(20260430, instances=[
+    sigs_by_inst, _ = runner.run_all(20260430, instances=[
         {"instance_id": "i1", "strategy_id": "bad_return",
          "virtual_cash": 0.0, "virtual_positions": {}},
     ])
-    assert out["i1"] == []
+    assert sigs_by_inst["i1"] == []

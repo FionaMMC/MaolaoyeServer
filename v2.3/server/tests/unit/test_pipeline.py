@@ -261,6 +261,170 @@ def test_pipeline_blacklist_filters_strategy(setup):
     assert summary["orders"] == 0
 
 
+# ── Bug A 回归：precheck SELL-first ──────────────────────────────────
+class MixedSellThenBuyStrategy(Strategy):
+    """一笔 SELL（释放现金）+ 一笔 BUY（依赖那笔现金）。
+
+    Regression：5/13 实盘场景——账上只剩 3.5K，但有 8 笔 SELL ~887K 待发 + 6 笔
+    BUY 各 110K。fix 前每个 BUY 单独和 3.5K 比较 → 全 FAIL；fix 后 SELL 先走，
+    BUY 用累积的现金通过。
+    """
+    name = "sell_then_buy"
+
+    def run(self, ctx, trade_date):
+        return [
+            RawSignal(symbol="600519.SH", direction="SELL", quantity=1000,
+                      reference_price=100.0, price_offset=-0.005),  # 卖 1000 股 @ ~99.5
+            RawSignal(symbol="000001.SZ", direction="BUY", quantity=900,
+                      reference_price=100.0, price_offset=+0.005),  # 买 900 股 @ ~100.5
+        ]
+
+
+def test_pipeline_precheck_sell_first_unlocks_buy(setup):
+    """SELL 优先：BUY 看到 SELL 累积出来的 running cash 后 PASS。"""
+    pipeline, sf, store, yaml_path = setup
+    pipeline.registry["sell_then_buy"] = MixedSellThenBuyStrategy
+    _write_yaml(yaml_path, {
+        "account_groups": [{
+            "group_id": "real_A",
+            "qmt_account_id": "X",
+            "strategies": [{"strategy_id": "sell_then_buy", "virtual_initial_cash": 3_500}],
+        }],
+    })
+    # 种好持仓供 SELL（1000 股 600519.SH）
+    with sf() as s:
+        s.add(InstanceState(
+            instance_id="real_A_sell_then_buy",
+            virtual_cash=3_500.0,
+            virtual_positions={"600519.SH": 1000},
+            last_update=_now(),
+        ))
+        s.commit()
+
+    summary = pipeline.run(20260513)
+
+    # 2 条 signal 都 PASS（SELL 释放 ~99.5K，BUY 需要 ~90.5K，加 fee_rate 0.001 后约 90.6K）
+    assert summary["signals"] == 2
+    assert summary["passed"] == 2
+
+    with sf() as s:
+        sigs = sorted(s.query(RawSignalRow).all(), key=lambda x: x.direction)
+        assert sigs[0].direction == "BUY"
+        assert sigs[0].precheck_status == "PASS"
+        assert sigs[1].direction == "SELL"
+        assert sigs[1].precheck_status == "PASS"
+
+
+def test_pipeline_precheck_sell_first_still_blocks_overdraft_buy(setup):
+    """SELL-first 不应让"超额 BUY"通过：BUY 需要的现金 > SELL 释放 + 初始 cash 时仍 FAIL。"""
+    pipeline, sf, store, yaml_path = setup
+
+    class SmallSellBigBuyStrategy(Strategy):
+        name = "small_sell_big_buy"
+
+        def run(self, ctx, trade_date):
+            return [
+                RawSignal(symbol="600519.SH", direction="SELL", quantity=100,
+                          reference_price=10.0, price_offset=-0.005),  # 卖 100 股 ~995
+                RawSignal(symbol="000001.SZ", direction="BUY", quantity=10000,
+                          reference_price=100.0, price_offset=+0.005),  # 要 ~1M
+            ]
+
+    pipeline.registry["small_sell_big_buy"] = SmallSellBigBuyStrategy
+    _write_yaml(yaml_path, {
+        "account_groups": [{
+            "group_id": "real_A",
+            "qmt_account_id": "X",
+            "strategies": [{"strategy_id": "small_sell_big_buy", "virtual_initial_cash": 1000}],
+        }],
+    })
+    with sf() as s:
+        s.add(InstanceState(
+            instance_id="real_A_small_sell_big_buy",
+            virtual_cash=1000.0,
+            virtual_positions={"600519.SH": 100},
+            last_update=_now(),
+        ))
+        s.commit()
+
+    summary = pipeline.run(20260513)
+    # SELL PASS, BUY FAIL（即使加上 SELL 现金还远不够）
+    assert summary["passed"] == 1
+
+    with sf() as s:
+        sigs = {sig.direction: sig.precheck_status for sig in s.query(RawSignalRow).all()}
+        assert sigs["SELL"] == "PASS"
+        assert sigs["BUY"] == "FAIL"
+
+
+# ── Bug D 回归：strategy_state 持久化 ─────────────────────────────────
+class StatefulStrategy(Strategy):
+    """读自己上次写下的 counter，每次 +1，再写回去。"""
+    name = "stateful"
+
+    def run(self, ctx, trade_date):
+        st = ctx.strategy_state()
+        counter = int(st.get("counter", 0))
+        ctx.set_strategy_state({"counter": counter + 1})
+        # 不发信号即可（只测持久化）
+        return []
+
+
+def test_pipeline_persists_strategy_state_across_runs(setup):
+    """run 第 1 次：counter=1；run 第 2 次：counter=2（读到上次写下的 1）。"""
+    pipeline, sf, store, yaml_path = setup
+    pipeline.registry["stateful"] = StatefulStrategy
+    _write_yaml(yaml_path, {
+        "account_groups": [{
+            "group_id": "real_A",
+            "qmt_account_id": "X",
+            "strategies": [{"strategy_id": "stateful", "virtual_initial_cash": 1000}],
+        }],
+    })
+
+    pipeline.run(20260430)
+    with sf() as s:
+        inst = s.get(InstanceState, "real_A_stateful")
+        assert inst.strategy_state == {"counter": 1}
+
+    pipeline.run(20260506)
+    with sf() as s:
+        inst = s.get(InstanceState, "real_A_stateful")
+        assert inst.strategy_state == {"counter": 2}
+
+
+def test_pipeline_strategy_no_set_state_keeps_old_state(setup):
+    """策略不调用 set_strategy_state 时，老的 state 不被改动。"""
+    pipeline, sf, store, yaml_path = setup
+
+    class ReadOnlyStrategy(Strategy):
+        name = "read_only"
+        def run(self, ctx, trade_date):
+            _ = ctx.strategy_state()  # 读不写
+            return []
+
+    pipeline.registry["read_only"] = ReadOnlyStrategy
+    _write_yaml(yaml_path, {
+        "account_groups": [{
+            "group_id": "real_A",
+            "qmt_account_id": "X",
+            "strategies": [{"strategy_id": "read_only", "virtual_initial_cash": 1000}],
+        }],
+    })
+
+    # 先种一个老 state
+    pipeline.run(20260430)  # 创建 instance_state
+    with sf() as s:
+        inst = s.get(InstanceState, "real_A_read_only")
+        inst.strategy_state = {"my_data": "preserved"}
+        s.commit()
+
+    pipeline.run(20260506)
+    with sf() as s:
+        inst = s.get(InstanceState, "real_A_read_only")
+        assert inst.strategy_state == {"my_data": "preserved"}
+
+
 def test_pipeline_reset_instance_states(setup):
     """reset_instance_states 应把 cash 还原成 yaml 初始值，positions 清空。"""
     pipeline, sf, store, yaml_path = setup

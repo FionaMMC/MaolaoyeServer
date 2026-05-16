@@ -57,8 +57,14 @@ from app.services.settlement import SettlementService
 
 def get_settlement_service(
     sf: sessionmaker = Depends(get_session_factory),
+    settings: Settings = Depends(get_settings),
 ) -> SettlementService:
-    return SettlementService(session_factory=sf)
+    return SettlementService(
+        session_factory=sf,
+        commission_rate=settings.stock_commission_rate,
+        min_commission=settings.stock_min_commission,
+        stamp_duty_sell=settings.stock_stamp_duty_sell,
+    )
 
 
 from app.services.perf import PerfService

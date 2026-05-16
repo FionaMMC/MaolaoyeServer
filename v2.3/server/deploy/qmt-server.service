@@ -19,5 +19,19 @@ RestartSec=5
 StandardOutput=append:/var/log/qmt-server/server.log
 StandardError=append:/var/log/qmt-server/server.log
 
+# ── 进程沙箱 ──
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/qmt-server/v2.3/server /var/log/qmt-server
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
+
 [Install]
 WantedBy=multi-user.target
