@@ -238,8 +238,16 @@ def _risk_check(trader, acc, qmt_account_id: str, orders: list[dict]) -> tuple[l
                 remaining_pos[sym] = available - qty
                 remaining_cash += qty * price  # 预期 SELL 回笼现金给后面 BUY 用
                 pass_orders.append(order)
+            elif available > 0:
+                # 持仓不足但仍有部分可用 → 按可用数量降量卖出
+                original_qty = qty
+                order = {**order, "quantity": available}
+                remaining_pos[sym] = 0
+                remaining_cash += available * price
+                log.warning(f"{sym} SELL 原委托 {original_qty} 股 → 降为可用 {available} 股")
+                pass_orders.append(order)
             else:
-                reason = f"持仓不足：{sym} SELL {qty} 股，账户可用 {available} 股"
+                reason = f"持仓不足：{sym} SELL {qty} 股，账户可用 0 股"
                 log.warning(reason)
                 fail_orders.append({**order, "fail_reason": reason})
 

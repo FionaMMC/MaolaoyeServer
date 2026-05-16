@@ -4,6 +4,7 @@ mock_qmt 模式：跳过 QMT 下载，直接读取 mock_data/market_payload_mock
 """
 
 import os
+import threading
 import time
 from datetime import datetime
 
@@ -63,10 +64,35 @@ def is_trading_day(date_str: str) -> bool:
     return len(days) > 0
 
 
+def _check_qmt_alive() -> bool:
+    """快速检测 miniQMT 是否在运行。仅读取缓存，不触发下载。"""
+    try:
+        tick = xtdata.get_full_tick(["000001.SH"])
+        return tick is not None and len(tick) > 0
+    except Exception as e:
+        log.error(f"QMT 连通性检测异常：{e}")
+        return False
+
+
 def _download_all(all_codes: list) -> None:
-    log.info(f"开始 download_history_data2，共 {len(all_codes)} 个标的（增量模式）...")
-    xtdata.download_history_data2(all_codes, period="1d", start_time="", end_time="")
-    log.info("download_history_data2 返回，等待 3 秒后读取...")
+    log.info(f"开始 download_history_data2，共 {len(all_codes)} 个标的（增量模式），请耐心等待...")
+    start = time.time()
+    done = threading.Event()
+
+    def _heartbeat():
+        interval = 30  # 每 30 秒汇报一次
+        while not done.wait(interval):
+            elapsed = time.time() - start
+            log.info(f"  仍在下载中...（已等待 {elapsed:.0f} 秒）")
+
+    t = threading.Thread(target=_heartbeat, daemon=True)
+    t.start()
+    try:
+        xtdata.download_history_data2(all_codes, period="1d", start_time="", end_time="")
+    finally:
+        done.set()
+    elapsed = time.time() - start
+    log.info(f"download_history_data2 返回（总耗时 {elapsed:.0f} 秒），等待 3 秒后读取...")
     time.sleep(3)
 
 
@@ -215,6 +241,13 @@ def main():
     log.info(f"交易日 {trade_date}，开始下载行情")
     stock_list, etf_list, index_list = startup_check()
     all_codes = stock_list + etf_list + index_list
+
+    if not _check_qmt_alive():
+        _wechat_alert(f"market_push {trade_date}：QMT 连通性检测失败，请确认 miniQMT 正在运行")
+        log.error("QMT 连通性检测失败，退出（请确认 miniQMT 是否已启动）")
+        return
+    log.info("QMT 连通性检测通过")
+
     _download_all(all_codes)
 
     stocks_raw  = _read_klines(stock_list,  trade_date, "front")

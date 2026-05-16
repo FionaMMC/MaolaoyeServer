@@ -167,7 +167,7 @@ def notify_wecom(message: str, level: str = "info") -> bool:
         resp = requests.post(
             WECOM_WEBHOOK_URL,
             json={"msgtype": "text", "text": {"content": prefix + message}},
-            timeout=10,
+            timeout=30,
         )
         data = resp.json()
         errcode = data.get("errcode", -1)

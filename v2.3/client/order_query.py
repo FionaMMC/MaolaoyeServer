@@ -93,6 +93,56 @@ def _fetch_from_local() -> dict:
     return data
 
 
+def _get_estimated_positions() -> dict[str, dict[str, int]]:
+    """从本地 trades 表估算各账户的净持仓（不依赖 QMT trader）。"""
+    positions: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    with sqlite3.connect(config.DB_PATH) as conn:
+        rows = conn.execute("""
+            SELECT l.account_group, l.symbol,
+                   SUM(CASE WHEN l.direction = 'BUY'
+                       THEN t.filled_quantity
+                       ELSE -t.filled_quantity END) AS net
+            FROM trades t
+            JOIN local_orders l ON t.local_order_id = l.local_order_id
+            WHERE t.filled_quantity > 0
+            GROUP BY l.account_group, l.symbol
+            HAVING net > 0
+        """).fetchall()
+    for acct, sym, net in rows:
+        positions[acct][sym] = net
+    return dict(positions)
+
+
+def _pre_risk_check(orders: list[dict], next_date: str) -> list[str]:
+    """从本地 DB 估算持仓，检查 SELL 订单是否超出可用股数。
+    返回报警消息列表，空列表表示全部通过。
+    注意：这是预估检查，不依赖 QMT trader，次日 9:10 order_submit 仍会做正式风控。
+    """
+    alerts: list[str] = []
+    positions = _get_estimated_positions()
+    # 深拷贝，用于逐笔扣减
+    remaining: dict[str, dict[str, int]] = {
+        acct: dict(stocks) for acct, stocks in positions.items()
+    }
+
+    for acct_group in sorted(remaining.keys()):
+        pos = remaining[acct_group]
+        acct_sells = [o for o in orders
+                      if o.get("account_group") == acct_group
+                      and o.get("direction") == "SELL"]
+        for o in acct_sells:
+            sym = o["symbol"]
+            qty = o["quantity"]
+            available = pos.get(sym, 0)
+            if available < qty:
+                alerts.append(
+                    f"{acct_group} {sym} SELL {qty} 股，估计可用仅 {available} 股（缺口 {qty - available}）"
+                )
+            else:
+                pos[sym] = available - qty
+    return alerts
+
+
 def _write_server_orders(orders: list[dict], next_date: str, received_at: str) -> int:
     written      = 0
     skipped_date = 0
@@ -183,6 +233,14 @@ def main():
     received_at = datetime.now().isoformat()
     written     = _write_server_orders(orders, next_date, received_at)
     log.info(f"写入 server_orders：新增 {written} 条")
+
+    # ── 本地风控预检（基于 trades 表估算持仓，不依赖 QMT trader）──
+    alerts = _pre_risk_check(orders, next_date)
+    if alerts:
+        for msg in alerts:
+            log.warning(f"[风控预警] {msg}")
+        alert_text = f"order_query {next_date}：风控预检发现 {len(alerts)} 个异常 —— " + "；".join(alerts)
+        _wechat_alert(alert_text)
 
     # 按账户/方向汇总
     by_acct = defaultdict(lambda: {"BUY": 0, "SELL": 0})
