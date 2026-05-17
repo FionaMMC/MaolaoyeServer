@@ -1,0 +1,441 @@
+"""量化分析指标服务。
+
+输入：perf_snapshots (instance_id, date, nav, daily_return)
+输出：Sharpe / Sortino / MaxDD / Calmar / 胜率 / 年化 / Beta / Alpha / IR / 等
+
+所有计算纯函数，无 I/O；从 SQLAlchemy 取数据走 PerfQuery 包装。
+
+设计原则：
+- 数值上和 numpy / pandas 行为一致（用 math/statistics，避免依赖）
+- 没数据返回 None 而不是 0，前端再决定怎么显示
+- 用 252 个交易日年化，rf=0.035（与 V20H bond_yield 一致）
+"""
+from __future__ import annotations
+
+import math
+from collections import Counter
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta
+from typing import Iterable, Sequence
+
+from sqlalchemy import desc, func, select
+
+from app.models import Order, PerfSnapshot, Trade
+
+TRADING_DAYS = 252
+RISK_FREE_RATE = 0.035  # 年化无风险，和 V20H bond_yield 一致
+
+
+# ── 纯函数：统计基础 ─────────────────────────────────────────────────────
+def _mean(xs: Sequence[float]) -> float | None:
+    if not xs:
+        return None
+    return sum(xs) / len(xs)
+
+
+def _stdev(xs: Sequence[float], ddof: int = 1) -> float | None:
+    n = len(xs)
+    if n - ddof <= 0:
+        return None
+    m = _mean(xs)
+    var = sum((x - m) ** 2 for x in xs) / (n - ddof)
+    return math.sqrt(var)
+
+
+def _cov(xs: Sequence[float], ys: Sequence[float], ddof: int = 1) -> float | None:
+    n = len(xs)
+    if n - ddof <= 0 or n != len(ys):
+        return None
+    mx, my = _mean(xs), _mean(ys)
+    return sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / (n - ddof)
+
+
+# ── 核心指标计算 ────────────────────────────────────────────────────────
+@dataclass
+class PerfSummary:
+    """单个区间的综合表现摘要。所有 None 表示样本不够算。"""
+    start_date: str | None = None
+    end_date: str | None = None
+    n_days: int = 0
+
+    # 收益
+    cumulative_return: float | None = None
+    annualized_return: float | None = None
+    total_pnl: float | None = None
+
+    # 风险
+    annualized_volatility: float | None = None
+    sharpe: float | None = None
+    sortino: float | None = None
+    max_drawdown: float | None = None
+    max_drawdown_duration_days: int | None = None
+    calmar: float | None = None
+    var_95: float | None = None  # 历史 VaR 95%
+
+    # 胜负
+    win_rate: float | None = None
+    avg_win: float | None = None
+    avg_loss: float | None = None
+    profit_factor: float | None = None
+
+    # 当前 / 终值
+    start_nav: float | None = None
+    end_nav: float | None = None
+    peak_nav: float | None = None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def compute_summary(
+    rows: list[tuple[str, float, float | None]],
+    rf_annual: float = RISK_FREE_RATE,
+) -> PerfSummary:
+    """rows = [(date_str, nav, daily_return_or_None)]，按时间升序。"""
+    if not rows:
+        return PerfSummary()
+
+    rows = sorted(rows, key=lambda r: r[0])
+    n = len(rows)
+    start_nav = rows[0][1]
+    end_nav = rows[-1][1]
+
+    summary = PerfSummary(
+        start_date=rows[0][0],
+        end_date=rows[-1][0],
+        n_days=n,
+        start_nav=float(start_nav),
+        end_nav=float(end_nav),
+        peak_nav=float(max(r[1] for r in rows)),
+        total_pnl=float(end_nav - start_nav),
+    )
+
+    # 累计收益
+    if start_nav > 0:
+        summary.cumulative_return = (end_nav - start_nav) / start_nav
+        # 年化（按交易日）
+        if n > 1:
+            summary.annualized_return = (
+                (end_nav / start_nav) ** (TRADING_DAYS / n) - 1
+            )
+
+    # 用 daily_return 算波动率 / Sharpe 等
+    daily_rets = [r[2] for r in rows if r[2] is not None]
+    if len(daily_rets) >= 2:
+        sd = _stdev(daily_rets)
+        if sd is not None and sd > 0:
+            summary.annualized_volatility = sd * math.sqrt(TRADING_DAYS)
+            mean_excess = _mean(daily_rets) - rf_annual / TRADING_DAYS
+            summary.sharpe = (mean_excess / sd) * math.sqrt(TRADING_DAYS)
+
+        # Sortino：只用下行波动
+        downsides = [r for r in daily_rets if r < 0]
+        if len(downsides) >= 2:
+            ds_sd = _stdev(downsides)
+            if ds_sd is not None and ds_sd > 0:
+                mean_excess = _mean(daily_rets) - rf_annual / TRADING_DAYS
+                summary.sortino = (mean_excess / ds_sd) * math.sqrt(TRADING_DAYS)
+
+        # 胜率 + 盈亏比
+        wins = [r for r in daily_rets if r > 0]
+        losses = [r for r in daily_rets if r < 0]
+        summary.win_rate = len(wins) / len(daily_rets)
+        if wins:
+            summary.avg_win = _mean(wins)
+        if losses:
+            summary.avg_loss = _mean(losses)
+        if wins and losses:
+            total_w = sum(wins)
+            total_l = abs(sum(losses))
+            summary.profit_factor = total_w / total_l if total_l > 0 else None
+
+        # 历史 VaR 95% (1-day): 5% 分位数
+        if len(daily_rets) >= 20:
+            sorted_rets = sorted(daily_rets)
+            idx = max(0, int(0.05 * len(sorted_rets)) - 1)
+            summary.var_95 = sorted_rets[idx]
+
+    # 最大回撤（基于 nav）
+    navs = [r[1] for r in rows]
+    dates = [r[0] for r in rows]
+    mdd, dd_days = _compute_max_drawdown(navs, dates)
+    summary.max_drawdown = mdd
+    summary.max_drawdown_duration_days = dd_days
+
+    # Calmar = 年化 / |MDD|
+    if (summary.annualized_return is not None
+            and summary.max_drawdown is not None
+            and summary.max_drawdown < 0):
+        summary.calmar = summary.annualized_return / abs(summary.max_drawdown)
+
+    return summary
+
+
+def _compute_max_drawdown(
+    navs: list[float], dates: list[str]
+) -> tuple[float | None, int | None]:
+    """返回 (max_dd, dd_duration_days)。max_dd 是负数；duration = 从峰值到谷底的天数。"""
+    if len(navs) < 2:
+        return None, None
+
+    peak = navs[0]
+    peak_idx = 0
+    max_dd = 0.0
+    max_dd_duration = 0
+    for i, nav in enumerate(navs):
+        if nav > peak:
+            peak = nav
+            peak_idx = i
+        else:
+            dd = (nav - peak) / peak if peak > 0 else 0
+            if dd < max_dd:
+                max_dd = dd
+                max_dd_duration = i - peak_idx
+
+    return max_dd, max_dd_duration
+
+
+def compute_drawdown_series(
+    navs: list[float],
+) -> list[float]:
+    """返回每个时点的 drawdown（相对历史最高点）。"""
+    if not navs:
+        return []
+    out = []
+    peak = navs[0]
+    for nav in navs:
+        if nav > peak:
+            peak = nav
+        out.append((nav - peak) / peak if peak > 0 else 0.0)
+    return out
+
+
+# ── 收益序列对比（vs 基准） ──────────────────────────────────────────────
+@dataclass
+class BenchmarkComparison:
+    benchmark_name: str = ""
+    n_days: int = 0
+    beta: float | None = None
+    alpha_annual: float | None = None
+    correlation: float | None = None
+    tracking_error: float | None = None
+    information_ratio: float | None = None
+    portfolio_return: float | None = None
+    benchmark_return: float | None = None
+    excess_return: float | None = None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def compute_benchmark_comparison(
+    port_rets: Sequence[float],
+    bench_rets: Sequence[float],
+    rf_annual: float = RISK_FREE_RATE,
+    benchmark_name: str = "CSI1000",
+) -> BenchmarkComparison:
+    """两个等长收益率序列对比。"""
+    if len(port_rets) != len(bench_rets) or len(port_rets) < 5:
+        return BenchmarkComparison(benchmark_name=benchmark_name, n_days=len(port_rets))
+
+    out = BenchmarkComparison(benchmark_name=benchmark_name, n_days=len(port_rets))
+
+    out.portfolio_return = sum(port_rets)
+    out.benchmark_return = sum(bench_rets)
+    out.excess_return = out.portfolio_return - out.benchmark_return
+
+    # Beta = Cov(port, bench) / Var(bench)
+    var_b = _stdev(bench_rets)
+    if var_b is not None and var_b > 0:
+        cov = _cov(port_rets, bench_rets)
+        if cov is not None:
+            out.beta = cov / (var_b ** 2)
+
+        # Correlation
+        sd_p = _stdev(port_rets)
+        if sd_p is not None and sd_p > 0 and cov is not None:
+            out.correlation = cov / (sd_p * var_b)
+
+    # Alpha (CAPM, annualized): R_p - rf = α + β(R_b - rf)
+    if out.beta is not None:
+        mean_p = _mean(port_rets) * TRADING_DAYS
+        mean_b = _mean(bench_rets) * TRADING_DAYS
+        out.alpha_annual = (mean_p - rf_annual) - out.beta * (mean_b - rf_annual)
+
+    # Tracking Error = std(diff) * sqrt(252)
+    diffs = [p - b for p, b in zip(port_rets, bench_rets)]
+    te_d = _stdev(diffs)
+    if te_d is not None and te_d > 0:
+        out.tracking_error = te_d * math.sqrt(TRADING_DAYS)
+        # IR = mean(excess) / te (annualized)
+        mean_d_ann = _mean(diffs) * TRADING_DAYS
+        out.information_ratio = mean_d_ann / out.tracking_error
+
+    return out
+
+
+# ── 时间窗口辅助 ────────────────────────────────────────────────────────
+def date_range_for_period(period: str, today: datetime | None = None) -> str:
+    """返回 cutoff_date（YYYYMMDD），period ∈ {7d, 30d, 90d, 180d, 1y, ytd, all}。"""
+    if today is None:
+        today = datetime.now()
+    if period == "all":
+        return "00000000"
+    if period == "ytd":
+        return f"{today.year}0101"
+    delta_map = {
+        "7d": 7, "30d": 30, "90d": 90, "180d": 180, "1y": 365,
+    }
+    days = delta_map.get(period)
+    if days is None:
+        return f"{today.year - 1}0101"
+    return (today - timedelta(days=days)).strftime("%Y%m%d")
+
+
+# ── DB 数据读取 ────────────────────────────────────────────────────────
+class MetricsService:
+    """从 SQLite 读 perf_snapshots / orders / trades，组装成指标。"""
+
+    def __init__(self, session_factory):
+        self.session_factory = session_factory
+
+    def load_perf_rows(
+        self,
+        instance_id: str,
+        cutoff: str = "00000000",
+    ) -> list[tuple[str, float, float | None]]:
+        """返回 [(date, nav, daily_return)] 按时间升序。"""
+        with self.session_factory() as session:
+            stmt = (
+                select(PerfSnapshot.date, PerfSnapshot.nav, PerfSnapshot.daily_return)
+                .where(PerfSnapshot.instance_id == instance_id)
+                .where(PerfSnapshot.date >= cutoff)
+                .order_by(PerfSnapshot.date)
+            )
+            return [(r[0], float(r[1]), float(r[2]) if r[2] is not None else None)
+                    for r in session.execute(stmt).all()]
+
+    def summary(self, instance_id: str, period: str = "all") -> PerfSummary:
+        cutoff = date_range_for_period(period)
+        rows = self.load_perf_rows(instance_id, cutoff)
+        return compute_summary(rows)
+
+    def drawdown_series(self, instance_id: str, period: str = "all") -> dict:
+        cutoff = date_range_for_period(period)
+        rows = self.load_perf_rows(instance_id, cutoff)
+        navs = [r[1] for r in rows]
+        dates = [r[0] for r in rows]
+        return {
+            "dates": dates,
+            "drawdown": compute_drawdown_series(navs),
+            "nav": navs,
+        }
+
+    def periodic_returns(
+        self,
+        instance_id: str,
+        period: str = "all",
+        freq: str = "monthly",
+    ) -> list[dict]:
+        """按 weekly/monthly/yearly 聚合收益。
+
+        freq=monthly → [{period: "2026-05", nav_start, nav_end, ret, n_days}]
+        """
+        cutoff = date_range_for_period(period)
+        rows = self.load_perf_rows(instance_id, cutoff)
+        if not rows:
+            return []
+
+        buckets: dict[str, list[tuple[str, float]]] = {}
+        for date_str, nav, _ in rows:
+            key = self._bucket_key(date_str, freq)
+            buckets.setdefault(key, []).append((date_str, nav))
+
+        result = []
+        for key in sorted(buckets.keys()):
+            bucket = sorted(buckets[key], key=lambda t: t[0])
+            nav_start = bucket[0][1]
+            nav_end = bucket[-1][1]
+            result.append({
+                "period": key,
+                "n_days": len(bucket),
+                "nav_start": nav_start,
+                "nav_end": nav_end,
+                "return": (nav_end - nav_start) / nav_start if nav_start > 0 else 0.0,
+                "pnl": nav_end - nav_start,
+            })
+        return result
+
+    @staticmethod
+    def _bucket_key(date_str: str, freq: str) -> str:
+        """date_str 'YYYYMMDD' → bucket key（YYYY-MM / YYYY-Www / YYYY）。"""
+        if len(date_str) != 8:
+            return date_str
+        y, m, d = date_str[:4], date_str[4:6], date_str[6:]
+        if freq == "yearly":
+            return y
+        if freq == "monthly":
+            return f"{y}-{m}"
+        if freq == "weekly":
+            try:
+                dt = datetime.strptime(date_str, "%Y%m%d")
+                iso_y, iso_w, _ = dt.isocalendar()
+                return f"{iso_y}-W{iso_w:02d}"
+            except Exception:
+                return date_str
+        return date_str  # daily / 默认
+
+    def trade_analytics(
+        self,
+        account_group: str | None = None,
+        cutoff: str = "00000000",
+    ) -> dict:
+        """订单 + 成交统计：总笔数、成功率、commission、turnover、avg fill 等。"""
+        with self.session_factory() as session:
+            base = select(Order).where(Order.valid_date >= cutoff)
+            if account_group:
+                base = base.where(Order.account_group == account_group)
+            orders = session.execute(base).scalars().all()
+            n_total = len(orders)
+            status_count: Counter[str] = Counter(o.status for o in orders)
+            dir_count: Counter[str] = Counter(o.direction for o in orders)
+
+            # 真实成交（trades 表）
+            order_ids = [o.order_id for o in orders]
+            n_trades = 0
+            sum_filled_amt = 0.0
+            sum_filled_qty = 0
+            if order_ids:
+                # 分批 IN 查询（SQLite IN 上限）
+                BATCH = 500
+                for i in range(0, len(order_ids), BATCH):
+                    chunk = order_ids[i:i + BATCH]
+                    trades = session.execute(
+                        select(Trade.filled_quantity, Trade.filled_price)
+                        .where(Trade.order_id.in_(chunk))
+                    ).all()
+                    for q, p in trades:
+                        n_trades += 1
+                        sum_filled_amt += float(q) * float(p)
+                        sum_filled_qty += int(q)
+
+            # bookkeeping_divergence
+            bk_div = sum(1 for o in orders if getattr(o, "bookkeeping_divergence", False))
+
+        fill_rate = None
+        terminal_count = status_count.get("FILLED", 0) + status_count.get("PARTIAL", 0)
+        if n_total > 0:
+            fill_rate = terminal_count / n_total
+
+        return {
+            "cutoff": cutoff,
+            "account_group": account_group,
+            "n_orders": n_total,
+            "by_status": dict(status_count),
+            "by_direction": dict(dir_count),
+            "fill_rate": fill_rate,
+            "n_trades": n_trades,
+            "total_filled_amount": sum_filled_amt,
+            "total_filled_quantity": sum_filled_qty,
+            "bookkeeping_divergence_count": bk_div,
+        }

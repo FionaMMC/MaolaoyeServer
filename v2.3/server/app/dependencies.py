@@ -77,6 +77,15 @@ def get_perf_service(
     return PerfService(session_factory=sf, parquet_store=store)
 
 
+from app.services.metrics import MetricsService
+
+
+def get_metrics_service(
+    sf: sessionmaker = Depends(get_session_factory),
+) -> MetricsService:
+    return MetricsService(session_factory=sf)
+
+
 from pathlib import Path
 
 from app.scheduler.pipeline import StrategyPipeline
