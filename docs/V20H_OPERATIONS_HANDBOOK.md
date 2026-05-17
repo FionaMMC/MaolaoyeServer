@@ -298,21 +298,29 @@ bash daily_v20h.sh
 
 > 研究文档结论：refresh 1-42 天**统计上等价**（bootstrap p=0.077）。所以每周一次足够，**不要每天跑**（浪费 ~15 分钟训练时间）。
 
-### 6.3 每季度第一周（V18 模型重训）
+### 6.3 每季度第一周日（V18 完整重训）
+
+**只需一行命令**（自动重训 + 上传 + trigger）：
 
 ```bash
 cd /Users/mameican/Desktop/量化
-./.venv/bin/python -m walkforward_framework.run_v18_final --rebuild
-# 把所有历史数据重新走 expanding IC scoring，输出新版 pred
+./.venv/bin/python v20h_refresh.py \
+    --target $(date +%Y%m%d) \
+    --rebuild-pred \
+    --rebuild-pred-cache \
+    --rebuild-rets
 ```
 
-这是**重训模型参数**，不是单纯刷新推理。耗时约 15-20 分钟。
+跟周度脚本相比唯一多的是 **`--rebuild-pred-cache`** flag——这才是真正清缓存重训
+（细节看 §9.2，**不要把 `--rebuild-pred` 当成重训**）。耗时约 30 min。
 
 季度日期（自然季）：
-- Q1: 1 月第一周
-- Q2: 4 月第一周
-- Q3: 7 月第一周
-- Q4: 10 月第一周
+- Q1: **1 月第一周日**（春节前如果赶不上，往后推一周）
+- Q2: **4 月第一周日**
+- Q3: **7 月第一周日**
+- Q4: **10 月第一周日**
+
+⚠️ retrain 完，下一个 rebal day（每 42 天一次）会大幅换仓。**选周日做**给市场和你自己留一晚消化。
 
 ### 6.4 每年（walkforward 复检）
 
@@ -447,36 +455,122 @@ curl -sH "Authorization: Bearer $QMT_API_KEY" \
 
 ---
 
-## 9. Pred 重训 vs 信号生成 — 两件事
+## 9. Pred 重训 vs 信号生成 — 三件事
 
-### 9.1 概念分清
+> ⚠️ **服务器不会自动重训**。所有训练代码都在 Mac 本地的 `/Users/mameican/Desktop/量化/`，
+> 服务器只消费你上传的 `pred_csi1000.parquet`。重训完全靠你**手动**跑一行命令。
 
-| 动作 | 频率 | 干什么 | 谁触发 |
-|---|---|---|---|
-| **Pred 推理** | 每周 1 次最低 | 用现有 V18 模型，对最新数据出 prob_top | 你（bash daily_v20h.sh） |
-| **V18 retrain** | 每季度 1 次 | 重新拟合模型参数 | 你 (`--rebuild` flag) |
-| **信号生成** | 每个交易日 | 拿最近 pred 算今天该买/卖 | server 自动（pipeline） |
-| **主调仓** | 每 42 个交易日 | V20HStrategy 内部决定要不要换股 | server 自动（strategy.step）|
+### 9.1 三层 refresh 分清（**最关键**）
 
-### 9.2 Pred 多久刷一次足够
+| 层 | 命令 | 干什么 | 耗时 | 频率 | 谁触发 |
+|---|---|---|---|---|---|
+| **A. 推理增量** | `bash daily_v20h.sh` | 把现有 V18 模型推到最新日期，**沿用所有缓存**（V12、因子、模型权重都不重算） | ~1 min（缓存命中）<br>~15 min（首次） | **每周日 22:00** | 你（手动 / cron） |
+| **B. 完整重训** | `./.venv/bin/python v20h_refresh.py --target $(date +%Y%m%d) --rebuild-pred --rebuild-pred-cache --rebuild-rets` | **清缓存** → 重算 V12 regime + 全部因子 → 重训模型 + IC scoring → 推 pred | ~30 min | **每季度第一周日** | 你（手动） |
+| **C. 服务器 pipeline** | `trigger_pipeline.py` | 用服务器上**现有** pred 算 T+1 buy/sell | <2 秒 | 每个交易日 T 16:00 | 搭档（自动 / cron） |
 
-研究文档铁证：**1-42 天等价**。所以**每周一次**最实际：
-- 时间窗：周日 22:00（不影响下周一交易）
-- 命令：`bash daily_v20h.sh`
-- 之后自动 sync pred 到服务器
+C 层不依赖也不知道 A/B 何时做——你只要保证 pred 文件在服务器上，C 就能工作。
 
-### 9.3 V18 retrain 触发条件
+### 9.2 容易踩坑：`--rebuild-pred` ≠ 重训
 
-| 触发 | 行动 |
-|---|---|
-| 定期：每季度第一周 | `./.venv/bin/python -m walkforward_framework.run_v18_final --rebuild` |
-| 异常：60 日滚动 Sharpe 跌破 0.5 | 立即 retrain；如果 retrain 后仍 < 0.5 → 暂停策略，做深度诊断 |
-| 异常：CSI1000 重大成分调整 | 6 月 / 12 月调整月**结束后**那个周末跑一次 |
-| 异常：黑名单 30 天内新增 > 20 个 | 说明大量股票被 REJECTED，可能账户权限/数据问题，需排查 |
+`v20h_refresh.py` 有两个名字很像的 flag，**千万分清**：
 
-⚠️ retrain 后**第一次跑** server 时，pred 完全换了一批 prob_top 排序，可能导致 V20H 在下个 rebal day **大幅换仓**。这是正常的，但要：
-- retrain 选在距下个 rebal day 远的日子做
-- retrain 选**周末**做：周日跑完 push pred，下周一 16:00 才会 trigger 用到——给市场和你自己留时间消化
+| Flag | 实际效果 | 何时用 |
+|---|---|---|
+| `--rebuild-pred` | 调 `run_v18_final.py`（**不带** `--rebuild`），**用缓存**，~1 min | 推理增量，每周日 |
+| `--rebuild-pred-cache` | 调 `run_v18_final.py --rebuild`，**清缓存**，~25 min | 完整重训，每季度 |
+
+源码逻辑（v20h_refresh.py 第 110 行）：
+```python
+if rebuild:                           # ← rebuild 参数来自 --rebuild-pred-cache
+    cmd.append("--rebuild")           # 只有这时 run_v18 才会清缓存
+```
+
+`daily_v20h.sh` 里写的是 `--rebuild-pred` 不带 `-cache`，所以每周跑只是推理，**不会重训**。
+
+如果你以为每周跑就在重训——其实没有。模型参数从首次训练后一直没变过，只是 pred 文件被推到更新日期。
+
+### 9.3 周度推理增量（A 层）
+
+研究文档铁证：refresh **1-42 天等价**（bootstrap p=0.077 不显著）。所以每周日 22:00 跑一次足够：
+
+```bash
+cd /Users/mameican/Desktop/量化
+bash daily_v20h.sh
+# 内部相当于:
+# ./.venv/bin/python v20h_refresh.py \
+#     --target $(date +%Y%m%d) \
+#     --rebuild-pred \
+#     --rebuild-rets
+```
+
+跑完会自动：
+1. 用现有 V18 模型把 pred 推到 target 日期（约 ~1 min）
+2. 重建 stock_close + stock_returns（V19，~1 min）
+3. 上传 pred / v12 / index / stock_close / stock_returns 到服务器
+4. trigger `/admin/run-pipeline?trade_date=$target`（如果 target 不是交易日则跳过）
+
+**结果**：pred 文件覆盖到最新日期，下周一开始 server 用的就是新 pred 算信号。
+
+### 9.4 季度完整重训（B 层）
+
+每季度第一周的**周日**做一次。**只需手动跑这一行**：
+
+```bash
+cd /Users/mameican/Desktop/量化
+./.venv/bin/python v20h_refresh.py \
+    --target $(date +%Y%m%d) \
+    --rebuild-pred \
+    --rebuild-pred-cache \
+    --rebuild-rets
+```
+
+差别就是多了 `--rebuild-pred-cache`，触发 `run_v18_final.py --rebuild`：
+- 清掉 `walkforward_framework/cache/v18/` 整个缓存
+- 重算 V12 regime（2018-至今全部历史）
+- 重新拟合所有 alpha 因子
+- 重新跑 expanding IC scoring → 新模型权重
+- 推 pred 到 target
+
+季度日期：
+- Q1: **1 月第一周日**（春节前如果赶不上，往后推一周）
+- Q2: **4 月第一周日**
+- Q3: **7 月第一周日**
+- Q4: **10 月第一周日**
+
+⚠️ retrain 完成后 prob_top 排序会换一批，下次主调仓（每 42 天一次）会大幅换仓。这是正常的，但要：
+- 选**周末**做：周日跑完上传，周一 16:00 trigger 才会用新 pred
+- 看一眼 `/admin/strategy-state` 里 `last_rb_idx`，**避免** retrain 当周就赶上 rebal day（提前预知大换仓）
+
+### 9.5 临时触发重训的事件
+
+正常季度节奏之外，出现下面任一情况立即手动跑一次 B 层完整重训：
+
+| 事件 | 怎么发现 | 行动 |
+|---|---|---|
+| 60 日滚动 Sharpe < 0.5 | `/dashboard` NAV 曲线 / `/admin/nav-history` | 立即 B 层；若 retrain 后仍 < 0.5 → 暂停策略做深度诊断 |
+| CSI1000 半年度成分调整 | 中证指数公司公告（6/12 月） | 调整月**结束后**那个周末做 B 层 |
+| 黑名单 30 天内新增 > 20 | `curl /admin/blacklist | jq '.data.auto_unique_symbols'` | 排查股票池 + B 层 |
+| 大盘剧烈 regime 切换 | `/admin/strategy-state` 里 prev_hedge 跨越阈值 | B 层 |
+| Pred lag > 14 天 | `/admin/health` 里 `pred_status.lag_hours` | 先 A 层补；持续异常再 B 层 |
+
+### 9.6 整体节奏一图
+
+```
+每个交易日 T:
+  16:00 → trigger_pipeline.py    [C 层]  算 T+1 信号
+
+每周日 22:00:
+  bash daily_v20h.sh             [A 层]  推理增量 ~1 min
+
+每季度第一周日 22:00:
+  v20h_refresh.py --rebuild-...  [B 层]  完整重训 ~30 min
+                                          (替代当周的 A 层)
+
+每年 1 月:
+  完整 walkforward 复检           [手动]  追加新章节到 research doc
+```
+
+**记忆点**：**A 是每周，B 是每季，C 是每天，三者完全独立。服务器只跑 C，A/B 都在 Mac。**
 
 ---
 
@@ -650,12 +744,18 @@ curl -XPOST -H "Authorization: Bearer $QMT_API_KEY" "$QMT_BASE/admin/run-pipelin
 ### 12.3 Mac 本地
 
 ```bash
-# 推 pred + 一键同步到服务器
+# 周度推理增量（每周日 22:00）—— A 层，~1 min，不重训
 cd /Users/mameican/Desktop/量化
 bash daily_v20h.sh
 
-# 季度 retrain
-./.venv/bin/python -m walkforward_framework.run_v18_final --rebuild
+# 季度完整重训（每季度第一周日）—— B 层，~30 min
+# 关键区别：多了 --rebuild-pred-cache 才会清缓存重训
+cd /Users/mameican/Desktop/量化
+./.venv/bin/python v20h_refresh.py \
+    --target $(date +%Y%m%d) \
+    --rebuild-pred \
+    --rebuild-pred-cache \
+    --rebuild-rets
 
 # Dashboard 截图脚本（看 NAV 曲线）
 cd /Users/mameican/Desktop/server/v2.3/server
