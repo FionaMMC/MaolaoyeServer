@@ -288,7 +288,9 @@ curl -sH "Authorization: Bearer $QMT_API_KEY" \
 - 每天 `perf_snapshot` 写 NAV 快照（你的回报曲线靠这个）
 - 只有第 7 步「主调仓」是 42 天一次
 
-### 6.2 每周日晚（pred 刷新）
+### 6.2 每周日晚（pred 刷新 + 持仓对账）
+
+#### 6.2.a 推理增量（你 Mac 端跑）
 
 ```bash
 cd /Users/mameican/Desktop/量化
@@ -297,6 +299,43 @@ bash daily_v20h.sh
 ```
 
 > 研究文档结论：refresh 1-42 天**统计上等价**（bootstrap p=0.077）。所以每周一次足够，**不要每天跑**（浪费 ~15 分钟训练时间）。
+
+#### 6.2.b 持仓对账（搭档 Windows 端跑）
+
+```powershell
+cd C:\parttime\MaolaoyeServer
+
+# Step 1: dry-run 看 diff（不改 server）
+.\venv\Scripts\python.exe v2.3\client\query_qmt_positions.py
+
+# Step 2: 看完 diff 没问题，apply 一下
+.\venv\Scripts\python.exe v2.3\client\query_qmt_positions.py --apply
+```
+
+**对账逻辑**：脚本调用 `xt_trader.query_stock_asset/positions()` 拉 QMT 真实账户的 cash + 持仓 → POST `/admin/reconcile-positions` → server 比对 `instance_state.virtual_*` → 出 diff 报告（dry-run）或强制对齐（apply）。
+
+**报告示例**：
+```
+对账报告  instance=paper_v20h_v20h_v1_3  [DRY-RUN]
+======================================================================
+  现金:  server ¥930,082  vs QMT ¥922,928  (diff -7,155)
+  持仓:  server 846 只  vs QMT 845 只
+    匹配             843 只
+    数量不一致         1 只
+    server 多余        2 只 ← 幽灵持仓嫌疑
+    QMT 多余           0 只 ← 漏推 trade_result 嫌疑
+
+  Diff 详情（前 30）：
+    Symbol       Server      QMT      Diff
+    001309.SZ       100        0      -100
+    601778.SH      2300        0     -2300
+    ...
+```
+
+**触发情况**：
+- ⭐ 每周日例行做一次（即使没发现问题也跑，攒数据）
+- 怀疑 bookkeeping_divergence 立刻做（看 `/admin/bookkeeping-divergence`）
+- 任何在 QMT 手动操作后必做（手动平仓、补单、撤单等）
 
 ### 6.3 每季度第一周日（V18 完整重训）
 
@@ -608,20 +647,36 @@ curl -sH "Authorization: Bearer $QMT_API_KEY" \
 
 ### 11.1 真账户 ↔ 虚拟账本分叉（最严重）
 
-症状：`/admin/bookkeeping-divergence` 返回非空。
+症状（任一）：
+- `/admin/bookkeeping-divergence` 返回非空
+- 某只票连续多天 SELL/BUY REJECTED（持仓不足 / 现金不足）
+- NAV 跟 QMT 实际权益对不上
+- 在 QMT 手动操作过（手动平仓 / 撤单 / 加仓）
+
+#### 标准流程：用对账脚本一键修复
+
+**搭档 Windows 端**：
+
+```powershell
+# Step 1: dry-run 看分叉详情
+cd C:\parttime\MaolaoyeServer
+.\venv\Scripts\python.exe v2.3\client\query_qmt_positions.py
+
+# Step 2: 看完 diff，确认要 sync，加 --apply
+.\venv\Scripts\python.exe v2.3\client\query_qmt_positions.py --apply
+```
+
+apply 后 server `instance_state.virtual_cash` 和 `virtual_positions` 强制等于 QMT 真账户值。下次 trigger 时 V20H 看到的就是真实状态，不会再瞎发 SELL。
+
+#### 如果搭档不在线，手工 SQL 兜底（**不推荐**）
 
 ```bash
-# 1. 看是哪些 orders
+# 1. 看是哪些 orders 触发了 divergence
 curl -sH "Authorization: Bearer $QMT_API_KEY" \
   "http://120.26.138.82:8000/admin/bookkeeping-divergence" | jq
 
-# 2. 在 QMT 客户端打开账号详情，看真实仓位
-#    对比 instance_state.virtual_positions
-curl -sH "Authorization: Bearer $QMT_API_KEY" \
-  "http://120.26.138.82:8000/admin/strategy-state" | jq
-
-# 3. 手动同步：登录服务器，用 sqlite3 改 instance_state.virtual_cash / virtual_positions
-#    让虚拟账本 = QMT 真账户实际状态
+# 2. 你需要从其他渠道（搭档电话报 / QMT 截图）拿到真实 cash + 持仓
+# 3. 登录 server 手动改
 ssh qmt
 sudo -u qmtserver sqlite3 /opt/qmt-server/v2.3/server/pipeline-server.db
 > UPDATE instance_state
@@ -630,9 +685,11 @@ sudo -u qmtserver sqlite3 /opt/qmt-server/v2.3/server/pipeline-server.db
 >       last_update = datetime('now', 'localtime')
 >   WHERE instance_id = 'paper_v20h_v20h_v1_3';
 
-# 4. 改完后重启服务（safety），让 cache 失效
+# 4. 重启服务让 cache 失效
 sudo systemctl restart qmt-server.service
 ```
+
+→ 优先走对账脚本路径，**这是为什么 6.2.b 要每周做**——经常做就不会被罕见的紧急同步逼到手忙脚乱。
 
 ### 11.2 服务器宕机
 
@@ -739,6 +796,20 @@ curl -sH "Authorization: Bearer $QMT_API_KEY" "$QMT_BASE/admin/bookkeeping-diver
 
 # 强制刷一个交易日的 pipeline（小心，幂等会清同日旧数据）
 curl -XPOST -H "Authorization: Bearer $QMT_API_KEY" "$QMT_BASE/admin/run-pipeline?trade_date=20260518" | jq
+
+# 持仓对账（看 server 跟 QMT 真账户是否分叉）
+# 注意：只能从 client 推数据上来，server 自己拉不到 QMT，见 6.2.b
+curl -sX POST -H "Authorization: Bearer $QMT_API_KEY" -H "Content-Type: application/json" \
+  -d '{"instance_id":"paper_v20h_v20h_v1_3","qmt_account_id":"xxxx",
+       "qmt_cash":922928,"qmt_positions":{"600519.SH":100},
+       "snapshot_time":"2026-05-21T14:00:00+08:00","dry_run":true}' \
+  "$QMT_BASE/admin/reconcile-positions" | jq
+
+# 量化绩效指标（Sharpe / MaxDD / 胜率 等）
+curl -sH "Authorization: Bearer $QMT_API_KEY" "$QMT_BASE/admin/metrics/summary?period=30d" | jq
+curl -sH "Authorization: Bearer $QMT_API_KEY" "$QMT_BASE/admin/metrics/drawdown?period=all" | jq
+curl -sH "Authorization: Bearer $QMT_API_KEY" "$QMT_BASE/admin/metrics/periodic?period=all&freq=monthly" | jq
+curl -sH "Authorization: Bearer $QMT_API_KEY" "$QMT_BASE/admin/metrics/trade-analytics?period=30d" | jq
 ```
 
 ### 12.3 Mac 本地
@@ -782,6 +853,12 @@ git pull origin master
 
 # 16:00 trigger 算明天信号（默认下一交易日）
 .\venv\Scripts\python.exe v2.3\client\trigger_pipeline.py
+
+# === 周度对账 / 故障排查时用 ===
+# dry-run 看 diff（不改 server）
+.\venv\Scripts\python.exe v2.3\client\query_qmt_positions.py
+# 看完没问题 apply 真改
+.\venv\Scripts\python.exe v2.3\client\query_qmt_positions.py --apply
 ```
 
 ---
@@ -804,10 +881,15 @@ git pull origin master
 | 日期 | 改动 | 负责人 |
 |---|---|---|
 | 2026-05-17 | 初版（5-bug 修复 deploy 后） | 你 + Claude |
+| 2026-05-17 | 加量化分析 dashboard（5 tab，Sharpe/MaxDD/Sortino/Calmar 等） | Claude |
+| 2026-05-21 | 撤销科创板 filter（账户开通权限了）+ 清 49 个冤枉黑名单 + 4 个幽灵 PENDING | Claude |
+| 2026-05-21 | 加持仓对账机制 `/admin/reconcile-positions` + `query_qmt_positions.py` | Claude |
 
 ---
 
-## 附录 A：5-bug 修复后的行为变化清单
+## 附录 A：累积修复的行为变化清单
+
+### 5-bug 修复（2026-05-17）
 
 | Before | After |
 |---|---|
@@ -815,15 +897,35 @@ git pull origin master
 | 5/13 那种 6 BUY 全 FAIL precheck | SELL 先结算到 running_cash，BUY 再 check |
 | settlement 不扣手续费 → 虚拟 cash 高估 | 扣 commission 0.03% + 印花税 SELL 0.05% |
 | 防穿仓静默跳过 → 真账户 / 虚拟账本无声分叉 | 升级 ERROR + `bookkeeping_divergence` flag |
-| 科创板 688/689 每周都 REJECTED → 进黑名单 | adapter 前置过滤，universe 干净 |
+| 科创板 688/689 每周都 REJECTED → 进黑名单 | adapter 前置过滤（5/21 撤销，账户已开权限）|
 | 残留 real_A_* instance_state 写 0% NAV 快照 | migration 已删 |
+
+### Dashboard 升级（2026-05-17）
+
+| Before | After |
+|---|---|
+| 单页 7 个卡片，固定时间窗 | 5 tab 切换 + 7 个时间窗选项（7d/30d/90d/180d/ytd/1y/all） |
+| 只有 NAV 曲线 + 日收益柱图 | 加 Sharpe/Sortino/Calmar/MaxDD/胜率/Profit Factor/VaR 等 |
+| 无周/月/年聚合 | 周/月/年度收益表 + 水下回撤曲线 + 日收益直方图 |
+| 无策略内部状态 | 显示 last_rb_idx + next_rb_di + prev_hedge + bookkeeping_divergence 告警 |
+
+### 对账机制（2026-05-21）
+
+| Before | After |
+|---|---|
+| 发现 server / QMT 分叉只能手工 SQL 改 instance_state | client 推 QMT 真实持仓 → server 自动 diff + apply |
+| 没有定期对账，分叉积压 | 周度 SOP 加入 `query_qmt_positions.py --apply` |
+| 黑名单 auto-promote min_rej=1 + 没有 manual override | 49 个冤枉的可一次性清除 + 改 status='REJECTED_HISTORICAL' 防再加回 |
 
 ## 附录 B：未来 roadmap
 
 | 阶段 | 内容 | 优先级 |
 |---|---|---|
 | **v2.4** | 接入 IM 期货：自动 short/long、roll、basis 跟踪 | ⭐⭐⭐⭐⭐（**关键，恢复 hedge 才能熊市保命**） |
+| **心跳告警** | 9:30 之后没收到 client `GET /orders` → 微信报警 | ⭐⭐⭐⭐（5/20 client 没跑全天没人发现）|
+| **WeChat / 邮件告警** | bookkeeping_divergence > 0 / 服务器宕机自动通知 | ⭐⭐⭐ |
+| **自动对账** | 每周日 22:00 自动跑 reconcile（不再依赖搭档手动）| ⭐⭐⭐ |
+| **限价随行就市** | adapter 用最近一日真实收盘当 reference_price，不用 stale pred close | ⭐⭐⭐ |
 | **Phase 8** | 实盘 60 天 alpha 累积 → bootstrap CI 是否变窄 | ⭐⭐⭐ |
 | **Phase 4** | V18 retrain 频率实验（季度 vs 半年） | ⭐⭐ |
 | 多策略并跑 | strategies.yaml 加第二个实例（不同 cut_pct 或 rebal_freq） | ⭐⭐ |
-| WeChat / 邮件告警 | bookkeeping_divergence / 服务器宕机自动通知 | ⭐⭐⭐ |
