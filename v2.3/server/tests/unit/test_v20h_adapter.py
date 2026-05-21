@@ -635,3 +635,221 @@ start_date: "2024-04-03"
     V20HAdapter._pred_df = None
     V20HAdapter._v12_series = None
     V20HAdapter._index_close = None
+
+
+def test_adapter_uses_real_close_not_pred_close_as_reference_price(tmp_path, monkeypatch):
+    """RawSignal.reference_price 应该用 ctx.market 里最近一日真实收盘，**不是** pred close。
+
+    Regression: 5/21 实盘场景——pred lag 16 天，pred close 比实际跌了 24%。
+    用 pred close 当限价基准导致 4 个 SELL 单注定卖不出。
+    fix 后用 ctx.market 真实价，limit 跟当下市场对齐。
+    """
+    import plugins.v20h_adapter as adapter_mod
+    from plugins.v20h_adapter import V20HAdapter
+    from app.storage.parquet import ParquetStore
+    from app.strategy.context import Context
+
+    fake_data_dir = tmp_path / "data"
+    fake_data_dir.mkdir()
+
+    n_stocks = 20
+    codes6 = [f"60{i:04d}" for i in range(n_stocks)]
+    # 关键：pred close 故意设为 100（"stale"），store 里真实 close 设为 50（"real"）
+    pred_close = 100.0
+    real_close = 50.0   # 模拟 pred lag 期间市场跌了 50%
+
+    pred_dates = pd.date_range("20240403", periods=43, freq="B")
+    target_date_dt = pred_dates[-1]
+    target_date_int = int(target_date_dt.strftime("%Y%m%d"))
+
+    pred_rows = []
+    for d in pred_dates:
+        for code6 in codes6:
+            pred_rows.append({
+                "date": d, "code": code6, "close": pred_close,
+                "prob_top": 0.9 - codes6.index(code6) * 0.01,
+                "excess_ret": 0.01 - codes6.index(code6) * 0.0005,
+            })
+    pd.DataFrame(pred_rows).to_parquet(fake_data_dir / "pred_csi1000.parquet")
+
+    v12 = pd.DataFrame({"exposure": [0.5] * 43}, index=pred_dates)
+    v12.to_parquet(fake_data_dir / "v12_exp_hs300.parquet")
+
+    idx_df = pd.DataFrame({
+        "open": [5950.0] * 43, "high": [6010.0] * 43,
+        "low": [5940.0] * 43, "close": [6005.0] * 43, "volume": [0] * 43,
+    }, index=pred_dates)
+    idx_df.to_parquet(fake_data_dir / "index_csi1000.parquet")
+
+    monkeypatch.setattr(adapter_mod, "_V20H_DIR", tmp_path)
+    V20HAdapter._cfg = None
+    V20HAdapter._pred_df = None
+    V20HAdapter._v12_series = None
+    V20HAdapter._index_close = None
+
+    cfg_yaml = """
+capital_init: 10_000_000
+cut_pct: 0.10
+rebal_freq: 42
+weight_cap: 1.5
+q10_quantile: 0.10
+q20_quantile: 0.20
+q40_quantile: 0.40
+q_warmup_days: 1
+use_vol_target: false
+target_vol_ann: 0.15
+vol_lookback: 20
+stock_cmn_rate: 0.0003
+min_stock_cmn: 5.0
+stamp_duty: 0.0005
+bond_yield: 0.035
+fut_cmn_rate: 0.0005
+basis_cost: 0.03
+fut_margin_ratio: 0.15
+roll_cost_bps: 10
+lot_size: 100
+cash_buffer: 0.02
+start_date: "2024-04-03"
+"""
+    (tmp_path / "config.yaml").write_text(cfg_yaml, encoding="utf-8")
+
+    # 关键：store 里的 close = real_close = 50（和 pred 100 不同）
+    store = ParquetStore(root=tmp_path / "parquet")
+    for code6 in codes6:
+        store.append("stocks", f"{code6}.SH", pd.DataFrame([{
+            "trade_date": target_date_int, "open": real_close, "high": real_close,
+            "low": real_close * 0.99, "close": real_close,
+            "volume": 1000, "amount": real_close * 1000, "suspendFlag": 0,
+        }]))
+    store.append("indexes", "000852.SH", pd.DataFrame([{
+        "trade_date": target_date_int, "open": 6000, "high": 6010,
+        "low": 5990, "close": 6005, "volume": 0, "amount": 0,
+    }]))
+
+    # 持仓里有 5 只 V20H 不要的票（rebal 日会全卖）
+    virtual_positions = {f"{code6}.SH": 5000 for code6 in codes6[15:20]}
+
+    ctx = Context(
+        instance_id="paper_v20h_v20h_v1_3",
+        trade_date=target_date_int,
+        virtual_cash=5_000_000.0,
+        virtual_positions=virtual_positions,
+        parquet_store=store,
+    )
+
+    adapter = V20HAdapter()
+    signals = adapter.run(ctx, target_date_int)
+
+    assert len(signals) > 0, "应产生信号"
+    # 所有信号的 reference_price 应该 = real_close (50)，不是 pred_close (100)
+    for sig in signals:
+        assert sig.reference_price == real_close, (
+            f"{sig.symbol} {sig.direction}: reference_price={sig.reference_price}，"
+            f"应该是 real_close={real_close} 而不是 pred_close={pred_close}"
+        )
+
+    V20HAdapter._cfg = None
+    V20HAdapter._pred_df = None
+    V20HAdapter._v12_series = None
+    V20HAdapter._index_close = None
+
+
+def test_adapter_falls_back_to_pred_close_when_no_real_market_data(tmp_path, monkeypatch):
+    """ctx.market 无数据时，reference_price 回退到 pred close，并 emit warning log。"""
+    import plugins.v20h_adapter as adapter_mod
+    from plugins.v20h_adapter import V20HAdapter
+    from app.storage.parquet import ParquetStore
+    from app.strategy.context import Context
+
+    fake_data_dir = tmp_path / "data"
+    fake_data_dir.mkdir()
+
+    n_stocks = 20
+    codes6 = [f"60{i:04d}" for i in range(n_stocks)]
+    pred_close = 100.0   # 只有 pred close
+
+    pred_dates = pd.date_range("20240403", periods=43, freq="B")
+    target_date_dt = pred_dates[-1]
+    target_date_int = int(target_date_dt.strftime("%Y%m%d"))
+
+    pred_rows = [
+        {"date": d, "code": code6, "close": pred_close,
+         "prob_top": 0.9 - codes6.index(code6) * 0.01,
+         "excess_ret": 0.01 - codes6.index(code6) * 0.0005}
+        for d in pred_dates for code6 in codes6
+    ]
+    pd.DataFrame(pred_rows).to_parquet(fake_data_dir / "pred_csi1000.parquet")
+
+    v12 = pd.DataFrame({"exposure": [0.5] * 43}, index=pred_dates)
+    v12.to_parquet(fake_data_dir / "v12_exp_hs300.parquet")
+
+    idx_df = pd.DataFrame({
+        "open": [5950.0] * 43, "high": [6010.0] * 43,
+        "low": [5940.0] * 43, "close": [6005.0] * 43, "volume": [0] * 43,
+    }, index=pred_dates)
+    idx_df.to_parquet(fake_data_dir / "index_csi1000.parquet")
+
+    monkeypatch.setattr(adapter_mod, "_V20H_DIR", tmp_path)
+    V20HAdapter._cfg = None
+    V20HAdapter._pred_df = None
+    V20HAdapter._v12_series = None
+    V20HAdapter._index_close = None
+
+    cfg_yaml = """
+capital_init: 10_000_000
+cut_pct: 0.10
+rebal_freq: 42
+weight_cap: 1.5
+q10_quantile: 0.10
+q20_quantile: 0.20
+q40_quantile: 0.40
+q_warmup_days: 1
+use_vol_target: false
+target_vol_ann: 0.15
+vol_lookback: 20
+stock_cmn_rate: 0.0003
+min_stock_cmn: 5.0
+stamp_duty: 0.0005
+bond_yield: 0.035
+fut_cmn_rate: 0.0005
+basis_cost: 0.03
+fut_margin_ratio: 0.15
+roll_cost_bps: 10
+lot_size: 100
+cash_buffer: 0.02
+start_date: "2024-04-03"
+"""
+    (tmp_path / "config.yaml").write_text(cfg_yaml, encoding="utf-8")
+
+    # store **完全为空** —— 模拟 ctx.market(symbol) 都返回 empty DataFrame
+    store = ParquetStore(root=tmp_path / "parquet")
+    # 必须有 index 才能让 adapter 走到信号生成（否则空 prices_today 早退出）
+    store.append("indexes", "000852.SH", pd.DataFrame([{
+        "trade_date": target_date_int, "open": 6000, "high": 6010,
+        "low": 5990, "close": 6005, "volume": 0, "amount": 0,
+    }]))
+
+    virtual_positions = {f"{code6}.SH": 5000 for code6 in codes6[15:20]}
+
+    ctx = Context(
+        instance_id="paper_v20h_v20h_v1_3",
+        trade_date=target_date_int,
+        virtual_cash=5_000_000.0,
+        virtual_positions=virtual_positions,
+        parquet_store=store,
+    )
+
+    adapter = V20HAdapter()
+    signals = adapter.run(ctx, target_date_int)
+
+    # 没真实价 → fallback 到 pred close
+    assert len(signals) > 0
+    for sig in signals:
+        assert sig.reference_price == pred_close, (
+            f"{sig.symbol}: 应回退到 pred_close={pred_close}，实际 {sig.reference_price}"
+        )
+
+    V20HAdapter._cfg = None
+    V20HAdapter._pred_df = None
+    V20HAdapter._v12_series = None
+    V20HAdapter._index_close = None
