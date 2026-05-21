@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import desc, func, select
 
 from app.auth import verify_api_key
@@ -15,6 +15,7 @@ from app.dependencies import (
     get_blacklist_service,
     get_data_upload_service,
     get_metrics_service,
+    get_reconcile_service,
     get_session_factory,
     get_settings,
 )
@@ -26,9 +27,11 @@ from app.models import (
     Trade,
 )
 from app.schemas.common import APIResponse
+from app.schemas.reconcile import QmtPositionSnapshot, ReconcileResult
 from app.services.blacklist import BlacklistService
 from app.services.data_upload import DataUploadService
 from app.services.metrics import MetricsService, date_range_for_period
+from app.services.reconcile import InstanceNotFound, ReconcileService
 from app.settings import Settings
 
 router = APIRouter(prefix="/admin")
@@ -567,3 +570,35 @@ async def bookkeeping_divergence(
         code=0, message="ok",
         data={"items": items, "count": len(items)},
     )
+
+
+# ── 14. POST /admin/reconcile-positions : 把 QMT 真实持仓推上来对账 ──────
+@router.post(
+    "/reconcile-positions",
+    response_model=APIResponse[ReconcileResult],
+    dependencies=[Depends(verify_api_key)],
+)
+async def reconcile_positions(
+    snapshot: QmtPositionSnapshot,
+    service: ReconcileService = Depends(get_reconcile_service),
+):
+    """对账：server virtual_positions vs QMT 真实持仓。
+
+    Body:
+      {
+        "instance_id": "paper_v20h_v20h_v1_3",
+        "qmt_account_id": "1234567890",
+        "qmt_cash": 922928.0,
+        "qmt_positions": {"600519.SH": 100, ...},
+        "snapshot_time": "2026-05-21T14:30:00+08:00",
+        "dry_run": true  // 默认 true，false 才真改 instance_state
+      }
+
+    dry_run=true: 返回 diff 详情供人眼审查
+    dry_run=false: 强制把 instance_state.virtual_cash/positions 改成 QMT 状态
+    """
+    try:
+        result = service.reconcile(snapshot)
+    except InstanceNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return APIResponse[ReconcileResult](code=0, message="ok", data=result)

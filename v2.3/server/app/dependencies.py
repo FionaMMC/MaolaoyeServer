@@ -86,6 +86,15 @@ def get_metrics_service(
     return MetricsService(session_factory=sf)
 
 
+from app.services.reconcile import ReconcileService
+
+
+def get_reconcile_service(
+    sf: sessionmaker = Depends(get_session_factory),
+) -> ReconcileService:
+    return ReconcileService(session_factory=sf)
+
+
 from pathlib import Path
 
 from app.scheduler.pipeline import StrategyPipeline
