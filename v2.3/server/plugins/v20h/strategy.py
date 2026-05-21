@@ -51,9 +51,9 @@ class StrategyConfig:
     start_date: str = "2021-04-01"
 
     # 账户权限：剔除账户不能交易的板块前缀
-    # 默认排除科创板 688/689——QMT 普通账户无 50 万资产 + 科创板权限
-    # 实盘历史中 V20H 因此累计 43 个 688 票进黑名单
-    excluded_symbol_prefixes: tuple = ("688", "689")
+    # 默认为空（账户已开通全部板块权限）
+    # 如有账户没开科创板权限，把它设回 ("688", "689") 即可
+    excluded_symbol_prefixes: tuple = ()
 
 
 def compute_expanding_quantiles(v12: pd.Series, start: str = '2021-04-01',
