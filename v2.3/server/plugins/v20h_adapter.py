@@ -112,6 +112,19 @@ class V20HAdapter(Strategy):
                 trade_date, latest_pred_date.strftime("%Y%m%d"), lag_days,
             )
 
+        # ── 板块权限过滤（账户不能交易的前缀，默认科创板 688/689）─────
+        excluded_prefixes = tuple(getattr(cfg, "excluded_symbol_prefixes", ()) or ())
+        if excluded_prefixes:
+            n_before = len(pred_today)
+            mask = ~pred_today["code"].astype(str).str.startswith(excluded_prefixes)
+            pred_today = pred_today[mask]
+            n_dropped = n_before - len(pred_today)
+            if n_dropped > 0:
+                logger.info(
+                    "V20H excluded prefixes %s: dropped %d/%d symbols",
+                    excluded_prefixes, n_dropped, n_before,
+                )
+
         # ── 风险黑名单过滤（QMT 历史拒单的 ST/退市/未签协议 等）──────
         blacklist_qmt = ctx.risk_blacklist()
         if blacklist_qmt:
@@ -125,8 +138,7 @@ class V20HAdapter(Strategy):
                     n_dropped, n_before, len(blacklist_qmt),
                 )
 
-        # ── 重建 V20H 状态（无状态版本：从 ctx 派生）──────────────
-        # 把当前 ctx.positions(QMT 格式) 转成 V20H 6 位 code
+        # ── 把当前 ctx.positions(QMT 格式) 转成 V20H 6 位 code ──────
         ctx_positions = {
             _qmt_to_v20h_code(qmt): qty
             for qmt, qty in ctx.positions().items()
@@ -135,6 +147,19 @@ class V20HAdapter(Strategy):
         strategy = V20HStrategy(cfg)
         strategy.cash = ctx.cash()
         strategy.positions = dict(ctx_positions)
+
+        # ── 恢复持久化的策略状态（Bug D 修复）────────────────────────
+        # 没有持久 state 时按 __init__ 默认：last_rb_idx=-rebal_freq → 当天就 rebal
+        # 这是首次跑/迁移期的正确行为。
+        persisted = ctx.strategy_state() or {}
+        if "last_rb_idx" in persisted:
+            strategy.last_rb_idx = int(persisted["last_rb_idx"])
+        if "equity_history" in persisted:
+            strategy.equity_history = list(persisted["equity_history"])
+        if "daily_rets" in persisted:
+            strategy.daily_rets = list(persisted["daily_rets"])
+        if "prev_hedge" in persisted:
+            strategy.prev_hedge = float(persisted["prev_hedge"])
 
         # 当日所有股票价格（reshape ctx market 数据为 dict）
         prices_today = self._build_prices_today(ctx, pred_today)
@@ -160,6 +185,25 @@ class V20HAdapter(Strategy):
         all_dates = sorted(pred_df["date"].unique())
         di = next((i for i, d in enumerate(all_dates) if d == target_date), len(all_dates))
 
+        # ── Rebal 节奏决策 ────────────────────────────────────────────────
+        # 优先用持久化的 last_rb_idx。首次跑或迁移都强制触发一次 rebal：
+        #   - 首次跑（无状态 + 空仓）：建仓
+        #   - 迁移（有持仓但无状态）：把老持仓收敛到当下 V20H ideal，然后
+        #     之后按真正的 42 天节奏走
+        # 这取代了旧的 stateless 每日 rebal 行为（Bug D）。
+        if "last_rb_idx" not in persisted:
+            strategy.last_rb_idx = di - cfg.rebal_freq
+            rebal_reason = "first_build" if not ctx_positions else "migration"
+        else:
+            rebal_reason = "persisted"
+        will_rebal = (di - strategy.last_rb_idx) >= cfg.rebal_freq
+        logger.info(
+            "V20H rebal-schedule: instance=%s di=%d freq=%d positions=%d "
+            "last_rb_idx=%d will_rebal=%s reason=%s",
+            ctx.instance_id, di, cfg.rebal_freq, len(ctx_positions),
+            strategy.last_rb_idx, will_rebal, rebal_reason,
+        )
+
         # 调 step()
         log_entry = strategy.step(
             date=target_date,
@@ -172,6 +216,18 @@ class V20HAdapter(Strategy):
             di=di,
             is_roll_day=False,  # Phase 14a 跳过 roll 日处理
         )
+
+        # ── 保存策略状态供下次启动 (Bug D 修复)──────────────────────────
+        # 截断 equity_history / daily_rets 到 vol_lookback × 4，避免 JSON 无限增长
+        keep = max(cfg.vol_lookback * 4, 100)
+        ctx.set_strategy_state({
+            "last_rb_idx": int(strategy.last_rb_idx),
+            "equity_history": [float(x) for x in strategy.equity_history[-keep:]],
+            "daily_rets": [float(x) for x in strategy.daily_rets[-keep:]],
+            "prev_hedge": float(strategy.prev_hedge),
+            "last_di": int(di),
+            "last_trade_date": str(trade_date),
+        })
 
         # ── diff 目标组合 vs 当前 ────────────────────────────────────
         target_positions = dict(strategy.positions)

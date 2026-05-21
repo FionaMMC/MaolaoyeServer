@@ -208,7 +208,55 @@ systemctl restart qmt-server
 
 ---
 
-## 10. 切换 nginx + HTTPS（可选，上线推荐）
+## 10. 服务硬化（生产必做）
+
+### 10a. systemd 沙箱
+
+unit 已带（参见 `qmt-server.service` `[Service]` 末尾）：
+
+- `NoNewPrivileges` `PrivateTmp` `ProtectSystem=strict` `ProtectHome`
+- `ReadWritePaths=/opt/qmt-server/v2.3/server /var/log/qmt-server`
+- `ProtectKernel{Tunables,Modules}` `ProtectControlGroups`
+- `RestrictNamespaces` `RestrictRealtime` `LockPersonality`
+- `SystemCallArchitectures=native`
+
+部署时只需 `cp qmt-server.service /etc/systemd/system/ && systemctl daemon-reload && systemctl restart qmt-server`。
+
+### 10b. 日志轮转
+
+```bash
+cp /opt/qmt-server/v2.3/server/deploy/logrotate-qmt-server.conf \
+   /etc/logrotate.d/qmt-server
+logrotate -v -d /etc/logrotate.d/qmt-server   # 干跑验证
+```
+
+每天滚一次，保 14 天，gzip 压缩，`copytruncate` 避免重启服务。
+
+### 10c. UFW 清理（推荐）
+
+```bash
+# 删僵尸规则（装机时模板留下的、没真用的端口）
+for p in 20 21 888 37415 39000:40000; do ufw --force delete allow $p/tcp; done
+
+# 业务端口保留:
+# 22 (SSH), 80, 443, 8000 (业务), 8888 (宝塔) 都 ALLOW Anywhere
+
+ufw reload
+ufw status numbered
+```
+
+### 10d. 端口收紧（可选，需要 server 实际持有者决策）
+
+22 (SSH) 和 8888 (BT-Panel) 是否要 IP 白名单，取决于**持有者**自己是不是固定 IP 上网：
+
+- **有固定 IP**：UFW + 阿里云 SG 双层各加 `allow from <持有者IP>/32`，公网默认 deny
+- **动态 IP / 经常出差换网**：保持 ALLOW Anywhere，靠 BT-Panel `/<entry_path>/` + 强密码 + 22 SSH key-only（禁密码登录）
+
+> ⚠️ 不要把白名单设成"运维助理"（非持有者）的 IP——会把持有者自己锁出去。
+
+---
+
+## 11. 切换 nginx + HTTPS（可选，上线推荐）
 
 ```bash
 apt install -y nginx certbot python3-certbot-nginx

@@ -7,13 +7,15 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import desc, func, select
 
 from app.auth import verify_api_key
 from app.dependencies import (
     get_blacklist_service,
     get_data_upload_service,
+    get_metrics_service,
+    get_reconcile_service,
     get_session_factory,
     get_settings,
 )
@@ -25,8 +27,11 @@ from app.models import (
     Trade,
 )
 from app.schemas.common import APIResponse
+from app.schemas.reconcile import QmtPositionSnapshot, ReconcileResult
 from app.services.blacklist import BlacklistService
 from app.services.data_upload import DataUploadService
+from app.services.metrics import MetricsService, date_range_for_period
+from app.services.reconcile import InstanceNotFound, ReconcileService
 from app.settings import Settings
 
 router = APIRouter(prefix="/admin")
@@ -399,3 +404,201 @@ async def admin_health(
             "instances": instance_navs,
         },
     )
+
+
+# ── 8. /admin/strategy-state : 实例的策略持久状态 ─────────────────────────
+@router.get(
+    "/strategy-state",
+    response_model=APIResponse[dict],
+    dependencies=[Depends(verify_api_key)],
+)
+async def strategy_state(
+    instance_id: str | None = None,
+    sf=Depends(get_session_factory),
+):
+    """看实例的 strategy_state JSON（V20H 的 last_rb_idx / equity_history 等）。"""
+    with sf() as session:
+        stmt = select(InstanceState)
+        if instance_id:
+            stmt = stmt.where(InstanceState.instance_id == instance_id)
+        rows = session.execute(stmt).scalars().all()
+        items = [
+            {
+                "instance_id": r.instance_id,
+                "virtual_cash": r.virtual_cash,
+                "holdings_count": len(r.virtual_positions or {}),
+                "last_update": r.last_update,
+                "strategy_state": r.strategy_state,
+            }
+            for r in rows
+        ]
+    return APIResponse[dict](
+        code=0, message="ok",
+        data={"items": items, "count": len(items)},
+    )
+
+
+# ── 10. /admin/metrics/summary : 量化绩效指标 ─────────────────────────────
+@router.get(
+    "/metrics/summary",
+    response_model=APIResponse[dict],
+    dependencies=[Depends(verify_api_key)],
+)
+async def metrics_summary(
+    instance_id: str = "paper_v20h_v20h_v1_3",
+    period: str = Query("all", pattern=r"^(7d|30d|90d|180d|1y|ytd|all)$"),
+    metrics: MetricsService = Depends(get_metrics_service),
+):
+    """综合绩效：累计/年化收益、Sharpe、Sortino、MaxDD、Calmar、胜率、VaR 等。"""
+    summary = metrics.summary(instance_id, period=period)
+    return APIResponse[dict](
+        code=0, message="ok",
+        data={
+            "instance_id": instance_id,
+            "period": period,
+            **summary.to_dict(),
+        },
+    )
+
+
+# ── 11. /admin/metrics/drawdown : 回撤序列 ────────────────────────────────
+@router.get(
+    "/metrics/drawdown",
+    response_model=APIResponse[dict],
+    dependencies=[Depends(verify_api_key)],
+)
+async def metrics_drawdown(
+    instance_id: str = "paper_v20h_v20h_v1_3",
+    period: str = Query("all", pattern=r"^(7d|30d|90d|180d|1y|ytd|all)$"),
+    metrics: MetricsService = Depends(get_metrics_service),
+):
+    """每日相对历史最高点的 drawdown，给前端画水下曲线用。"""
+    data = metrics.drawdown_series(instance_id, period=period)
+    return APIResponse[dict](
+        code=0, message="ok",
+        data={
+            "instance_id": instance_id,
+            "period": period,
+            **data,
+        },
+    )
+
+
+# ── 12. /admin/metrics/periodic : 按周/月/年聚合收益 ──────────────────────
+@router.get(
+    "/metrics/periodic",
+    response_model=APIResponse[dict],
+    dependencies=[Depends(verify_api_key)],
+)
+async def metrics_periodic(
+    instance_id: str = "paper_v20h_v20h_v1_3",
+    period: str = Query("all", pattern=r"^(7d|30d|90d|180d|1y|ytd|all)$"),
+    freq: str = Query("monthly", pattern=r"^(weekly|monthly|yearly)$"),
+    metrics: MetricsService = Depends(get_metrics_service),
+):
+    """周度/月度/年度收益聚合表。"""
+    items = metrics.periodic_returns(instance_id, period=period, freq=freq)
+    return APIResponse[dict](
+        code=0, message="ok",
+        data={
+            "instance_id": instance_id,
+            "period": period,
+            "freq": freq,
+            "items": items,
+            "count": len(items),
+        },
+    )
+
+
+# ── 13. /admin/metrics/trade-analytics : 订单 + 成交统计 ─────────────────
+@router.get(
+    "/metrics/trade-analytics",
+    response_model=APIResponse[dict],
+    dependencies=[Depends(verify_api_key)],
+)
+async def metrics_trade_analytics(
+    account_group: str | None = None,
+    period: str = Query("30d", pattern=r"^(7d|30d|90d|180d|1y|ytd|all)$"),
+    metrics: MetricsService = Depends(get_metrics_service),
+):
+    """订单 status 矩阵、fill_rate、累计 commission、bookkeeping_divergence 等。"""
+    cutoff = date_range_for_period(period)
+    data = metrics.trade_analytics(account_group=account_group, cutoff=cutoff)
+    return APIResponse[dict](
+        code=0, message="ok",
+        data={"period": period, **data},
+    )
+
+
+# ── 9. /admin/bookkeeping-divergence : 真账户与虚拟账本对账分叉 ─────────
+@router.get(
+    "/bookkeeping-divergence",
+    response_model=APIResponse[dict],
+    dependencies=[Depends(verify_api_key)],
+)
+async def bookkeeping_divergence(
+    sf=Depends(get_session_factory),
+    limit: int = Query(200, ge=1, le=10000),
+):
+    """列出所有 bookkeeping_divergence=True 的 orders。
+
+    这些订单 QMT 真账户已 FILL，但虚拟账本（instance_state）因防穿仓/超卖跳过了
+    更新。需要人工对账：检查 QMT 真账户的现金 + 持仓，对齐 instance_state。
+    """
+    with sf() as session:
+        stmt = (
+            select(Order)
+            .where(Order.bookkeeping_divergence == True)  # noqa: E712
+            .order_by(desc(Order.valid_date), Order.symbol)
+            .limit(limit)
+        )
+        rows = session.execute(stmt).scalars().all()
+        items = [
+            {
+                "order_id": o.order_id,
+                "valid_date": o.valid_date,
+                "account_group": o.account_group,
+                "symbol": o.symbol,
+                "direction": o.direction,
+                "quantity": o.quantity,
+                "limit_price": o.limit_price,
+                "status": o.status,
+            }
+            for o in rows
+        ]
+    return APIResponse[dict](
+        code=0, message="ok",
+        data={"items": items, "count": len(items)},
+    )
+
+
+# ── 14. POST /admin/reconcile-positions : 把 QMT 真实持仓推上来对账 ──────
+@router.post(
+    "/reconcile-positions",
+    response_model=APIResponse[ReconcileResult],
+    dependencies=[Depends(verify_api_key)],
+)
+async def reconcile_positions(
+    snapshot: QmtPositionSnapshot,
+    service: ReconcileService = Depends(get_reconcile_service),
+):
+    """对账：server virtual_positions vs QMT 真实持仓。
+
+    Body:
+      {
+        "instance_id": "paper_v20h_v20h_v1_3",
+        "qmt_account_id": "1234567890",
+        "qmt_cash": 922928.0,
+        "qmt_positions": {"600519.SH": 100, ...},
+        "snapshot_time": "2026-05-21T14:30:00+08:00",
+        "dry_run": true  // 默认 true，false 才真改 instance_state
+      }
+
+    dry_run=true: 返回 diff 详情供人眼审查
+    dry_run=false: 强制把 instance_state.virtual_cash/positions 改成 QMT 状态
+    """
+    try:
+        result = service.reconcile(snapshot)
+    except InstanceNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return APIResponse[ReconcileResult](code=0, message="ok", data=result)

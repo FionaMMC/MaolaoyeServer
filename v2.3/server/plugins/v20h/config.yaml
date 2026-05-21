@@ -38,5 +38,10 @@ roll_cost_bps: 10         # 季度展期 10 bps
 lot_size: 100             # A 股 100 股一手
 cash_buffer: 0.02         # 2% 现金缓冲
 
+# 账户权限：剔除账户不能交易的板块前缀
+# paper_v20h 账户已开通全部板块（含科创板）→ 留空
+# 如某账户没科创板权限，改成 ["688", "689"] 即可
+excluded_symbol_prefixes: []
+
 # ─── 时间范围 ───
 start_date: "2021-04-01"  # 回测起始日 (V12 warmup 已完成)

@@ -14,3 +14,8 @@ class InstanceState(Base):
     virtual_cash: Mapped[float] = mapped_column(nullable=False)
     virtual_positions: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     last_update: Mapped[str] = mapped_column(String, nullable=False)
+
+    # 策略自身的持久状态（V20H: last_rb_idx / equity_history / daily_rets /
+    # prev_hedge 等）。schema 由策略 adapter 自己定义，server 只负责存取。
+    # nullable: 老数据迁移期为 None，adapter 首次读到 None 时按默认初始化。
+    strategy_state: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)

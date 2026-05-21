@@ -57,8 +57,14 @@ from app.services.settlement import SettlementService
 
 def get_settlement_service(
     sf: sessionmaker = Depends(get_session_factory),
+    settings: Settings = Depends(get_settings),
 ) -> SettlementService:
-    return SettlementService(session_factory=sf)
+    return SettlementService(
+        session_factory=sf,
+        commission_rate=settings.stock_commission_rate,
+        min_commission=settings.stock_min_commission,
+        stamp_duty_sell=settings.stock_stamp_duty_sell,
+    )
 
 
 from app.services.perf import PerfService
@@ -69,6 +75,24 @@ def get_perf_service(
     store: ParquetStore = Depends(get_parquet_store),
 ) -> PerfService:
     return PerfService(session_factory=sf, parquet_store=store)
+
+
+from app.services.metrics import MetricsService
+
+
+def get_metrics_service(
+    sf: sessionmaker = Depends(get_session_factory),
+) -> MetricsService:
+    return MetricsService(session_factory=sf)
+
+
+from app.services.reconcile import ReconcileService
+
+
+def get_reconcile_service(
+    sf: sessionmaker = Depends(get_session_factory),
+) -> ReconcileService:
+    return ReconcileService(session_factory=sf)
 
 
 from pathlib import Path

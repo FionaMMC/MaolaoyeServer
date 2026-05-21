@@ -29,6 +29,34 @@ def test_context_cash(tmp_path: Path):
     assert ctx.cash() == 500_000.0
 
 
+def test_context_strategy_state_empty_by_default(tmp_path: Path):
+    ctx = _ctx(tmp_path)
+    assert ctx.strategy_state() == {}
+    assert ctx.pop_next_strategy_state() is None
+
+
+def test_context_strategy_state_load_persisted(tmp_path: Path):
+    ctx = _ctx(tmp_path, strategy_state={"last_rb_idx": 42, "daily_rets": [0.01, -0.02]})
+    state = ctx.strategy_state()
+    assert state["last_rb_idx"] == 42
+    assert state["daily_rets"] == [0.01, -0.02]
+    # set 之前 pop 返回 None（表示策略未写）
+    assert ctx.pop_next_strategy_state() is None
+
+
+def test_context_strategy_state_set_and_pop(tmp_path: Path):
+    ctx = _ctx(tmp_path)
+    ctx.set_strategy_state({"last_rb_idx": 100, "prev_hedge": 0.7})
+    popped = ctx.pop_next_strategy_state()
+    assert popped == {"last_rb_idx": 100, "prev_hedge": 0.7}
+
+
+def test_context_strategy_state_explicit_none_clears(tmp_path: Path):
+    ctx = _ctx(tmp_path, strategy_state={"last_rb_idx": 42})
+    ctx.set_strategy_state(None)
+    assert ctx.pop_next_strategy_state() is None
+
+
 def test_context_position_existing(tmp_path: Path):
     ctx = _ctx(tmp_path, virtual_positions={"600519.SH": 200, "000001.SZ": 500})
     assert ctx.position("600519.SH") == 200

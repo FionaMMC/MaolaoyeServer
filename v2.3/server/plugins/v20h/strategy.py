@@ -50,6 +50,11 @@ class StrategyConfig:
     cash_buffer: float = 0.02
     start_date: str = "2021-04-01"
 
+    # 账户权限：剔除账户不能交易的板块前缀
+    # 默认为空（账户已开通全部板块权限）
+    # 如有账户没开科创板权限，把它设回 ("688", "689") 即可
+    excluded_symbol_prefixes: tuple = ()
+
 
 def compute_expanding_quantiles(v12: pd.Series, start: str = '2021-04-01',
                                  quantiles: List[float] = [0.10, 0.20, 0.40],
