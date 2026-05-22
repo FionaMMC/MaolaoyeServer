@@ -31,7 +31,11 @@ from app.schemas.reconcile import QmtPositionSnapshot, ReconcileResult
 from app.services.blacklist import BlacklistService
 from app.services.data_upload import DataUploadService
 from app.services.metrics import MetricsService, date_range_for_period
-from app.services.reconcile import InstanceNotFound, ReconcileService
+from app.services.reconcile import (
+    InstanceNotFound,
+    ReconcileSanityCheckFailed,
+    ReconcileService,
+)
 from app.settings import Settings
 
 router = APIRouter(prefix="/admin")
@@ -601,4 +605,7 @@ async def reconcile_positions(
         result = service.reconcile(snapshot)
     except InstanceNotFound as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except ReconcileSanityCheckFailed as e:
+        # 返回 422 而非 500，告诉 client 是数据校验问题而非系统故障
+        raise HTTPException(status_code=422, detail=str(e))
     return APIResponse[ReconcileResult](code=0, message="ok", data=result)

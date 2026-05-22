@@ -47,8 +47,19 @@ def startup_check() -> None:
         sys.exit(2)
 
 
+# V20H paper trading 单股最大持仓量阈值：超过这个值的不属于 V20H sandbox
+# （QMT 模拟盘账户自带 4 只默认股，每只 100 亿股，会把 NAV 炸到天上）
+# V20H 实际单股持仓上限：¥10M × 1.5×cap / 800持仓 / 单价 ¥1 ≈ 19K股
+# 给个保守的 100,000 股阈值，正常 V20H 单股不会到这量级
+MAX_REASONABLE_QTY_PER_STOCK = 100_000
+
+
 def query_qmt_account(qmt_account_id: str) -> tuple[float, dict[str, int]]:
-    """返回 (cash, {symbol: volume})。"""
+    """返回 (cash, {symbol: volume})。
+
+    过滤掉单股 > MAX_REASONABLE_QTY_PER_STOCK 的"模拟器默认仓"，
+    避免把 QMT 账户自带的非 V20H 股票拉进 sandbox 账本。
+    """
     log.info(f"连接 QMT，账户 {qmt_account_id}")
     xt_trader = XtQuantTrader(config.QMT_USERDATA_DIR, config.QMT_SESSION_ID)
     xt_trader.register_callback(XtQuantTraderCallback())
@@ -67,19 +78,33 @@ def query_qmt_account(qmt_account_id: str) -> tuple[float, dict[str, int]]:
     try:
         asset = xt_trader.query_stock_asset(acc)
         if asset is None:
-            raise RuntimeError(f"query_stock_asset 返回 None")
+            raise RuntimeError("query_stock_asset 返回 None")
         cash = float(asset.cash)
 
         positions_raw = xt_trader.query_stock_positions(acc) or []
         # XtQuant Position: stock_code (str), volume (int), can_use_volume (int)
         # 用 volume（总持仓）而非 can_use_volume（可用），对账要看实际持有
         positions: dict[str, int] = {}
+        skipped_outliers: list[tuple[str, int]] = []
         for p in positions_raw:
             v = int(p.volume)
-            if v > 0:
-                positions[p.stock_code] = v
+            if v <= 0:
+                continue
+            if v > MAX_REASONABLE_QTY_PER_STOCK:
+                skipped_outliers.append((p.stock_code, v))
+                continue
+            positions[p.stock_code] = v
 
-        log.info(f"QMT 查询完成：cash=¥{cash:,.2f}，持仓 {len(positions)} 只")
+        if skipped_outliers:
+            log.warning(
+                f"⚠ 跳过 {len(skipped_outliers)} 只异常大持仓（疑似 QMT 模拟器默认仓，"
+                f"非 V20H sandbox 持仓）："
+            )
+            for sym, qty in skipped_outliers:
+                log.warning(f"   {sym}  qty={qty:,}")
+
+        log.info(f"QMT 查询完成：cash=¥{cash:,.2f}，V20H 持仓 {len(positions)} 只 "
+                 f"(已过滤 {len(skipped_outliers)} 只异常)")
         return cash, positions
     finally:
         xt_trader.stop()

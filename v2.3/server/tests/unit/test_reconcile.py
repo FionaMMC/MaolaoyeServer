@@ -7,7 +7,11 @@ import pytest
 from app.db import init_db, make_engine, make_session_factory
 from app.models import InstanceState
 from app.schemas.reconcile import QmtPositionSnapshot
-from app.services.reconcile import InstanceNotFound, ReconcileService
+from app.services.reconcile import (
+    InstanceNotFound,
+    ReconcileSanityCheckFailed,
+    ReconcileService,
+)
 
 
 def _factory(tmp_path: Path):
@@ -200,3 +204,75 @@ def test_reconcile_diffs_sorted_alphabetically(tmp_path: Path):
     snap = _snapshot("inst", 1000.0, {})  # 全部清掉
     result = svc.reconcile(snap)
     assert [d.symbol for d in result.diffs] == ["A", "M", "Z"]
+
+
+# ── Sanity check guards (5/21 incident regression) ───────────────────────
+def test_reconcile_filters_outlier_positions(tmp_path: Path):
+    """QMT 模拟器默认股（qty > 100K）应该被过滤掉，不进 server。"""
+    sf = _factory(tmp_path)
+    _seed_instance(sf, "inst", 1_000_000.0, {})
+    svc = ReconcileService(sf)
+
+    snap = _snapshot("inst", 1_000_000.0, {
+        "600519.SH": 100,           # 正常 V20H 持仓
+        "000001.SZ": 10_000_000_000,  # 模拟器默认股 100 亿股 — 应被过滤
+        "600028.SH": 999_999_999,    # 另一个异常大持仓
+    }, dry_run=False)
+    result = svc.reconcile(snap)
+
+    # 过滤后 server 只该有正常那只
+    with sf() as s:
+        inst = s.get(InstanceState, "inst")
+        assert inst.virtual_positions == {"600519.SH": 100}
+
+
+def test_reconcile_rejects_huge_cash_deviation(tmp_path: Path):
+    """cash 偏离 baseline 超过 5× 时 raise（5/21 事件中 188M vs 10M）。"""
+    sf = _factory(tmp_path)
+    _seed_instance(sf, "inst", 1_000_000.0, {})  # server 当前 cash 100 万
+    svc = ReconcileService(sf)
+
+    # QMT 推一个 18800 万 (188× 偏离) → 应被拒
+    snap = _snapshot("inst", 188_000_000.0, {"600519.SH": 100}, dry_run=False)
+    with pytest.raises(ReconcileSanityCheckFailed, match="cash 偏离过大"):
+        svc.reconcile(snap)
+
+    # 但 dry_run 不会报错（仍可看 diff 详情）
+    snap_dry = _snapshot("inst", 188_000_000.0, {"600519.SH": 100}, dry_run=True)
+    result = svc.reconcile(snap_dry)
+    assert result.dry_run is True
+
+
+def test_reconcile_accepts_small_cash_deviation(tmp_path: Path):
+    """cash 在合理范围（5× 内）正常 apply。"""
+    sf = _factory(tmp_path)
+    _seed_instance(sf, "inst", 1_000_000.0, {})
+    svc = ReconcileService(sf)
+
+    # QMT 800 万（8× 但 (8-1)/1 = 7× 偏离）→ 应被拒
+    snap = _snapshot("inst", 8_000_000.0, {"600519.SH": 100}, dry_run=False)
+    with pytest.raises(ReconcileSanityCheckFailed):
+        svc.reconcile(snap)
+
+    # QMT 200 万（差额 100 万 = 100% = 1× 偏离）→ OK
+    snap2 = _snapshot("inst", 2_000_000.0, {"600519.SH": 100}, dry_run=False)
+    result = svc.reconcile(snap2)
+    assert result.applied is True
+
+
+def test_reconcile_initial_cash_param_used_as_baseline(tmp_path: Path):
+    """传入 initial_cash 时用它作为偏离 baseline，而不是 server 当前 cash。"""
+    sf = _factory(tmp_path)
+    # server 当前 cash 只有 100K（V20H 大部分钱已投出去），但 initial 是 10M
+    _seed_instance(sf, "inst", 100_000.0, {})
+    svc = ReconcileService(sf)
+
+    # QMT 推 9M（vs 100K 偏离 89×，但 vs initial_cash 10M 仅 0.91× 偏离）
+    # 不传 initial_cash → 用 server cash 100K 做 baseline → 89× 偏离 → 拒
+    snap = _snapshot("inst", 9_000_000.0, {"600519.SH": 100}, dry_run=False)
+    with pytest.raises(ReconcileSanityCheckFailed):
+        svc.reconcile(snap)
+
+    # 传 initial_cash=10M → 偏离仅 0.91× → 接受
+    result = svc.reconcile(snap, initial_cash=10_000_000.0)
+    assert result.applied is True
