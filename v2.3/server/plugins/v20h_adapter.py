@@ -238,48 +238,46 @@ class V20HAdapter(Strategy):
         to_close = {c: before[c] for c in before if c not in target_positions}
 
         # Phase 14c：实盘 — 输出 RawSignal[]
+        # reference_price 优先用 server 最新一日真实收盘（ctx.market），回退到 pred close。
+        # 原因：pred 可能 lag 多天（每周一次刷新），直接用 pred close 当限价基准会和
+        # 当下市场严重偏离 → SELL 限价虚高卖不出 / BUY 限价虚低买不到。
         signals: list[RawSignal] = []
+        n_fallback = 0
 
-        # 先 SELL（卖出 V20H 不要的标的；含 close 全部）
+        def _emit(code6: str, qty: int, direction: str) -> None:
+            nonlocal n_fallback
+            qmt = _v20h_to_qmt_code(code6)
+            price, used_fallback = self._resolve_reference_price(
+                ctx, code6, qmt, prices_today, trade_date,
+            )
+            if price is None or price <= 0:
+                return
+            if used_fallback:
+                n_fallback += 1
+            signals.append(RawSignal(
+                symbol=qmt,
+                direction=direction,
+                quantity=qty,
+                reference_price=price,
+                price_offset=-0.005 if direction == "SELL" else +0.005,
+            ))
+
+        # 先 SELL（V20H 不要的标的中 size 减少的）
         for code6, qty in to_sell.items():
-            qmt = _v20h_to_qmt_code(code6)
-            price = prices_today.get(code6)
-            if price is None or price <= 0:
-                continue
-            signals.append(RawSignal(
-                symbol=qmt,
-                direction="SELL",
-                quantity=qty,
-                reference_price=price,
-                price_offset=-0.005,
-            ))
-
+            _emit(code6, qty, "SELL")
+        # close（完全清掉的）
         for code6, qty in to_close.items():
-            qmt = _v20h_to_qmt_code(code6)
-            price = prices_today.get(code6)
-            if price is None or price <= 0:
-                continue
-            signals.append(RawSignal(
-                symbol=qmt,
-                direction="SELL",
-                quantity=qty,
-                reference_price=price,
-                price_offset=-0.005,
-            ))
-
+            _emit(code6, qty, "SELL")
         # 后 BUY
         for code6, qty in to_buy.items():
-            qmt = _v20h_to_qmt_code(code6)
-            price = prices_today.get(code6)
-            if price is None or price <= 0:
-                continue
-            signals.append(RawSignal(
-                symbol=qmt,
-                direction="BUY",
-                quantity=qty,
-                reference_price=price,
-                price_offset=+0.005,
-            ))
+            _emit(code6, qty, "BUY")
+
+        if n_fallback > 0:
+            logger.warning(
+                "V20H[%s] %d/%d signals fell back to pred close as reference_price "
+                "(ctx.market 无数据)，限价可能偏离市价",
+                ctx.instance_id, n_fallback, len(signals),
+            )
 
         logger.info(
             "V20H[%s] go-live trade_date=%s emitted=%d (buy=%d sell=%d close=%d)",
@@ -289,6 +287,40 @@ class V20HAdapter(Strategy):
         return signals
 
     # ── 内部：行情读取/转换 ──────────────────────────────────────────
+    def _resolve_reference_price(
+        self,
+        ctx: Context,
+        code6: str,
+        qmt_code: str,
+        prices_today: dict[str, float],
+        trade_date: int,
+    ) -> tuple[float | None, bool]:
+        """决定 RawSignal.reference_price。
+
+        优先级：
+          1. ctx.market(qmt_code) 里 trade_date 之前最近一日的真实 close（server 已有最新 OHLCV）
+          2. fallback: pred_today.close（stale，可能偏离市价多日）
+
+        返回 (price, used_fallback)。
+        """
+        try:
+            df = ctx.market(qmt_code)
+            if not df.empty:
+                df_sorted = df.sort_values("trade_date")
+                real_close = float(df_sorted.iloc[-1]["close"])
+                if real_close > 0:
+                    return real_close, False
+        except Exception as e:
+            logger.debug(
+                "V20H _resolve_reference_price: ctx.market(%s) raised %s; fallback to pred",
+                qmt_code, e,
+            )
+        # Fallback
+        pred = prices_today.get(code6)
+        if pred and pred > 0:
+            return float(pred), True
+        return None, True
+
     def _build_prices_today(
         self, ctx: Context, pred_today: pd.DataFrame,
     ) -> dict[str, float]:
