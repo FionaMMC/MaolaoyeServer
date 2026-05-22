@@ -48,7 +48,9 @@ def startup_check() -> None:
 
 
 def query_qmt_account(qmt_account_id: str) -> tuple[float, dict[str, int]]:
-    """返回 (cash, {symbol: volume})。"""
+    """返回 (qmt_cash, {symbol: volume})。
+    持仓自动过滤占位股（单支持仓 > 1000 万股）。
+    """
     log.info(f"连接 QMT，账户 {qmt_account_id}")
     xt_trader = XtQuantTrader(config.QMT_USERDATA_DIR, config.QMT_SESSION_ID)
     xt_trader.register_callback(XtQuantTraderCallback())
@@ -68,19 +70,26 @@ def query_qmt_account(qmt_account_id: str) -> tuple[float, dict[str, int]]:
         asset = xt_trader.query_stock_asset(acc)
         if asset is None:
             raise RuntimeError(f"query_stock_asset 返回 None")
-        cash = float(asset.cash)
+        qmt_cash = float(asset.cash)
 
         positions_raw = xt_trader.query_stock_positions(acc) or []
         # XtQuant Position: stock_code (str), volume (int), can_use_volume (int)
         # 用 volume（总持仓）而非 can_use_volume（可用），对账要看实际持有
         positions: dict[str, int] = {}
+        phantom = {}
         for p in positions_raw:
             v = int(p.volume)
-            if v > 0:
+            if v <= 0:
+                continue
+            if v > 10_000_000:  # 占位股(100亿股)过滤
+                phantom[p.stock_code] = v
+            else:
                 positions[p.stock_code] = v
 
-        log.info(f"QMT 查询完成：cash=¥{cash:,.2f}，持仓 {len(positions)} 只")
-        return cash, positions
+        if phantom:
+            log.info(f"过滤占位股 {len(phantom)} 只: {list(phantom.keys())}")
+        log.info(f"QMT 查询完成：cash=¥{qmt_cash:,.2f}，持仓 {len(positions)} 只（已过滤 {len(phantom)} 只占位）")
+        return qmt_cash, positions
     finally:
         xt_trader.stop()
 
@@ -143,6 +152,37 @@ def print_report(result: dict) -> None:
     print("=" * 70 + "\n")
 
 
+def _compute_strategy_cash(start_capital: float = 10_000_000) -> float:
+    """从本地 DB 估算策略实际可用现金。
+    排除 5.7 异常买入，用 local_orders SUCCESS 订单的委托金额近似。
+    """
+    import sqlite3
+    db_path = getattr(config, "DB_PATH", None)
+    if not db_path or not os.path.exists(db_path):
+        log.warning("本地 DB 不存在，无法计算策略现金")
+        return None
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT direction, SUM(submitted_quantity * submitted_price)
+        FROM local_orders
+        WHERE submit_status = 'SUCCESS'
+          AND NOT (submitted_at LIKE '2026-05-07%%' AND direction = 'BUY')
+        GROUP BY direction
+    """)
+    buy_cost = 0.0
+    sell_back = 0.0
+    for direction, amt in cur.fetchall():
+        if direction == "BUY":
+            buy_cost = amt or 0.0
+        else:
+            sell_back = amt or 0.0
+    conn.close()
+    cash = start_capital - buy_cost + sell_back
+    log.info(f"策略现金估算：start=¥{start_capital:,.0f} buy=-¥{buy_cost:,.0f} sell=+¥{sell_back:,.0f} → cash=¥{cash:,.2f}")
+    return cash
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -159,6 +199,10 @@ def main() -> None:
         "--apply", action="store_true",
         help="不传则 dry_run；传了才真正改 server 状态",
     )
+    parser.add_argument(
+        "--start-capital", type=float, default=10_000_000,
+        help="策略初始资金（默认 10,000,000）",
+    )
     args = parser.parse_args()
 
     startup_check()
@@ -169,13 +213,19 @@ def main() -> None:
         sys.exit(2)
 
     # 1. 拉 QMT 真实账户
-    cash, positions = query_qmt_account(qmt_account_id)
+    qmt_raw_cash, positions = query_qmt_account(qmt_account_id)
 
-    # 2. POST 对账 (默认 dry-run)
+    # 2. 策略现金（排除全账户闲置资金）
+    strategy_cash = _compute_strategy_cash(args.start_capital)
+    if strategy_cash is None:
+        strategy_cash = qmt_raw_cash
+    log.info(f"对账发送：现金=¥{strategy_cash:,.2f} 持仓={len(positions)}只")
+
+    # 3. POST 对账 (默认 dry-run)
     result = post_reconcile(
         instance_id=args.instance,
         qmt_account_id=qmt_account_id,
-        qmt_cash=cash,
+        qmt_cash=strategy_cash,
         qmt_positions=positions,
         dry_run=not args.apply,
     )

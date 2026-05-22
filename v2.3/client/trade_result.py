@@ -1,11 +1,11 @@
 """
-模块二：成交查询与推送（v2.1）
-mock_qmt 模式：跳过 QMT 连接，将所有当日 SUCCESS 委托视为 FILLED，
-成交量 = 委托量，成交价 = 委托价，写入 trades 表并推送本地文件。
+模块二：成交查询与推送（v2.2）
+连 QMT 拉当日成交 → 聚合 → 推 server。不写本地表。
 """
 
 import os
 import sqlite3
+import time
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -24,12 +24,9 @@ xtdata.data_dir = config.QMT_USERDATA_DIR
 log = config.setup_logger("trade_result")
 
 _REJECTED_STATUSES = {xtconstant.ORDER_JUNK}
-_CANCELLED_STATUSES = {
-    xtconstant.ORDER_CANCELED,
-    xtconstant.ORDER_PART_CANCEL,
-    xtconstant.ORDER_REPORTED_CANCEL,
-    xtconstant.ORDER_PARTSUCC_CANCEL,
-}
+
+_QMT_RETRY_COUNT = 1          # QMT 瞬断后重试次数
+_QMT_RETRY_INTERVAL = 60      # 重试间隔（秒）
 
 
 def _wechat_alert(msg: str) -> None:
@@ -50,59 +47,6 @@ def startup_check() -> None:
         assert config.SERVER_BASE_URL, "SERVER_BASE_URL 未配置"
         assert config.API_KEY,         "API_KEY 未配置"
     log.info(f"PUSH_MODE={config.PUSH_MODE}，启动检查通过")
-
-
-def _init_trades_table() -> None:
-    with sqlite3.connect(config.DB_PATH) as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS trades (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                local_order_id  TEXT,
-                order_id        TEXT UNIQUE,
-                filled_quantity INTEGER,
-                filled_price    REAL,
-                filled_time     TEXT,
-                status          TEXT,
-                reported_at     TEXT,
-                report_status   TEXT
-            )
-        """)
-        conn.commit()
-    # 兼容旧表：如果旧表 local_order_id 有 UNIQUE 约束，做迁移
-    _migrate_trades_if_needed()
-
-
-def _migrate_trades_if_needed() -> None:
-    """如果 trades 表还在用 local_order_id TEXT UNIQUE，迁移到 order_id TEXT UNIQUE。"""
-    with sqlite3.connect(config.DB_PATH) as conn:
-        c = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='trades'")
-        row = c.fetchone()
-        if not row:
-            return
-        sql = row[0]
-        # 已迁移的标志：sql 中没有 'local_order_id  TEXT UNIQUE'
-        if 'local_order_id  TEXT UNIQUE' not in sql:
-            return
-        # 执行迁移：备份→建新表→复制→删备份
-        conn.execute("DROP TABLE IF EXISTS trades_backup")
-        conn.execute("ALTER TABLE trades RENAME TO trades_backup")
-        conn.execute("""
-            CREATE TABLE trades (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                local_order_id  TEXT,
-                order_id        TEXT UNIQUE,
-                filled_quantity INTEGER,
-                filled_price    REAL,
-                filled_time     TEXT,
-                status          TEXT,
-                reported_at     TEXT,
-                report_status   TEXT
-            )
-        """)
-        conn.execute("INSERT OR IGNORE INTO trades SELECT * FROM trades_backup")
-        conn.execute("DROP TABLE trades_backup")
-        conn.commit()
-        log.info("trades 表已迁移：UNIQUE 从 local_order_id 改为 order_id")
 
 
 def _load_today_local_orders(trade_date: str) -> list[dict]:
@@ -308,33 +252,6 @@ def _determine_status(
     return 0, 0.0, None, "CANCELLED"
 
 
-def _write_trades(records: list[dict]) -> None:
-    with sqlite3.connect(config.DB_PATH) as conn:
-        for r in records:
-            conn.execute("""
-                INSERT OR IGNORE INTO trades (
-                    local_order_id, order_id,
-                    filled_quantity, filled_price, filled_time, status,
-                    reported_at, report_status
-                ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)
-            """, (
-                r["local_order_id"], r["order_id"],
-                r["filled_quantity"], r["filled_price"],
-                r["filled_time"],    r["status"],
-            ))
-        conn.commit()
-
-
-def _update_report_status(local_order_ids: list[str], reported_at: str, report_status: str) -> None:
-    with sqlite3.connect(config.DB_PATH) as conn:
-        for lid in local_order_ids:
-            conn.execute(
-                "UPDATE trades SET reported_at=?, report_status=? WHERE local_order_id=?",
-                (reported_at, report_status, lid),
-            )
-        conn.commit()
-
-
 def _build_push_results(records: list[dict]) -> list[dict]:
     results = []
     for r in records:
@@ -383,10 +300,48 @@ def _push(trade_date: str, records: list[dict]) -> bool:
     return _push_to_server(trade_date, results)
 
 
+def _init_audit_log() -> None:
+    """建审计表。trade_date + order_id 联合主键，每天每订单独立一条。"""
+    with sqlite3.connect(config.DB_PATH) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS audit_log (
+                trade_date       TEXT,
+                order_id         TEXT,
+                symbol           TEXT,
+                direction        TEXT,
+                submitted_qty    INTEGER,
+                filled_qty       INTEGER,
+                filled_price     REAL,
+                status           TEXT,
+                logged_at        TEXT,
+                PRIMARY KEY (trade_date, order_id)
+            )
+        """)
+        conn.commit()
+
+
+def _write_audit_log(records: list[dict], trade_date: str) -> None:
+    """写入审计表。已存在的 (trade_date, order_id) 会被 REPLACE 覆盖。"""
+    logged_at = datetime.now().isoformat()
+    with sqlite3.connect(config.DB_PATH) as conn:
+        for r in records:
+            conn.execute("""
+                INSERT OR REPLACE INTO audit_log (
+                    trade_date, order_id, symbol, direction,
+                    submitted_qty, filled_qty, filled_price, status, logged_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                trade_date, r["order_id"], r.get("symbol", ""), r.get("direction", ""),
+                r.get("submitted_quantity", 0), r["filled_quantity"],
+                r["filled_price"], r["status"], logged_at,
+            ))
+        conn.commit()
+
+
 def main():
-    log.info("=== trade_result 启动（v2.1）===")
+    log.info("=== trade_result 启动（v2.2）===")
     startup_check()
-    _init_trades_table()
+    _init_audit_log()
 
     trade_date = getattr(config, "FORCE_TRADE_DATE", None) or (
         config.MOCK_TRADE_DATE if config.PUSH_MODE == "mock_qmt"
@@ -406,16 +361,24 @@ def main():
     else:
         qmt_account_ids = list({lo["qmt_account_id"] for lo in local_orders})
         log.info(f"涉及账户：{qmt_account_ids}")
-        try:
-            xt_trades, orders_map, all_orders_raw = _connect_qmt_and_query(qmt_account_ids)
-        except RuntimeError as e:
-            _wechat_alert(str(e))
-            return
+
+        xt_trades = []; orders_map = {}; all_orders_raw = []
+        for attempt in range(1 + _QMT_RETRY_COUNT):
+            try:
+                xt_trades, orders_map, all_orders_raw = _connect_qmt_and_query(qmt_account_ids)
+                break
+            except RuntimeError as e:
+                if attempt < _QMT_RETRY_COUNT:
+                    log.warning(f"QMT 连接失败（第{attempt+1}次），{_QMT_RETRY_INTERVAL}秒后重试...")
+                    time.sleep(_QMT_RETRY_INTERVAL)
+                else:
+                    _wechat_alert(str(e))
+                    return
+
         log.info(f"QMT 返回：成交 {len(xt_trades)} 笔，委托 {len(orders_map)} 笔")
-        # 以 QMT 实际委托为准，自动补录本地缺失的订单
         backfilled = _auto_backfill_from_qmt(trade_date, all_orders_raw)
         if backfilled > 0:
-            _wechat_notify(f"成交回报：自动补录 {backfilled} 笔缺失委托（QMT 实际有但本地 DB 无）")
+            _wechat_notify(f"成交回报：自动补录 {backfilled} 笔缺失委托")
             local_orders = _load_today_local_orders(trade_date)
             log.info(f"补录后委托 {len(local_orders)} 笔")
 
@@ -428,16 +391,18 @@ def main():
             lo["local_order_id"], agg_trades, orders_map, lo["submitted_quantity"]
         )
         records.append({
-            "local_order_id": lo["local_order_id"],
-            "order_id":       lo["order_id"],
-            "filled_quantity": qty,
-            "filled_price":   price,
-            "filled_time":    filled_time,
-            "status":         status,
+            "order_id":          lo["order_id"],
+            "symbol":            lo["symbol"],
+            "direction":         lo["direction"],
+            "submitted_quantity": lo["submitted_quantity"],
+            "filled_quantity":    qty,
+            "filled_price":      price,
+            "filled_time":       filled_time,
+            "status":            status,
         })
         log.info(f"  {lo['symbol']} {lo['direction']} → {status} qty={qty} price={price}")
 
-    _write_trades(records)
+    _write_audit_log(records, trade_date)
 
     filled    = sum(1 for r in records if r["status"] == "FILLED")
     partial   = sum(1 for r in records if r["status"] == "PARTIAL")
@@ -446,11 +411,7 @@ def main():
     summary   = f"全成={filled} 部成={partial} 已撤={cancelled} 废单={rejected}"
     log.info(f"成交汇总：{summary}")
 
-    reported_at   = datetime.now().isoformat()
-    ok            = _push(trade_date, records)
-    report_status = "SUCCESS" if ok else "FAILED"
-    _update_report_status([r["local_order_id"] for r in records], reported_at, report_status)
-
+    ok = _push(trade_date, records)
     if not ok:
         _wechat_alert(f"成交回报推送失败（trade_date={trade_date}）")
     else:

@@ -121,16 +121,7 @@ def _verify() -> bool:
             print("    (无本地委托 — 无可执行的服务器订单)")
 
         # ── trades ──────────────────────────────────────────────────
-        rows = conn.execute("SELECT * FROM trades").fetchall()
-        filled_count = sum(1 for r in rows if r["status"] == "FILLED")
-        print(f"\n[3] trades：{len(rows)} 条  FILLED={filled_count}")
-        for r in rows:
-            mark = "[OK]" if r["status"] == "FILLED" else "[--]"
-            print(f"    {mark} local_order_id={r['local_order_id']}  "
-                  f"filled_qty={r['filled_quantity']}  filled_price={r['filled_price']}  "
-                  f"status={r['status']}  report_status={r['report_status']}")
-        if len(rows) == 0:
-            print("    (无成交记录 — 无需推送的成交)")
+        print(f"\n[3] trades：已废弃本地 trades 表，成交由 trade_result 直接推 server")
 
     # ── local_push 文件 ──────────────────────────────────────────────
     push_dir   = config.LOCAL_PUSH_DIR
