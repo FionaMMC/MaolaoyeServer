@@ -23,5 +23,8 @@ logs/
 # V20H 策略私有数据（47 MB，部署时 rsync 上去）
 v2.3/server/plugins/v20h/data/*.parquet
 
+# V53 策略私有数据（~150KB bundle，build_v53_bundle.py 生成）
+v2.3/server/plugins/v53/data/*.parquet
+
 # git worktrees
 .worktrees/
