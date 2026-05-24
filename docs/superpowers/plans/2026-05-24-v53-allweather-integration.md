@@ -138,8 +138,9 @@ git commit -m "feat(v53): plugins/v53/ skeleton 目录结构"
 - Create: `v2.3/server/plugins/v53/vendor/weight_methods.py` (从同事 v53/weight_methods.py 拷)
 - Create: `v2.3/server/plugins/v53/vendor/erc_solver.py` (从同事 v41/erc_solver.py 拷)
 - Create: `v2.3/server/plugins/v53/vendor/reference_config.py` (从同事 v53/config.py 拷)
+- Create: `v2.3/server/plugins/v53/vendor/risk_parity.py` (从 /tmp/permenant_portfolio/v4/engine/risk_parity.py 拷)
 
-- [ ] **Step 1: 拷贝文件（手工 git clone 同事 repo 后 cp）**
+- [x] **Step 1: 拷贝文件（手工 git clone 同事 repo 后 cp）**
 
 ```bash
 # 假设同事 repo 已 clone 到 /tmp/permenant_portfolio
@@ -154,7 +155,7 @@ cp /tmp/permenant_portfolio/v41/erc_solver.py     v2.3/server/plugins/v53/vendor
 cp /tmp/permenant_portfolio/v53/config.py         v2.3/server/plugins/v53/vendor/reference_config.py
 ```
 
-- [ ] **Step 2: 在每个 vendor 文件顶部加 vendor 标记注释**
+- [x] **Step 2: 在每个 vendor 文件顶部加 vendor 标记注释**
 
 Edit each of `weight_methods.py`, `erc_solver.py`, `reference_config.py` 在文件开头插入：
 
@@ -166,11 +167,11 @@ Edit each of `weight_methods.py`, `erc_solver.py`, `reference_config.py` 在文�
 
 填入实际 commit sha（用 `git -C /tmp/permenant_portfolio rev-parse HEAD`）。
 
-- [ ] **Step 3: 删掉 vendor 文件里所有 Windows 硬编码路径与 plotting / CLI 入口**
+- [x] **Step 3: 删掉 vendor 文件里所有 Windows 硬编码路径与 plotting / CLI 入口**
 
 vendor 文件应该只含纯算法函数。如果文件里有 `if __name__ == "__main__":` 块、matplotlib import、Path(r"C:\...") 等，全部删除。仅保留算法函数。
 
-- [ ] **Step 4: 跑 import 烟测**
+- [x] **Step 4: 跑 import 烟测**
 
 ```bash
 cd v2.3/server
@@ -179,12 +180,14 @@ venv/bin/python -c "from plugins.v53.vendor import weight_methods, erc_solver, r
 
 Expected: `ok`（无 ImportError）
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add v2.3/server/plugins/v53/vendor/
 git commit -m "feat(v53): vendor 同事 master 算法核心 (weight_methods/erc_solver/reference_config @ <sha>)"
 ```
+
+**实施备注**: weight_methods.py 的 3 个 imports 从 `config` / `v4.engine.risk_parity` / `v41.erc_solver` 改成 vendor/ 内 relative (`.reference_config` / `.risk_parity` / `.erc_solver`)，因为 vendor 已 self-contained，不再走原 repo 的 sys.path hack。
 
 ### Task 3: Vendor sanity 测试 — compute_baseline 跑得通
 
