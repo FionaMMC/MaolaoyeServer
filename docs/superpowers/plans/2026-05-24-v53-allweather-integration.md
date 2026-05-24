@@ -285,7 +285,7 @@ git commit -m "test(v53): vendor compute_baseline 烟测 + min_history 行为验
 - Create: `v2.3/server/plugins/v53/code_map.py`
 - Create: `v2.3/server/plugins/v53/tests/test_code_map.py`
 
-- [ ] **Step 1: 写测试**
+- [x] **Step 1: 写测试**
 
 ```python
 """V53 内部 key (hs300) ↔ QMT code (510300.SH) 双向映射"""
@@ -325,7 +325,7 @@ def test_qdii_codes_marked():
     assert QDII_QMT_CODES == {"513500.SH", "513100.SH"}
 ```
 
-- [ ] **Step 2: 跑测试，确认 fail (ImportError)**
+- [x] **Step 2: 跑测试，确认 fail (ImportError)**
 
 ```bash
 cd v2.3/server
@@ -334,7 +334,7 @@ venv/bin/pytest plugins/v53/tests/test_code_map.py -v
 
 Expected: FAIL — `ModuleNotFoundError: No module named 'plugins.v53.code_map'`
 
-- [ ] **Step 3: 写实现**
+- [x] **Step 3: 写实现**
 
 ```python
 """V53 内部 key (vendor.reference_config 用) ↔ QMT 6 位代码 + 后缀 映射"""
@@ -366,7 +366,7 @@ QDII_QMT_CODES: set[str] = {"513500.SH", "513100.SH"}
 assert set(ETF_KEYS) == set(V53_KEY_TO_QMT.keys()), "ETF_KEYS 和 V53_KEY_TO_QMT 不一致"
 ```
 
-- [ ] **Step 4: 跑测试**
+- [x] **Step 4: 跑测试**
 
 ```bash
 cd v2.3/server
@@ -375,7 +375,7 @@ venv/bin/pytest plugins/v53/tests/test_code_map.py -v
 
 Expected: 4 个 PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add v2.3/server/plugins/v53/code_map.py v2.3/server/plugins/v53/tests/test_code_map.py
