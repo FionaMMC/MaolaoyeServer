@@ -113,7 +113,7 @@ git commit -m "docs(spec): 确认 v53 QDII IOPV 数据源 (O1)"
 - Create: `v2.3/server/plugins/v53/vendor/__init__.py`
 - Create: `v2.3/server/plugins/v53/tests/__init__.py`
 
-- [ ] **Step 1: 创建空 `__init__.py`**
+- [x] **Step 1: 创建空 `__init__.py`**
 
 ```bash
 mkdir -p v2.3/server/plugins/v53/vendor v2.3/server/plugins/v53/data v2.3/server/plugins/v53/tests
@@ -122,7 +122,7 @@ touch v2.3/server/plugins/v53/vendor/__init__.py
 touch v2.3/server/plugins/v53/tests/__init__.py
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add v2.3/server/plugins/v53/
