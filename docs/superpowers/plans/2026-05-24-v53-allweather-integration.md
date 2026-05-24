@@ -797,7 +797,7 @@ git commit -m "feat(schema): instance_state.owned_symbols — multi-instance 白
 - Find: 现有 strategies.yaml loader（在 `app/scheduler/pipeline.py` 或 `app/settings.py` 或独立 module）
 - Modify: 该 loader 文件
 
-- [ ] **Step 1: 定位 loader**
+- [x] **Step 1: 定位 loader**
 
 ```bash
 grep -rn "strategies.yaml\|account_groups" v2.3/server/app/ | head -20
@@ -805,7 +805,7 @@ grep -rn "strategies.yaml\|account_groups" v2.3/server/app/ | head -20
 
 Expected: 找到读 strategies.yaml 的位置。最可能在 `app/scheduler/pipeline.py` 或 `app/dependencies.py`。
 
-- [ ] **Step 2: 改 loader 把 owned_symbols 写入 instance_state**
+- [x] **Step 2: 改 loader 把 owned_symbols 写入 instance_state**
 
 在 loader 给 instance_state 行写入的地方（应该有类似 `InstanceState(instance_id=..., virtual_cash=..., virtual_positions={})` 的代码），加上：
 
@@ -815,7 +815,7 @@ owned_symbols=strategy_cfg.get("owned_symbols"),  # None or list[str]
 
 如果 loader 用 upsert 模式（更新已存在的 instance_state），也要支持更新这个字段。
 
-- [ ] **Step 3: 写单测**
+- [x] **Step 3: 写单测**
 
 Create: `v2.3/server/tests/unit/test_strategies_yaml_loader.py`
 
@@ -873,7 +873,7 @@ def test_loader_writes_owned_symbols(tmp_path: Path):
 
 ⚠️ 实际 `instance_id` 组合规则参考现有代码（看 v20h 是 `paper_v20h_v20h_v1_3` 拼接逻辑）。
 
-- [ ] **Step 4: 跑测试**
+- [x] **Step 4: 跑测试**
 
 ```bash
 cd v2.3/server
@@ -882,7 +882,7 @@ venv/bin/pytest tests/unit/test_strategies_yaml_loader.py -v
 
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add v2.3/server/app/scheduler/pipeline.py v2.3/server/tests/unit/test_strategies_yaml_loader.py
