@@ -194,7 +194,7 @@ git commit -m "feat(v53): vendor 同事 master 算法核心 (weight_methods/erc_
 **Files:**
 - Create: `v2.3/server/plugins/v53/tests/test_vendor_compute_baseline.py`
 
-- [ ] **Step 1: 写测试**
+- [x] **Step 1: 写测试**
 
 ```python
 """验证 vendor.compute_baseline 在已知输入上输出权重 sum≈1."""
@@ -262,7 +262,7 @@ def test_compute_baseline_min_history_drops_short_history_assets():
 
 ⚠️ `compute_baseline` 的具体签名以 vendor 文件实际为准，跑测试前如果接口不同需调整。
 
-- [ ] **Step 2: 跑测试**
+- [x] **Step 2: 跑测试**
 
 ```bash
 cd v2.3/server
@@ -271,12 +271,14 @@ venv/bin/pytest plugins/v53/tests/test_vendor_compute_baseline.py -v
 
 Expected: 2 个 PASS。如果失败，**不要改 vendor 文件**，改测试参数适配 vendor 实际接口（compute_baseline 的关键字参数名可能不同）。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add v2.3/server/plugins/v53/tests/
 git commit -m "test(v53): vendor compute_baseline 烟测 + min_history 行为验证"
 ```
+
+**实施备注**: plan 原 test 用 `compute_baseline(returns, quadrants, method=, risk_lookback=, min_history=)` signature 是错的；实际签名是 `compute_baseline(close_px, rebalance_dates, etf_codes=, quadrant_map=, method=)` 返回 `(asset_df, quadrant_df, qaw_dfs)`。测试改用真实签名，6 个测试覆盖：constants 加载 / tuple-of-3 返回 / 权重 sum=1 / 低 vol bond 高权重 / 高 vol cyb+crude 低权重 / dividend 双象限重复计入对比。
 
 ---
 
