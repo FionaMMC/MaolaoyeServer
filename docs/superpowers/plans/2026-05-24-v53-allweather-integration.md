@@ -393,7 +393,7 @@ git commit -m "feat(v53): code_map.py — 10 ETF 内部 key ↔ QMT code 双向�
 - Create: `v2.3/server/plugins/v53/strategy.py`
 - Create: `v2.3/server/plugins/v53/tests/test_strategy.py`
 
-- [ ] **Step 1: 写测试**
+- [x] **Step 1: 写测试**
 
 ```python
 """V53Strategy.compute_targets — 把 returns + cfg → {qmt_code: weight}"""
@@ -463,7 +463,7 @@ def test_compute_targets_dividend_double_counted():
     assert weights_double["512890.SH"] > weights_single["512890.SH"]
 ```
 
-- [ ] **Step 2: 跑测试，确认 fail**
+- [x] **Step 2: 跑测试，确认 fail**
 
 ```bash
 cd v2.3/server
@@ -472,7 +472,7 @@ venv/bin/pytest plugins/v53/tests/test_strategy.py -v
 
 Expected: FAIL — `ModuleNotFoundError`
 
-- [ ] **Step 3: 写实现**
+- [x] **Step 3: 写实现**
 
 ```python
 """V53Strategy: 薄壳。负责调 vendor.compute_baseline 并把结果从内部 key 翻译成 QMT code。"""
@@ -520,7 +520,7 @@ class V53Strategy:
 
 ⚠️ `compute_baseline` 的 kwargs 名以 vendor 文件为准；如果不同需调整。
 
-- [ ] **Step 4: 跑测试**
+- [x] **Step 4: 跑测试**
 
 ```bash
 cd v2.3/server
@@ -529,12 +529,14 @@ venv/bin/pytest plugins/v53/tests/test_strategy.py -v
 
 Expected: 3 个 PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add v2.3/server/plugins/v53/strategy.py v2.3/server/plugins/v53/tests/test_strategy.py
 git commit -m "feat(v53): V53Strategy 薄壳 — 内部 key → QMT code 翻译 + sanity 测试"
 ```
+
+**实施备注**: plan 原 V53Config dataclass 不需要——vendor 的 RISK_PARITY_WINDOW + MIN_HISTORY_DAYS 已 hardcoded 在 reference_config.py。V53Strategy 只需要 quadrants + method 两个参数。compute_targets 签名改为 (close_px, target_date) — 内部自动生成月末 rebalance_dates 然后调 vendor.compute_baseline，取最后一期。
 
 ---
 
