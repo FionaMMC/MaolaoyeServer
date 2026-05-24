@@ -1,0 +1,21 @@
+# plugins/v53/config.yaml — V53 全天候 10 ETF 配置
+# M0 阶段 dry_run: true（adapter run() 末尾会 log 目标 + return [], 不发 RawSignal）
+# M1 切换：改 dry_run: false
+strategy_id: v53
+algorithm: inv_vol
+risk_lookback: 252         # vendor reference_config.RISK_PARITY_WINDOW (informational; vendor hardcoded)
+min_history_days: 126      # vendor reference_config.MIN_HISTORY_DAYS (informational; vendor hardcoded)
+dry_run: true
+
+quadrants:
+  growth_up:      [hs300, cyb, gold, commodity2, commodity3, sp500, nasdaq, dividend]
+  growth_down:    [bond, gold]
+  inflation_up:   [gold, commodity2, commodity3, crude_oil]
+  inflation_down: [hs300, bond, dividend]
+
+risk_filters:
+  qdii_premium_threshold: 0.05      # 见 spec O1
+  liquidity_multiplier: 100
+  max_single_etf_weight: 0.75
+
+month_end_anchor_etf: "510300.SH"   # 用此 ETF 的 trade_date 推月末
