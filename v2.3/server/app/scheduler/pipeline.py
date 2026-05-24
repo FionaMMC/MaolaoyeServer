@@ -224,6 +224,7 @@ class StrategyPipeline:
                     "account_group": group_id,
                     "strategy_id": strat["strategy_id"],
                     "virtual_initial_cash": float(strat.get("virtual_initial_cash", 0)),
+                    "owned_symbols": strat.get("owned_symbols"),  # list[str] or None
                 })
         return instances
 
@@ -241,6 +242,10 @@ class StrategyPipeline:
                 instance_id = inst["instance_id"]
                 if instance_id in existing:
                     row = existing[instance_id]
+                    # 同步 owned_symbols (yaml 是 source of truth)
+                    yaml_owned = inst.get("owned_symbols")
+                    if row.owned_symbols != yaml_owned:
+                        row.owned_symbols = yaml_owned
                     result[instance_id] = {
                         "cash": float(row.virtual_cash),
                         "positions": dict(row.virtual_positions or {}),
@@ -254,6 +259,7 @@ class StrategyPipeline:
                         instance_id=instance_id,
                         virtual_cash=cash,
                         virtual_positions={},
+                        owned_symbols=inst.get("owned_symbols"),
                         last_update=_now_iso(),
                     ))
                     result[instance_id] = {
