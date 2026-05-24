@@ -548,7 +548,7 @@ git commit -m "feat(v53): V53Strategy 薄壳 — 内部 key → QMT code 翻译 
 - Create: `/Users/mameican/Desktop/策略复现/scripts/build_v53_bundle.py`
 - Output: `/Users/mameican/Desktop/策略复现/out/etf_close.parquet` + `etf_meta.parquet`
 
-- [ ] **Step 1: 写脚本**
+- [x] **Step 1: 写脚本**
 
 ```python
 """把 /Users/mameican/Desktop/策略复现/data/market/daily/etfs/ 里的
@@ -627,7 +627,7 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 2: 跑脚本验证文件能生成**
+- [x] **Step 2: 跑脚本验证文件能生成**
 
 ```bash
 cd /Users/mameican/Desktop/策略复现
@@ -638,7 +638,7 @@ Expected: 输出 `etf_close.parquet: <N> rows, 2011-12-21 ~ <recent date>` 和 `
 
 如果报 `FileNotFoundError`，确认 `/Users/mameican/Desktop/策略复现/data/market/daily/etfs/` 下确实有 10 个 ETF parquet 文件，且文件名是 `<QMT_code>.parquet` 格式。
 
-- [ ] **Step 3: 验证 schema**
+- [x] **Step 3: 验证 schema**
 
 ```bash
 python -c "
@@ -658,7 +658,7 @@ print(m)
 
 Expected: 10 个 code，每个 code 从其 list_date 起的全历史 close。
 
-- [ ] **Step 4: Commit（Mac 本地 repo，如果有 git track）**
+- [x] **Step 4: Commit（Mac 本地 repo，如果有 git track）**
 
 如果 `/Users/mameican/Desktop/策略复现/` 是独立 git repo:
 ```bash
@@ -666,6 +666,8 @@ cd /Users/mameican/Desktop/策略复现
 git add scripts/build_v53_bundle.py
 git commit -m "feat: build_v53_bundle.py — 拼 10 ETF 全历史 + meta"
 ```
+
+**实施备注**: bundle 文件 ~263 KB (etf_close) + 3.5 KB (etf_meta)，覆盖 `2011-12-09` ~ `2026-04-30` × 10 ETF。`.gitignore` 已加 v53 data 排除 (mirror v20h pattern)。源数据 trade_date 为 int YYYYMMDD 格式，脚本加了 `astype(str)` + `format="%Y%m%d"` 修正（计划代码用 `pd.to_datetime` 直接解析会得到 1970-01-01 epoch 结果）。脚本生成到 /策略复现/out/，本地开发已拷到 worktree plugins/v53/data/。/策略复现/ 不是 git repo，无 Mac 本地 commit。
 
 ### Task 7: refresh_v53_bundle.sh + 首次上传到 server
 
