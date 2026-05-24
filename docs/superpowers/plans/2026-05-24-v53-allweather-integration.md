@@ -734,7 +734,7 @@ git commit -m "feat: refresh_v53_bundle.sh — 月度 build + 推 server"
 - Modify: `v2.3/server/app/models/instance_state.py`
 - Modify: `v2.3/server/scripts/migrate_db.py`
 
-- [ ] **Step 1: 修改 model**
+- [x] **Step 1: 修改 model**
 
 Edit `v2.3/server/app/models/instance_state.py` 在 `strategy_state` 行之后插入：
 
@@ -745,7 +745,7 @@ Edit `v2.3/server/app/models/instance_state.py` 在 `strategy_state` 行之后�
     owned_symbols: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
 ```
 
-- [ ] **Step 2: 修改 migrate_db.py 加 ALTER**
+- [x] **Step 2: 修改 migrate_db.py 加 ALTER**
 
 Edit `v2.3/server/scripts/migrate_db.py` 在 "Bug D: instance_state.strategy_state" 块之后插入：
 
@@ -760,7 +760,7 @@ Edit `v2.3/server/scripts/migrate_db.py` 在 "Bug D: instance_state.strategy_sta
             print("[migrate] instance_state.owned_symbols already exists, skip")
 ```
 
-- [ ] **Step 3: 跑 migration（本地 dev db）**
+- [x] **Step 3: 跑 migration（本地 dev db）**
 
 ```bash
 cd v2.3/server
@@ -769,7 +769,7 @@ venv/bin/python -m scripts.migrate_db
 
 Expected: 看到 `[migrate] ALTER TABLE instance_state ADD owned_symbols` + `[migrate] done`
 
-- [ ] **Step 4: 验证 column 存在**
+- [x] **Step 4: 验证 column 存在**
 
 ```bash
 sqlite3 v2.3/server/pipeline-server.db "PRAGMA table_info(instance_state);" | grep owned_symbols
@@ -777,7 +777,7 @@ sqlite3 v2.3/server/pipeline-server.db "PRAGMA table_info(instance_state);" | gr
 
 Expected: 看到 `<idx>|owned_symbols|JSON|0||0` 一行
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add v2.3/server/app/models/instance_state.py v2.3/server/scripts/migrate_db.py
