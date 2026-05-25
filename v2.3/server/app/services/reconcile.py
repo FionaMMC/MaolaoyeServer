@@ -1,13 +1,21 @@
 """持仓对账服务。
 
 Client 推 QMT 真实账户快照（cash + positions），server 比对 instance_state
-的虚拟账本，生成 diff 报告。dry_run=False 时把 virtual_cash/positions 强制
+的虚拟账本，生成 diff 报告。dry_run=False 时把 virtual_positions 强制
 对齐到 QMT。
+
+多实例说明（v53 集成后）：
+  - virtual_cash 不再由 reconcile 覆写 —— 由 settlement service 维护，
+    cash sanity check 改由 reconcile_cash_total() 在 portfolio 级检查。
+  - owned_symbols 不为 None 的 instance：只看属于自己的 symbols。
+  - owned_symbols=None 的 legacy instance（如 v20h）：看"其他 instance 没认领"的 symbols。
 """
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+
+from sqlalchemy import select
 
 from app.models import InstanceState
 from app.schemas.reconcile import (
@@ -28,22 +36,21 @@ class InstanceNotFound(Exception):
 
 
 class ReconcileSanityCheckFailed(Exception):
-    """对账数据通过 sanity check 失败（如 cash 偏离合理范围太远）。
+    """对账数据通过 sanity check 失败。
 
-    防止把 QMT 真账户「非 sandbox 部分」（如模拟盘自带的几亿股默认股 + 几亿元杂项资金）
-    误同步进 V20H 虚拟账本，把 NAV 炸到天上。
+    保留此异常类以维持向后兼容（其他代码可能 catch 它），
+    但 cash 偏离检查已移除（见 reconcile_cash_total）。
     """
     pass
+
+
+class OwnershipOverlap(Exception):
+    """两个 instance 的 owned_symbols 列表有重叠（启动校验失败）。"""
 
 
 # 单股最大合理持仓（防 QMT 模拟器默认股的 100 亿股污染）
 # V20H 单股理论上限：¥10M NAV × 1.5×cap / 800持仓 / 1元价 ≈ 19K 股
 MAX_REASONABLE_QTY_PER_STOCK = 100_000
-
-# Cash 容忍偏离倍数：reconcile 传入的 cash 不能超过 initial_cash 的 5 倍
-# 例如 initial_cash=10M 时，cash 必须在 [-40M, +50M] 范围内才接受
-# 5/21 事件中 reconcile 试图把 cash 从 930K 改成 188M（18.8× 偏离）被这个保护拦下
-MAX_CASH_DEVIATION_MULTIPLE = 5.0
 
 
 class ReconcileService:
@@ -57,15 +64,17 @@ class ReconcileService:
         snapshot: QmtPositionSnapshot,
         initial_cash: float | None = None,
     ) -> ReconcileResult:
-        """计算 diff；如果 dry_run=False，把 instance_state 改成 QMT 状态。
+        """计算 diff；如果 dry_run=False，把 instance_state 的 virtual_positions 改成 QMT 状态。
 
-        Sanity checks（apply 模式下）：
-          1. 单股持仓 > MAX_REASONABLE_QTY_PER_STOCK 的 reject（防模拟器默认股）
-          2. cash 偏离 initial_cash 超过 MAX_CASH_DEVIATION_MULTIPLE 倍 reject
+        多实例过滤：
+          - owned_symbols 非空：只处理白名单内的 symbols。
+          - owned_symbols=None（legacy）：排除所有其他 instance 已认领的 symbols。
+
+        注意：virtual_cash 不再由此方法覆写。cash 对齐由 settlement service 负责；
+        portfolio 级 cash sanity check 由 reconcile_cash_total() 负责。
 
         Args:
-            initial_cash: 实例的 virtual_initial_cash（从 strategies.yaml）。
-                          None 时用 server 当前 virtual_cash 作为基准比较。
+            initial_cash: 已废弃参数，保留以维持向后兼容，本方法不再使用。
         """
         with self.session_factory() as session:
             inst = session.get(InstanceState, snapshot.instance_id)
@@ -73,6 +82,18 @@ class ReconcileService:
                 raise InstanceNotFound(
                     f"instance_id={snapshot.instance_id} 不存在于 instance_state 表"
                 )
+
+            # 读取本 instance 的 owned_symbols 白名单
+            my_owned = inst.owned_symbols  # list | None
+
+            # 如果是 legacy instance（owned_symbols=None），计算其他 instance 已认领的 symbols
+            others_owned: set[str] = set()
+            if my_owned is None:
+                for other in session.execute(select(InstanceState)).scalars().all():
+                    if other.instance_id == snapshot.instance_id:
+                        continue
+                    if other.owned_symbols:
+                        others_owned.update(other.owned_symbols)
 
             server_cash = float(inst.virtual_cash)
             server_positions = {
@@ -91,6 +112,15 @@ class ReconcileService:
                 if q > MAX_REASONABLE_QTY_PER_STOCK:
                     outliers.append((s, q))
                     continue
+                # owned_symbols 过滤
+                if my_owned is not None:
+                    # 白名单模式：只保留属于本 instance 的 symbols
+                    if s not in my_owned:
+                        continue
+                else:
+                    # legacy 模式：排除其他 instance 已认领的 symbols
+                    if s in others_owned:
+                        continue
                 qmt_positions[s] = q
             if outliers:
                 logger.warning(
@@ -98,21 +128,6 @@ class ReconcileService:
                     len(outliers), MAX_REASONABLE_QTY_PER_STOCK,
                     [(s, f"{q:,}") for s, q in outliers],
                 )
-
-            # Sanity check: cash 偏离不能太离谱（仅 apply 模式）
-            if not snapshot.dry_run:
-                baseline = initial_cash if initial_cash is not None else server_cash
-                if baseline > 0:
-                    deviation = abs(snapshot.qmt_cash - baseline) / baseline
-                    if deviation > MAX_CASH_DEVIATION_MULTIPLE:
-                        raise ReconcileSanityCheckFailed(
-                            f"cash 偏离过大: qmt_cash=¥{snapshot.qmt_cash:,.2f} "
-                            f"vs baseline=¥{baseline:,.2f} ({deviation:.1f}× 偏离, "
-                            f"上限 {MAX_CASH_DEVIATION_MULTIPLE}×)。\n"
-                            f"原因可能是：QMT 账户里有非 V20H 的资金/持仓被一起拉进来。\n"
-                            f"建议：检查 QMT 账户是否被 V20H 独占，或修 client 端"
-                            f"query_qmt_positions.py 加 cash 过滤。"
-                        )
 
             # 计算 diffs
             all_symbols = set(server_positions) | set(qmt_positions)
@@ -167,20 +182,59 @@ class ReconcileService:
                 )
                 return result
 
-            # 实际 apply：覆盖 instance_state
+            # 实际 apply：覆盖 virtual_positions（不覆盖 virtual_cash，由 settlement 维护）
             # 注意：直接 assign 一个 dict 才能让 SQLAlchemy 的 mutable JSON 类型识别为 dirty
-            inst.virtual_cash = float(snapshot.qmt_cash)
             inst.virtual_positions = dict(qmt_positions)
             inst.last_update = _now_iso()
             session.commit()
 
             result.applied = True
             logger.warning(
-                "reconcile APPLIED: instance=%s cash %.2f → %.2f, positions %d → %d "
-                "(server_only %d closed, qmt_only %d added, mismatched %d adjusted)",
+                "reconcile APPLIED: instance=%s positions %d → %d "
+                "(server_only %d closed, qmt_only %d added, mismatched %d adjusted) "
+                "[cash NOT overwritten — maintained by settlement]",
                 snapshot.instance_id,
-                server_cash, snapshot.qmt_cash,
                 len(server_positions), len(qmt_positions),
                 n_server_only, n_qmt_only, n_mismatched,
             )
             return result
+
+    def validate_no_overlap(self) -> None:
+        """启动校验：所有 instance 的 owned_symbols 列表两两不重叠。
+
+        legacy instance（owned_symbols=None）不参与校验（它消费"剩下的"）。
+        如果 raise OwnershipOverlap 应该让 app startup 失败。
+        """
+        all_owned: dict[str, str] = {}  # symbol → first_owner_instance_id
+        with self.session_factory() as session:
+            for inst in session.execute(select(InstanceState)).scalars().all():
+                if not inst.owned_symbols:
+                    continue
+                for s in inst.owned_symbols:
+                    if s in all_owned and all_owned[s] != inst.instance_id:
+                        raise OwnershipOverlap(
+                            f"symbol {s} owned by both "
+                            f"{all_owned[s]} and {inst.instance_id}"
+                        )
+                    all_owned[s] = inst.instance_id
+
+    def reconcile_cash_total(self, qmt_total_cash: float, tolerance: float = 0.05) -> bool:
+        """检查 Σ(virtual_cash) ≈ QMT total cash。仅报警，不修改 state。
+
+        返回 True = OK，False = 偏差超阈值（已记 warning，调用方决定是否触发 alert）。
+        此方法为 portfolio 级 cash sanity check，替代原先 instance 级的 cash 偏离检查。
+        Task 23 deploy 会把此方法接入 scheduler 定时检查。
+        """
+        with self.session_factory() as session:
+            instances = session.execute(select(InstanceState)).scalars().all()
+            total_virtual = sum(float(inst.virtual_cash) for inst in instances)
+            if total_virtual <= 0:
+                return True
+            deviation = abs(qmt_total_cash - total_virtual) / total_virtual
+            if deviation > tolerance:
+                logger.warning(
+                    "cash_total mismatch: virtual=%.2f qmt=%.2f deviation=%.2f%% (tol=%.2f%%)",
+                    total_virtual, qmt_total_cash, deviation * 100, tolerance * 100,
+                )
+                return False
+            return True

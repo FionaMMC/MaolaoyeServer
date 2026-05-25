@@ -19,3 +19,8 @@ class InstanceState(Base):
     # prev_hedge 等）。schema 由策略 adapter 自己定义，server 只负责存取。
     # nullable: 老数据迁移期为 None，adapter 首次读到 None 时按默认初始化。
     strategy_state: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+
+    # 该 instance "拥有" 的标的白名单（multi-instance 共享 QMT 账户时用）。
+    # None 表示 legacy 模式：reconcile 看到的 positions = "全部 - 其他 instance 的 owned"。
+    # 列表表示严格白名单：reconcile 只对账列表内 symbol。
+    owned_symbols: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)

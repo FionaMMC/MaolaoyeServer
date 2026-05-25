@@ -9,7 +9,7 @@ from app.models import InstanceState
 from app.schemas.reconcile import QmtPositionSnapshot
 from app.services.reconcile import (
     InstanceNotFound,
-    ReconcileSanityCheckFailed,
+    OwnershipOverlap,
     ReconcileService,
 )
 
@@ -134,7 +134,7 @@ def test_reconcile_dryrun_qty_mismatch(tmp_path: Path):
 
 
 def test_reconcile_apply_changes_state(tmp_path: Path):
-    """dry_run=False → instance_state 真的被改成 QMT 状态。"""
+    """dry_run=False → virtual_positions 对齐 QMT，virtual_cash 不变（由 settlement 维护）。"""
     sf = _factory(tmp_path)
     _seed_instance(sf, "inst", 500_000.0, {
         "600519.SH": 100,
@@ -148,10 +148,10 @@ def test_reconcile_apply_changes_state(tmp_path: Path):
     assert result.applied is True
     assert result.diffs == []   # apply 模式不返回 diff 详情（避免日志爆炸）
 
-    # state 已改
+    # positions 已改；cash 不变（settlement 负责维护）
     with sf() as s:
         inst = s.get(InstanceState, "inst")
-        assert inst.virtual_cash == 516_000.0
+        assert inst.virtual_cash == 500_000.0     # cash 保持原值，不跟 QMT 对齐
         assert inst.virtual_positions == {"600519.SH": 100}
 
 
@@ -227,52 +227,212 @@ def test_reconcile_filters_outlier_positions(tmp_path: Path):
 
 
 def test_reconcile_rejects_huge_cash_deviation(tmp_path: Path):
-    """cash 偏离 baseline 超过 5× 时 raise（5/21 事件中 188M vs 10M）。"""
+    """cash 偏离检查已从 instance 级移除（改由 reconcile_cash_total 在 portfolio 级检查）。
+    apply 模式不再因 cash 偏离而 raise；cash 不被覆写，positions 正常对齐。
+    """
     sf = _factory(tmp_path)
     _seed_instance(sf, "inst", 1_000_000.0, {})  # server 当前 cash 100 万
     svc = ReconcileService(sf)
 
-    # QMT 推一个 18800 万 (188× 偏离) → 应被拒
+    # 以前会因 cash 偏离 188× 而 raise，现在不再 raise
     snap = _snapshot("inst", 188_000_000.0, {"600519.SH": 100}, dry_run=False)
-    with pytest.raises(ReconcileSanityCheckFailed, match="cash 偏离过大"):
-        svc.reconcile(snap)
+    result = svc.reconcile(snap)
+    assert result.applied is True
 
-    # 但 dry_run 不会报错（仍可看 diff 详情）
+    # virtual_cash 不变（不被 QMT 的大 cash 覆写）
+    with sf() as s:
+        inst = s.get(InstanceState, "inst")
+        assert inst.virtual_cash == 1_000_000.0
+        assert inst.virtual_positions == {"600519.SH": 100}
+
+    # dry_run 也正常
     snap_dry = _snapshot("inst", 188_000_000.0, {"600519.SH": 100}, dry_run=True)
     result = svc.reconcile(snap_dry)
     assert result.dry_run is True
 
 
 def test_reconcile_accepts_small_cash_deviation(tmp_path: Path):
-    """cash 在合理范围（5× 内）正常 apply。"""
+    """cash 偏离检查已移除；apply 正常执行，positions 对齐，cash 不变。"""
     sf = _factory(tmp_path)
     _seed_instance(sf, "inst", 1_000_000.0, {})
     svc = ReconcileService(sf)
 
-    # QMT 800 万（8× 但 (8-1)/1 = 7× 偏离）→ 应被拒
+    # 以前 8M 偏离（7×）会 raise，现在正常 apply
     snap = _snapshot("inst", 8_000_000.0, {"600519.SH": 100}, dry_run=False)
-    with pytest.raises(ReconcileSanityCheckFailed):
-        svc.reconcile(snap)
-
-    # QMT 200 万（差额 100 万 = 100% = 1× 偏离）→ OK
-    snap2 = _snapshot("inst", 2_000_000.0, {"600519.SH": 100}, dry_run=False)
-    result = svc.reconcile(snap2)
+    result = svc.reconcile(snap)
     assert result.applied is True
+
+    with sf() as s:
+        inst = s.get(InstanceState, "inst")
+        assert inst.virtual_cash == 1_000_000.0  # cash 不变
+        assert inst.virtual_positions == {"600519.SH": 100}
 
 
 def test_reconcile_initial_cash_param_used_as_baseline(tmp_path: Path):
-    """传入 initial_cash 时用它作为偏离 baseline，而不是 server 当前 cash。"""
+    """initial_cash 参数已废弃（cash 偏离检查移除），传入不报错，apply 正常执行。"""
     sf = _factory(tmp_path)
-    # server 当前 cash 只有 100K（V20H 大部分钱已投出去），但 initial 是 10M
     _seed_instance(sf, "inst", 100_000.0, {})
     svc = ReconcileService(sf)
 
-    # QMT 推 9M（vs 100K 偏离 89×，但 vs initial_cash 10M 仅 0.91× 偏离）
-    # 不传 initial_cash → 用 server cash 100K 做 baseline → 89× 偏离 → 拒
     snap = _snapshot("inst", 9_000_000.0, {"600519.SH": 100}, dry_run=False)
-    with pytest.raises(ReconcileSanityCheckFailed):
-        svc.reconcile(snap)
-
-    # 传 initial_cash=10M → 偏离仅 0.91× → 接受
-    result = svc.reconcile(snap, initial_cash=10_000_000.0)
+    # 以前不传 initial_cash 会 raise；现在不再 raise
+    result = svc.reconcile(snap)
     assert result.applied is True
+
+    # 传 initial_cash 参数也不报错
+    _seed_instance(sf, "inst2", 100_000.0, {})
+    snap2 = _snapshot("inst2", 9_000_000.0, {"600519.SH": 100}, dry_run=False)
+    result2 = svc.reconcile(snap2, initial_cash=10_000_000.0)
+    assert result2.applied is True
+
+
+# ── Task 17: owned_symbols 过滤 ───────────────────────────────────────────
+def test_reconcile_whitelist_filter_v53_only_sees_etfs(tmp_path):
+    sf = _factory(tmp_path)
+    with sf() as s:
+        s.add(InstanceState(
+            instance_id="paper_v20h_v20h_v1_3",
+            virtual_cash=10_000_000.0, virtual_positions={},
+            owned_symbols=None, last_update=datetime.now().isoformat(),
+        ))
+        s.add(InstanceState(
+            instance_id="paper_v53_v53",
+            virtual_cash=10_000_000.0, virtual_positions={},
+            owned_symbols=["510300.SH", "511260.SH", "518880.SH"],
+            last_update=datetime.now().isoformat(),
+        ))
+        s.commit()
+
+    svc = ReconcileService(sf)
+    snap = _snapshot(
+        "paper_v53_v53",
+        10_000_000.0,
+        {
+            "600519.SH": 100,   # v20h's
+            "000001.SZ": 200,   # v20h's
+            "510300.SH": 5000,  # v53's
+            "511260.SH": 70000, # v53's
+        },
+    )
+    result = svc.reconcile(snap)
+    # v53 视野里只有 510300 + 511260（518880 不在 qmt_positions 里），server 0 持仓 → 2 个 qmt_only
+    assert result.n_qmt_only == 2
+    assert result.n_server_only == 0
+
+
+def test_reconcile_v20h_legacy_excludes_v53_etfs(tmp_path):
+    """v20h reconcile 时不该把 v53 的 ETF 当成自己的"""
+    sf = _factory(tmp_path)
+    with sf() as s:
+        s.add(InstanceState(
+            instance_id="paper_v20h_v20h_v1_3",
+            virtual_cash=10_000_000.0,
+            virtual_positions={"600519.SH": 100},
+            owned_symbols=None, last_update=datetime.now().isoformat(),
+        ))
+        s.add(InstanceState(
+            instance_id="paper_v53_v53",
+            virtual_cash=10_000_000.0,
+            virtual_positions={"510300.SH": 5000},
+            owned_symbols=["510300.SH", "511260.SH"],
+            last_update=datetime.now().isoformat(),
+        ))
+        s.commit()
+
+    svc = ReconcileService(sf)
+    snap = _snapshot("paper_v20h_v20h_v1_3", 10_000_000.0,
+                     {"600519.SH": 100, "510300.SH": 5000})
+    result = svc.reconcile(snap)
+    # v20h 只匹配 600519；510300 被 others_owned 过滤
+    assert result.n_matched == 1
+    assert result.n_qmt_only == 0
+    assert result.n_mismatched == 0
+    assert result.n_server_only == 0
+
+
+def test_reconcile_apply_no_longer_overwrites_cash(tmp_path):
+    """apply 模式：positions 强对齐，但 virtual_cash 不动"""
+    sf = _factory(tmp_path)
+    with sf() as s:
+        s.add(InstanceState(
+            instance_id="inst", virtual_cash=1_500_000.0, virtual_positions={},
+            owned_symbols=None, last_update=datetime.now().isoformat(),
+        ))
+        s.commit()
+    svc = ReconcileService(sf)
+    snap = _snapshot("inst", 9_999_999.0, {"600519.SH": 100}, dry_run=False)
+    result = svc.reconcile(snap)
+    assert result.applied is True
+    with sf() as s:
+        inst = s.get(InstanceState, "inst")
+        # virtual_cash 应仍是 1.5M（不变），positions 已更新
+        assert float(inst.virtual_cash) == 1_500_000.0
+        assert inst.virtual_positions == {"600519.SH": 100}
+
+
+# ── Task 18: validate_no_overlap ──────────────────────────────────────────
+def test_validate_no_overlap_raises_on_conflict(tmp_path):
+    sf = _factory(tmp_path)
+    with sf() as s:
+        s.add(InstanceState(
+            instance_id="inst_a", virtual_cash=0, virtual_positions={},
+            owned_symbols=["510300.SH"], last_update=datetime.now().isoformat(),
+        ))
+        s.add(InstanceState(
+            instance_id="inst_b", virtual_cash=0, virtual_positions={},
+            owned_symbols=["510300.SH", "511260.SH"],
+            last_update=datetime.now().isoformat(),
+        ))
+        s.commit()
+    svc = ReconcileService(sf)
+    with pytest.raises(OwnershipOverlap) as exc:
+        svc.validate_no_overlap()
+    assert "510300.SH" in str(exc.value)
+
+
+def test_validate_no_overlap_ok_when_disjoint(tmp_path):
+    sf = _factory(tmp_path)
+    with sf() as s:
+        s.add(InstanceState(
+            instance_id="inst_a", virtual_cash=0, virtual_positions={},
+            owned_symbols=["510300.SH"], last_update=datetime.now().isoformat(),
+        ))
+        s.add(InstanceState(
+            instance_id="inst_b", virtual_cash=0, virtual_positions={},
+            owned_symbols=["159915.SZ"], last_update=datetime.now().isoformat(),
+        ))
+        s.add(InstanceState(
+            instance_id="legacy", virtual_cash=0, virtual_positions={},
+            owned_symbols=None, last_update=datetime.now().isoformat(),
+        ))
+        s.commit()
+    svc = ReconcileService(sf)
+    svc.validate_no_overlap()  # 无 raise
+
+
+# ── Task 19: reconcile_cash_total ─────────────────────────────────────────
+def test_reconcile_cash_total_within_tolerance(tmp_path):
+    sf = _factory(tmp_path)
+    with sf() as s:
+        s.add(InstanceState(instance_id="a", virtual_cash=5_000_000,
+                            virtual_positions={}, last_update=datetime.now().isoformat()))
+        s.add(InstanceState(instance_id="b", virtual_cash=5_000_000,
+                            virtual_positions={}, last_update=datetime.now().isoformat()))
+        s.commit()
+    svc = ReconcileService(sf)
+    assert svc.reconcile_cash_total(qmt_total_cash=10_100_000.0, tolerance=0.05) is True
+
+
+def test_reconcile_cash_total_alarm_on_big_deviation(tmp_path, caplog):
+    import logging
+    sf = _factory(tmp_path)
+    with sf() as s:
+        s.add(InstanceState(instance_id="a", virtual_cash=10_000_000,
+                            virtual_positions={}, last_update=datetime.now().isoformat()))
+        s.commit()
+    svc = ReconcileService(sf)
+    caplog.set_level(logging.WARNING, logger="app.services.reconcile")
+    # qmt_total = 5M vs virtual 10M → 50% deviation > 5% tolerance
+    result = svc.reconcile_cash_total(qmt_total_cash=5_000_000.0, tolerance=0.05)
+    assert result is False
+    assert any("cash_total mismatch" in r.getMessage() for r in caplog.records)

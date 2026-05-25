@@ -425,6 +425,84 @@ def test_pipeline_strategy_no_set_state_keeps_old_state(setup):
         assert inst.strategy_state == {"my_data": "preserved"}
 
 
+# ── Task 9: owned_symbols loader ──────────────────────────────────────
+def test_pipeline_owned_symbols_none_legacy(setup):
+    """yaml 没有 owned_symbols 键 → instance_state.owned_symbols 是 None。"""
+    pipeline, sf, store, yaml_path = setup
+    _write_yaml(yaml_path, {
+        "account_groups": [{
+            "group_id": "real_A",
+            "qmt_account_id": "X",
+            "strategies": [{"strategy_id": "noop", "virtual_initial_cash": 1000}],
+        }],
+    })
+    pipeline.run(20260430)
+
+    with sf() as s:
+        row = s.get(InstanceState, "real_A_noop")
+        assert row is not None
+        assert row.owned_symbols is None
+
+
+def test_pipeline_owned_symbols_written_for_new_instance(setup):
+    """yaml 有 owned_symbols 列表 → 新建的 instance_state.owned_symbols 与之一致。"""
+    pipeline, sf, store, yaml_path = setup
+    _write_yaml(yaml_path, {
+        "account_groups": [{
+            "group_id": "real_A",
+            "qmt_account_id": "X",
+            "strategies": [{
+                "strategy_id": "noop",
+                "virtual_initial_cash": 1000,
+                "owned_symbols": ["600519.SH", "000001.SZ"],
+            }],
+        }],
+    })
+    pipeline.run(20260430)
+
+    with sf() as s:
+        row = s.get(InstanceState, "real_A_noop")
+        assert row is not None
+        assert row.owned_symbols == ["600519.SH", "000001.SZ"]
+
+
+def test_pipeline_owned_symbols_updates_existing_instance(setup):
+    """已存在的 instance_state（owned_symbols=None）在 yaml 增加后应被更新。"""
+    pipeline, sf, store, yaml_path = setup
+
+    # 先建实例，yaml 无 owned_symbols
+    _write_yaml(yaml_path, {
+        "account_groups": [{
+            "group_id": "real_A",
+            "qmt_account_id": "X",
+            "strategies": [{"strategy_id": "noop", "virtual_initial_cash": 1000}],
+        }],
+    })
+    pipeline.run(20260430)
+
+    with sf() as s:
+        row = s.get(InstanceState, "real_A_noop")
+        assert row.owned_symbols is None
+
+    # yaml 更新：加入 owned_symbols
+    _write_yaml(yaml_path, {
+        "account_groups": [{
+            "group_id": "real_A",
+            "qmt_account_id": "X",
+            "strategies": [{
+                "strategy_id": "noop",
+                "virtual_initial_cash": 1000,
+                "owned_symbols": ["300750.SZ"],
+            }],
+        }],
+    })
+    pipeline.run(20260501)
+
+    with sf() as s:
+        row = s.get(InstanceState, "real_A_noop")
+        assert row.owned_symbols == ["300750.SZ"]
+
+
 def test_pipeline_reset_instance_states(setup):
     """reset_instance_states 应把 cash 还原成 yaml 初始值，positions 清空。"""
     pipeline, sf, store, yaml_path = setup

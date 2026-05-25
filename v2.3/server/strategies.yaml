@@ -1,4 +1,6 @@
-# 实际生产配置：只有 paper_v20h（V20H 实盘）
+# 实际生产配置：
+#   - paper_v20h: V20H CSI1000 多头 + cap_weight + vol_target（已上线）
+#   - paper_v53:  V53 10 ETF 全天候双层 inv_vol（M0 dry_run, plugins/v53/config.yaml 控制）
 # real_A 是历史示例策略，已废弃，不再激活
 # （如需重新启用 demo 策略做联调测试，看 git 历史 commit 0936d80）
 
@@ -8,3 +10,21 @@ account_groups:
     strategies:
       - strategy_id: v20h_v1_3
         virtual_initial_cash: 10000000
+        # owned_symbols 未设 → null → legacy 模式 (reconcile 看到的 positions = "全部 - 其他 instance 的 owned")
+
+  - group_id: paper_v53
+    qmt_account_id: "301300148788"       # 同一 QMT 账户，server 侧逻辑隔离
+    strategies:
+      - strategy_id: v53
+        virtual_initial_cash: 10000000
+        owned_symbols:                    # 严格白名单，reconcile 只对账这 10 个
+          - 510300.SH                     # hs300
+          - 159915.SZ                     # cyb
+          - 511260.SH                     # bond (10Y)
+          - 518880.SH                     # gold
+          - 159981.SZ                     # commodity2 (能源化工)
+          - 159985.SZ                     # commodity3 (豆粕)
+          - 159930.SZ                     # crude_oil
+          - 513500.SH                     # sp500
+          - 513100.SH                     # nasdaq
+          - 512890.SH                     # dividend (红利低波100)

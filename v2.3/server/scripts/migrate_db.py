@@ -57,6 +57,15 @@ def main() -> int:
         else:
             print("[migrate] instance_state.strategy_state already exists, skip")
 
+        # v53 集成: instance_state.owned_symbols
+        if not column_exists(con, "instance_state", "owned_symbols"):
+            print("[migrate] ALTER TABLE instance_state ADD owned_symbols")
+            con.execute(text(
+                "ALTER TABLE instance_state ADD COLUMN owned_symbols JSON"
+            ))
+        else:
+            print("[migrate] instance_state.owned_symbols already exists, skip")
+
         # 清理：删除 strategies.yaml 不再激活的残留 instance_state
         # （v2.3 当前只有 paper_v20h_v20h_v1_3 一个实例）
         stale_ids = [

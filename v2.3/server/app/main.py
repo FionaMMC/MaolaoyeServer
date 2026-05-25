@@ -12,12 +12,29 @@ from app.api import admin, admin_query, dashboard, health, market_data, orders, 
 from app.exceptions import APIError, ErrorCode
 from app.logging_setup import get_logger, setup_logging
 from app.settings import Settings, get_settings
+from app.services.reconcile import OwnershipOverlap, ReconcileService
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     log = get_logger("app")
     log.info("server_starting", version="2.3.0")
+
+    # 启动校验：owned_symbols 两两不重叠（多实例共用 QMT 账户时防止 symbol 归属冲突）
+    try:
+        from app.dependencies import get_session_factory, get_engine
+        from app.db import init_db, make_engine, make_session_factory
+        settings = get_settings()
+        _engine = make_engine(settings.db_url)
+        init_db(_engine)
+        _sf = make_session_factory(_engine)
+        ReconcileService(_sf).validate_no_overlap()
+        log.info("validate_no_overlap: OK (owned_symbols 无重叠)")
+    except OwnershipOverlap as e:
+        log.error("validate_no_overlap FAILED — owned_symbols 有重叠，请检查 strategies.yaml: %s", e)
+        raise SystemExit(1) from e
+    except Exception as e:
+        log.warning("validate_no_overlap 跳过（DB 尚未初始化或无 instance_state 表）: %s", e)
 
     # 启动 APScheduler
     scheduler = None
