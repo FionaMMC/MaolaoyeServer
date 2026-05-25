@@ -245,3 +245,130 @@ def test_build_close_matrix_target_filters_future(tmp_path, monkeypatch):
 
     assert close.index.max() <= pd.Timestamp("2024-01-31")
     _reset_adapter_cache()
+
+
+# ── Task 13: helpers (NAV, reference_price, weights → qty) ────────────────
+def test_resolve_reference_price_uses_ctx_market_latest(tmp_path):
+    """ctx.market 有数据 → 取最近 close (int YYYYMMDD trade_date 转 datetime 后比较 target)"""
+    _reset_adapter_cache()
+    from app.storage.parquet import ParquetStore
+    from app.strategy.context import Context
+    from plugins.v53_adapter import V53Adapter
+
+    store = ParquetStore(root=tmp_path / "parquet")
+    store.append("etfs", "510300.SH", pd.DataFrame({
+        "trade_date": [20240401, 20240430],
+        "open": [3.0, 3.0], "high": [3.0, 3.0], "low": [3.0, 3.0],
+        "close": [3.1, 3.5], "volume": [0, 0],
+    }))
+    ctx = Context("paper_v53_v53", 20240430, 0.0, {}, store)
+
+    adapter = V53Adapter()
+    # 不需要 bundle: 此测试只查 ctx 路径
+    price = adapter._resolve_reference_price(ctx, "510300.SH", pd.Timestamp("2024-04-30"))
+    assert price == 3.5
+    _reset_adapter_cache()
+
+
+def test_resolve_reference_price_falls_back_to_bundle(tmp_path, monkeypatch):
+    """ctx 无数据 → fallback bundle"""
+    _reset_adapter_cache()
+    import plugins.v53_adapter as adapter_mod
+    from plugins.v53_adapter import V53Adapter
+    from app.storage.parquet import ParquetStore
+    from app.strategy.context import Context
+
+    # Set class-level bundle directly (avoid file IO)
+    bundle = pd.DataFrame({
+        "trade_date": pd.to_datetime(["2024-03-31", "2024-04-30"]),
+        "code": ["511260.SH", "511260.SH"],
+        "close": [105.0, 110.0],
+        "open": [105.0, 110.0],
+    })
+    V53Adapter._etf_close_bundle = bundle
+
+    store = ParquetStore(root=tmp_path / "parquet")  # 无 ETF 数据
+    ctx = Context("paper_v53_v53", 20240430, 0.0, {}, store)
+
+    price = V53Adapter()._resolve_reference_price(ctx, "511260.SH", pd.Timestamp("2024-04-30"))
+    assert price == 110.0
+    _reset_adapter_cache()
+
+
+def test_resolve_reference_price_returns_none_when_no_data(tmp_path):
+    """ctx + bundle 都无 → None"""
+    _reset_adapter_cache()
+    from app.storage.parquet import ParquetStore
+    from app.strategy.context import Context
+    from plugins.v53_adapter import V53Adapter
+
+    store = ParquetStore(root=tmp_path / "parquet")
+    ctx = Context("paper_v53_v53", 20240430, 0.0, {}, store)
+    price = V53Adapter()._resolve_reference_price(ctx, "999999.SH", pd.Timestamp("2024-04-30"))
+    assert price is None
+    _reset_adapter_cache()
+
+
+def test_compute_nav_cash_plus_positions(tmp_path, monkeypatch):
+    _reset_adapter_cache()
+    from plugins.v53_adapter import V53Adapter
+
+    adapter = V53Adapter()
+    # monkeypatch reference price to constants
+    adapter._resolve_reference_price = lambda ctx, code, target: {
+        "510300.SH": 3.0, "511260.SH": 110.0,
+    }.get(code, 0.0)
+
+    # 简单 ctx 模拟 cash + positions
+    class FakeCtx:
+        def cash(self): return 1_000_000.0
+        def positions(self): return {"510300.SH": 10000, "511260.SH": 5000}
+
+    nav = adapter._compute_nav(FakeCtx(), pd.Timestamp("2024-04-30"))
+    # 1M + 10000*3 + 5000*110 = 1M + 30K + 550K = 1,580,000
+    assert abs(nav - 1_580_000.0) < 1e-6
+    _reset_adapter_cache()
+
+
+def test_weights_to_quantities_basic():
+    """1000万 × 0.67 / 110元 = 60909 股 → round(609.09)=609 lots × 100 = 60900"""
+    _reset_adapter_cache()
+    from plugins.v53_adapter import V53Adapter
+    adapter = V53Adapter()
+    adapter._resolve_reference_price = lambda ctx, code, target: {
+        "511260.SH": 110.0, "510300.SH": 3.0,
+    }.get(code, 0.0)
+    qty = adapter._weights_to_quantities(
+        {"511260.SH": 0.67, "510300.SH": 0.063},
+        nav=10_000_000.0, ctx=None, target=pd.Timestamp("2024-04-30"))
+    assert qty["511260.SH"] == 60900
+    # 1000万 × 0.063 / 3 = 210000 shares = 2100 lots × 100
+    assert qty["510300.SH"] == 210000
+    _reset_adapter_cache()
+
+
+def test_weights_to_quantities_zero_weight_skipped():
+    """权重太小 round 到 0 lots → skip"""
+    _reset_adapter_cache()
+    from plugins.v53_adapter import V53Adapter
+    adapter = V53Adapter()
+    adapter._resolve_reference_price = lambda ctx, code, target: 100.0
+    # 1万 × 0.0001 / 100 = 0.01 shares → round(0.0001) = 0 lots → skip
+    qty = adapter._weights_to_quantities(
+        {"159930.SZ": 0.0001}, nav=10_000.0, ctx=None,
+        target=pd.Timestamp("2024-04-30"))
+    assert "159930.SZ" not in qty
+    _reset_adapter_cache()
+
+
+def test_weights_to_quantities_missing_price_skipped():
+    """没价格 → skip"""
+    _reset_adapter_cache()
+    from plugins.v53_adapter import V53Adapter
+    adapter = V53Adapter()
+    adapter._resolve_reference_price = lambda ctx, code, target: None
+    qty = adapter._weights_to_quantities(
+        {"159930.SZ": 0.1}, nav=10_000_000.0, ctx=None,
+        target=pd.Timestamp("2024-04-30"))
+    assert qty == {}
+    _reset_adapter_cache()

@@ -128,6 +128,61 @@ class V53Adapter(Strategy):
         keep = [k for k in ETF_KEYS if k in wide.columns]
         return wide[keep]
 
+    def _resolve_reference_price(
+        self, ctx: Context, qmt_code: str, target: pd.Timestamp,
+    ) -> float | None:
+        """优先 ctx.market 最近真实 close (≤ target)，回退 bundle close."""
+        # 1. ctx.market path (trade_date 是 int YYYYMMDD)
+        try:
+            df = ctx.market(qmt_code, category="etfs")
+        except Exception:
+            df = None
+        if df is not None and not df.empty:
+            td = pd.to_datetime(df["trade_date"].astype(str), format="%Y%m%d")
+            df2 = df.assign(_dt=td)
+            df2 = df2[df2["_dt"] <= target].sort_values("_dt")
+            if not df2.empty:
+                price = float(df2.iloc[-1]["close"])
+                if price > 0:
+                    return price
+
+        # 2. bundle fallback
+        bundle = type(self)._etf_close_bundle
+        if bundle is None:
+            return None
+        sub = bundle[(bundle["code"] == qmt_code) & (bundle["trade_date"] <= target)]
+        if sub.empty:
+            return None
+        price = float(sub.sort_values("trade_date").iloc[-1]["close"])
+        return price if price > 0 else None
+
+    def _compute_nav(self, ctx: Context, target: pd.Timestamp) -> float:
+        """NAV = cash + Σ(qty × ref_price)。"""
+        nav = float(ctx.cash())
+        for code, qty in ctx.positions().items():
+            price = self._resolve_reference_price(ctx, code, target)
+            if price is None:
+                continue
+            nav += float(qty) * float(price)
+        return nav
+
+    def _weights_to_quantities(
+        self, weights: dict[str, float], nav: float,
+        ctx: Context, target: pd.Timestamp,
+    ) -> dict[str, int]:
+        """权重 dict → 100 股整 数量 dict。权重 0 / 无价格 / qty<100 都 skip。"""
+        out: dict[str, int] = {}
+        for qmt_code, w in weights.items():
+            if w <= 0 or nav <= 0:
+                continue
+            price = self._resolve_reference_price(ctx, qmt_code, target)
+            if price is None or price <= 0:
+                continue
+            lots = round(nav * w / price / 100)
+            if lots > 0:
+                out[qmt_code] = int(lots) * 100
+        return out
+
     def run(self, ctx: Context, trade_date: int) -> list[RawSignal]:
         """Phase M0 dry_run 骨架。Task 12-15 会填实完整调仓 pipeline。"""
         target = pd.to_datetime(str(trade_date), format="%Y%m%d")
