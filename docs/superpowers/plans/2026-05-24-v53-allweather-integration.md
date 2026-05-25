@@ -1342,7 +1342,7 @@ git commit -m "feat(v53): _build_returns_matrix — bundle + IngestService 增�
 - Modify: `v2.3/server/plugins/v53_adapter.py`
 - Modify: `v2.3/server/tests/unit/test_v53_adapter.py`
 
-- [ ] **Step 1: 加 helpers + reference_price 解析**
+- [x] **Step 1: 加 helpers + reference_price 解析**
 
 加到 `plugins/v53_adapter.py`:
 
@@ -1389,7 +1389,7 @@ git commit -m "feat(v53): _build_returns_matrix — bundle + IngestService 增�
         return result
 ```
 
-- [ ] **Step 2: 写测试**
+- [x] **Step 2: 写测试**
 
 ```python
 def test_weights_to_quantities_basic():
@@ -1416,7 +1416,7 @@ def test_weights_to_quantities_zero_weight_skipped():
     assert "159930.SZ" not in qty
 ```
 
-- [ ] **Step 3: 跑测试**
+- [x] **Step 3: 跑测试**
 
 ```bash
 venv/bin/pytest tests/unit/test_v53_adapter.py::test_weights_to_quantities_basic tests/unit/test_v53_adapter.py::test_weights_to_quantities_zero_weight_skipped -v
@@ -1424,12 +1424,14 @@ venv/bin/pytest tests/unit/test_v53_adapter.py::test_weights_to_quantities_basic
 
 Expected: 2 个 PASS
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add v2.3/server/plugins/v53_adapter.py v2.3/server/tests/unit/test_v53_adapter.py
 git commit -m "feat(v53): NAV + reference_price + weight→100股整 quantity"
 ```
+
+**实施备注**: ctx.market trade_date 是 int YYYYMMDD，_resolve_reference_price 内部转 datetime 比较 target。round(...) 用 Python banker's rounding (round half to even)，对 ETF 100 股粒度影响微小。
 
 ### Task 14: 风控钩子（QDII 溢价 / 流动性 / max_single_etf_weight）
 
