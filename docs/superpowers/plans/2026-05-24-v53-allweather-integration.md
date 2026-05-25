@@ -1760,7 +1760,7 @@ Commit: `fda102e`. 2 sanity tests pass (auto-discovery + 与 v20h 不冲突).
 - Modify: `v2.3/server/app/services/reconcile.py`
 - Modify: `v2.3/server/tests/unit/test_reconcile.py`
 
-- [ ] **Step 1: 写 multi-instance 测试**
+- [x] **Step 1: 写 multi-instance 测试**
 
 加到 `test_reconcile.py`:
 
@@ -1842,7 +1842,7 @@ def test_reconcile_v20h_legacy_excludes_others_owned(tmp_path):
     assert result.n_qmt_only == 0  # 510300 没出现在 v20h reconcile 视野里
 ```
 
-- [ ] **Step 2: 跑测试，确认 fail**
+- [x] **Step 2: 跑测试，确认 fail**
 
 ```bash
 cd v2.3/server
@@ -1851,7 +1851,7 @@ venv/bin/pytest tests/unit/test_reconcile.py::test_reconcile_whitelist_filter_po
 
 Expected: FAIL（current reconcile 不过滤）
 
-- [ ] **Step 3: 改 reconcile.py 加白名单过滤**
+- [x] **Step 3: 改 reconcile.py 加白名单过滤**
 
 Edit `v2.3/server/app/services/reconcile.py` — 在 `reconcile()` 内、`qmt_positions` 构造之前插入：
 
@@ -1887,7 +1887,7 @@ Edit `v2.3/server/app/services/reconcile.py` — 在 `reconcile()` 内、`qmt_po
 
 记得 import `select` from sqlalchemy。
 
-- [ ] **Step 4: 改 apply 模式不再强对齐 cash**
+- [x] **Step 4: 改 apply 模式不再强对齐 cash**
 
 在 reconcile() 末尾的 apply 块：
 
@@ -1902,7 +1902,7 @@ Edit `v2.3/server/app/services/reconcile.py` — 在 `reconcile()` 内、`qmt_po
 
 `server_cash`, `cash_diff` 在 ReconcileResult 里保留（仅展示用，不 apply）。
 
-- [ ] **Step 5: 跑全部 reconcile 测试**
+- [x] **Step 5: 跑全部 reconcile 测试**
 
 ```bash
 venv/bin/pytest tests/unit/test_reconcile.py -v
@@ -1912,7 +1912,7 @@ Expected: 全部 PASS（包括旧测试不破，新测试通过）
 
 ⚠️ 旧测试可能因为"cash 不再强对齐"而部分失败。需要更新这些测试断言（移除"reconcile 之后 virtual_cash == qmt_cash"）。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add v2.3/server/app/services/reconcile.py v2.3/server/tests/unit/test_reconcile.py
@@ -1926,7 +1926,7 @@ git commit -m "fix(reconcile): owned_symbols 白名单过滤 + cash 不再强对
 - Modify: `v2.3/server/app/main.py` — 启动时调
 - Modify: `v2.3/server/tests/unit/test_reconcile.py` — 加测试
 
-- [ ] **Step 1: 写测试**
+- [x] **Step 1: 写测试**
 
 ```python
 def test_validate_no_overlap_raises_on_conflict(tmp_path):
@@ -1970,7 +1970,7 @@ def test_validate_no_overlap_ok_when_disjoint(tmp_path):
     svc.validate_no_overlap()  # 无 raise
 ```
 
-- [ ] **Step 2: 实现 validate_no_overlap**
+- [x] **Step 2: 实现 validate_no_overlap**
 
 加到 `reconcile.py`:
 
@@ -1995,7 +1995,7 @@ class ReconcileService:
                     all_owned[s] = inst.instance_id
 ```
 
-- [ ] **Step 3: 在 app/main.py 加 startup hook**
+- [x] **Step 3: 在 app/main.py 加 startup hook**
 
 找到 FastAPI app 的 startup event 或 lifespan 处，加：
 
@@ -2007,7 +2007,7 @@ async def _validate_ownership():
     ReconcileService(session_factory).validate_no_overlap()
 ```
 
-- [ ] **Step 4: 跑测试**
+- [x] **Step 4: 跑测试**
 
 ```bash
 venv/bin/pytest tests/unit/test_reconcile.py::test_validate_no_overlap_raises_on_conflict tests/unit/test_reconcile.py::test_validate_no_overlap_ok_when_disjoint -v
@@ -2015,7 +2015,7 @@ venv/bin/pytest tests/unit/test_reconcile.py::test_validate_no_overlap_raises_on
 
 Expected: 2 个 PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add v2.3/server/app/services/reconcile.py v2.3/server/app/main.py v2.3/server/tests/unit/test_reconcile.py
@@ -2028,7 +2028,7 @@ git commit -m "feat(reconcile): validate_no_overlap 启动校验防 owned_symbol
 - Modify: `v2.3/server/app/services/reconcile.py`
 - Modify: `v2.3/server/tests/unit/test_reconcile.py`
 
-- [ ] **Step 1: 写测试**
+- [x] **Step 1: 写测试**
 
 ```python
 def test_reconcile_cash_total_within_tolerance(tmp_path):
@@ -2056,7 +2056,7 @@ def test_reconcile_cash_total_alarm_on_big_deviation(tmp_path, caplog):
     assert any("cash_total mismatch" in r.message for r in caplog.records)
 ```
 
-- [ ] **Step 2: 实现**
+- [x] **Step 2: 实现**
 
 ```python
     def reconcile_cash_total(self, qmt_total_cash: float, tolerance: float = 0.05) -> bool:
@@ -2077,7 +2077,7 @@ def test_reconcile_cash_total_alarm_on_big_deviation(tmp_path, caplog):
             return True
 ```
 
-- [ ] **Step 3: 跑测试**
+- [x] **Step 3: 跑测试**
 
 ```bash
 venv/bin/pytest tests/unit/test_reconcile.py::test_reconcile_cash_total_within_tolerance tests/unit/test_reconcile.py::test_reconcile_cash_total_alarm_on_big_deviation -v
@@ -2085,7 +2085,7 @@ venv/bin/pytest tests/unit/test_reconcile.py::test_reconcile_cash_total_within_t
 
 Expected: 2 个 PASS
 
-- [ ] **Step 4: 把 reconcile_cash_total 接入 daily cron 或 reconcile endpoint**
+- [x] **Step 4: 把 reconcile_cash_total 接入 daily cron 或 reconcile endpoint** (skipped per plan — Task 23 deploy)
 
 找 reconcile 触发点（client 推 snapshot 后调 reconcile()），在调完之后追加：
 
@@ -2100,7 +2100,7 @@ except Exception as e:
 
 注意：snap.qmt_cash 这里指 QMT **总账户** cash，所以 ReconcileSchema 的 cash 字段语义已经从"该 instance 的 cash"变成"该 QMT account 的总 cash"。需要 spec / client 上下文统一这点。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add v2.3/server/app/services/reconcile.py v2.3/server/tests/unit/test_reconcile.py
