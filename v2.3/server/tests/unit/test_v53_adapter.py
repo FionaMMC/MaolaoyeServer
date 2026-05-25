@@ -372,3 +372,138 @@ def test_weights_to_quantities_missing_price_skipped():
         target=pd.Timestamp("2024-04-30"))
     assert qty == {}
     _reset_adapter_cache()
+
+
+# ── Task 14: risk filters ──────────────────────────────────────────────────
+class _FakeBlacklistCtx:
+    def __init__(self, bl: set[str], market_data: dict | None = None,
+                 cash: float = 10_000_000.0, positions: dict | None = None):
+        self._bl = bl
+        self._market = market_data or {}
+        self._cash = cash
+        self._positions = positions or {}
+
+    def risk_blacklist(self) -> set[str]: return set(self._bl)
+    def cash(self) -> float: return self._cash
+    def positions(self) -> dict: return dict(self._positions)
+    def market(self, symbol, *, category=None):
+        return self._market.get(symbol, pd.DataFrame())
+
+
+def test_risk_filter_blacklist_removes_symbol(tmp_path):
+    _reset_adapter_cache()
+    from plugins.v53_adapter import V53Adapter
+    adapter = V53Adapter()
+    adapter._cfg = {"risk_filters": {}}
+    out = adapter._apply_risk_filters(
+        ctx=_FakeBlacklistCtx({"512890.SH"}),
+        target_qty={"512890.SH": 1000, "510300.SH": 2000},
+        target=pd.Timestamp("2024-04-30"),
+    )
+    assert "512890.SH" not in out
+    assert out["510300.SH"] == 2000
+    _reset_adapter_cache()
+
+
+def test_risk_filter_max_single_etf_weight_caps_qty(tmp_path):
+    """单 ETF 60% × 1000万 nav / 100 价 = 60000 股，cap 到 50% = 50000 股"""
+    _reset_adapter_cache()
+    from plugins.v53_adapter import V53Adapter
+    adapter = V53Adapter()
+    adapter._cfg = {"risk_filters": {"max_single_etf_weight": 0.5}}
+    adapter._resolve_reference_price = lambda ctx, code, target: 100.0
+    adapter._compute_nav = lambda ctx, target: 10_000_000.0
+    out = adapter._apply_risk_filters(
+        ctx=_FakeBlacklistCtx(set()),
+        target_qty={"511260.SH": 60000},
+        target=pd.Timestamp("2024-04-30"),
+    )
+    assert out["511260.SH"] == 50000
+    _reset_adapter_cache()
+
+
+def test_risk_filter_qdii_premium_above_threshold_skips(tmp_path):
+    """QDII close 比 20 日均值高 10% > 5% threshold → skip"""
+    _reset_adapter_cache()
+    from plugins.v53_adapter import V53Adapter
+    adapter = V53Adapter()
+    adapter._cfg = {"risk_filters": {"qdii_premium_threshold": 0.05}}
+    # 给 513500 21 行数据：前 20 行 close=100，最后一行 close=110 → 溢价 10%
+    market_data = {
+        "513500.SH": pd.DataFrame({
+            "trade_date": list(range(20240401, 20240422)),
+            "close": [100.0] * 20 + [110.0],
+            "volume": [1_000_000] * 21,
+        }),
+    }
+    out = adapter._apply_risk_filters(
+        ctx=_FakeBlacklistCtx(set(), market_data=market_data),
+        target_qty={"513500.SH": 1000, "510300.SH": 2000},  # 非QDII不受影响
+        target=pd.Timestamp("2024-04-30"),
+    )
+    assert "513500.SH" not in out
+    assert out["510300.SH"] == 2000
+    _reset_adapter_cache()
+
+
+def test_risk_filter_qdii_below_threshold_keeps(tmp_path):
+    """QDII close 比 20 日均值高 2% < 5% threshold → 保留"""
+    _reset_adapter_cache()
+    from plugins.v53_adapter import V53Adapter
+    adapter = V53Adapter()
+    adapter._cfg = {"risk_filters": {"qdii_premium_threshold": 0.05}}
+    market_data = {
+        "513100.SH": pd.DataFrame({
+            "trade_date": list(range(20240401, 20240422)),
+            "close": [100.0] * 20 + [102.0],
+            "volume": [1_000_000] * 21,
+        }),
+    }
+    out = adapter._apply_risk_filters(
+        ctx=_FakeBlacklistCtx(set(), market_data=market_data),
+        target_qty={"513100.SH": 1000},
+        target=pd.Timestamp("2024-04-30"),
+    )
+    assert out["513100.SH"] == 1000
+    _reset_adapter_cache()
+
+
+def test_risk_filter_liquidity_skips_when_volume_low(tmp_path):
+    """target qty=1000，liquidity_multiplier=100 → 需要 vol >= 100,000；vol=50,000 → skip"""
+    _reset_adapter_cache()
+    from plugins.v53_adapter import V53Adapter
+    adapter = V53Adapter()
+    adapter._cfg = {"risk_filters": {"liquidity_multiplier": 100}}
+    market_data = {
+        "159985.SZ": pd.DataFrame({
+            "trade_date": [20240429, 20240430],
+            "close": [3.0, 3.0],
+            "volume": [40_000, 50_000],
+        }),
+    }
+    out = adapter._apply_risk_filters(
+        ctx=_FakeBlacklistCtx(set(), market_data=market_data),
+        target_qty={"159985.SZ": 1000},  # 需要 100k vol，实际 50k
+        target=pd.Timestamp("2024-04-30"),
+    )
+    assert "159985.SZ" not in out
+    _reset_adapter_cache()
+
+
+def test_risk_filter_disabled_when_thresholds_none(tmp_path):
+    """所有阈值 None / 0 → 全部 target_qty 保留 (blacklist 仍生效)"""
+    _reset_adapter_cache()
+    from plugins.v53_adapter import V53Adapter
+    adapter = V53Adapter()
+    adapter._cfg = {"risk_filters": {
+        "qdii_premium_threshold": None,
+        "liquidity_multiplier": 0,
+        "max_single_etf_weight": None,
+    }}
+    out = adapter._apply_risk_filters(
+        ctx=_FakeBlacklistCtx(set()),
+        target_qty={"511260.SH": 60000, "513500.SH": 5000},
+        target=pd.Timestamp("2024-04-30"),
+    )
+    assert out == {"511260.SH": 60000, "513500.SH": 5000}
+    _reset_adapter_cache()

@@ -183,6 +183,118 @@ class V53Adapter(Strategy):
                 out[qmt_code] = int(lots) * 100
         return out
 
+    def _latest_volume(
+        self, ctx: Context, qmt_code: str, target: pd.Timestamp,
+    ) -> int | None:
+        """ctx.market 最近一天的 volume（≤ target）。"""
+        try:
+            df = ctx.market(qmt_code, category="etfs")
+        except Exception:
+            return None
+        if df is None or df.empty:
+            return None
+        td = pd.to_datetime(df["trade_date"].astype(str), format="%Y%m%d")
+        df2 = df.assign(_dt=td)
+        df2 = df2[df2["_dt"] <= target].sort_values("_dt")
+        if df2.empty:
+            return None
+        v = df2.iloc[-1].get("volume", 0)
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return None
+
+    def _estimate_qdii_premium(
+        self, ctx: Context, qmt_code: str, target: pd.Timestamp,
+    ) -> float | None:
+        """QDII 溢价近似 = (today_close - mean(past_20_close)) / mean(past_20_close)。
+
+        Spec O1: 真正的 IOPV API 待 Windows 端 QMT 文档确认；目前用 20 日均值近似。
+        正值=溢价，负值=折价。
+        """
+        try:
+            df = ctx.market(qmt_code, category="etfs")
+        except Exception:
+            return None
+        if df is None or df.empty or len(df) < 21:
+            return None
+        td = pd.to_datetime(df["trade_date"].astype(str), format="%Y%m%d")
+        df2 = df.assign(_dt=td)
+        df2 = df2[df2["_dt"] <= target].sort_values("_dt").tail(21)
+        if len(df2) < 21:
+            return None
+        mean20 = float(df2.iloc[:-1]["close"].mean())
+        close_today = float(df2.iloc[-1]["close"])
+        if mean20 <= 0:
+            return None
+        return (close_today - mean20) / mean20
+
+    def _apply_risk_filters(
+        self, ctx: Context, target_qty: dict[str, int], target: pd.Timestamp,
+    ) -> dict[str, int]:
+        """Apply 4 risk filters in order: QDII premium, liquidity, max_single_etf_weight, blacklist."""
+        from plugins.v53.code_map import QDII_QMT_CODES
+
+        cfg = self._cfg or {}
+        rf = cfg.get("risk_filters", {})
+        out = dict(target_qty)
+
+        # (a) QDII 溢价过滤
+        threshold = rf.get("qdii_premium_threshold")
+        if threshold is not None and threshold > 0:
+            for code in list(out.keys()):
+                if code not in QDII_QMT_CODES:
+                    continue
+                premium = self._estimate_qdii_premium(ctx, code, target)
+                if premium is not None and premium > threshold:
+                    logger.warning(
+                        "V53 QDII %s 溢价 %.2f%% > %.2f%%, skip",
+                        code, premium * 100, threshold * 100,
+                    )
+                    out.pop(code)
+
+        # (b) 流动性过滤
+        liq_mul = rf.get("liquidity_multiplier")
+        if liq_mul is not None and liq_mul > 0:
+            for code, qty in list(out.items()):
+                vol = self._latest_volume(ctx, code, target)
+                if vol is not None and vol < qty * liq_mul:
+                    logger.warning(
+                        "V53 %s 流动性不足: vol=%d < %dx%d=%d, skip",
+                        code, vol, liq_mul, qty, qty * liq_mul,
+                    )
+                    out.pop(code)
+
+        # (c) max_single_etf_weight cap
+        max_w = rf.get("max_single_etf_weight")
+        if max_w is not None and 0 < max_w < 1.0:
+            nav = self._compute_nav(ctx, target)
+            if nav > 0:
+                for code, qty in list(out.items()):
+                    price = self._resolve_reference_price(ctx, code, target)
+                    if price is None or price <= 0:
+                        continue
+                    w = qty * price / nav
+                    if w > max_w:
+                        capped_qty = int(max_w * nav / price / 100) * 100
+                        logger.warning(
+                            "V53 %s 单 ETF 权重 %.2f > %.2f, cap qty %d → %d",
+                            code, w, max_w, qty, capped_qty,
+                        )
+                        out[code] = capped_qty
+
+        # (d) blacklist
+        try:
+            bl = ctx.risk_blacklist()
+        except Exception:
+            bl = set()
+        for code in list(out.keys()):
+            if code in bl:
+                logger.info("V53 %s 在 blacklist, skip", code)
+                out.pop(code)
+
+        return out
+
     def run(self, ctx: Context, trade_date: int) -> list[RawSignal]:
         """Phase M0 dry_run 骨架。Task 12-15 会填实完整调仓 pipeline。"""
         target = pd.to_datetime(str(trade_date), format="%Y%m%d")
