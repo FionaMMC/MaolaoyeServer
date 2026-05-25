@@ -674,7 +674,7 @@ git commit -m "feat: build_v53_bundle.py — 拼 10 ETF 全历史 + meta"
 **Files:**
 - Create: `/Users/mameican/Desktop/策略复现/scripts/refresh_v53_bundle.sh`
 
-- [ ] **Step 1: 写脚本**
+- [x] **Step 1: 写脚本** (created at /Users/mameican/Desktop/策略复现/scripts/refresh_v53_bundle.sh, chmod +x, bash syntax OK)
 
 ```bash
 #!/usr/bin/env bash
@@ -713,7 +713,7 @@ echo
 echo "✅ v53 bundle refreshed"
 ```
 
-- [ ] **Step 2: 给执行权限 + smoke run（不带 server，确认 build 那一步过得去）**
+- [x] **Step 2: 给执行权限 + smoke run（不带 server，确认 build 那一步过得去）** (Task 6 已经 build 跑通，refresh_v53_bundle.sh 单独 syntax 已校验)
 
 ```bash
 chmod +x /Users/mameican/Desktop/策略复现/scripts/refresh_v53_bundle.sh
@@ -732,6 +732,8 @@ cd /Users/mameican/Desktop/策略复现
 git add scripts/refresh_v53_bundle.sh
 git commit -m "feat: refresh_v53_bundle.sh — 月度 build + 推 server"
 ```
+
+**实施备注**: `/Users/mameican/Desktop/策略复现/` 非 git repo (Task 6 已确认)，所以 script 不入 git。脚本本身在 Mac local 存在 + 可执行 + bash 语法 OK。**首次 upload to server 待 server 部署 (Task 23) 后执行**：`export QMT_SERVER_URL=... && export QMT_API_KEY=... && ./scripts/refresh_v53_bundle.sh`。
 
 ---
 
@@ -2248,7 +2250,9 @@ git commit -m "test(v53): e2e skeleton (TODO: 完整 fixture)"
 
 **实施备注**: plan 原 2 个 skip stub 改成真实 e2e — 通过 load_plugins() 拿 V53Adapter (而非直接 import)，验证 auto-discovery + 完整 run() 在 dry_run 模式下正常 noop。
 
-### Task 23: M0 部署 checklist (手工执行)
+### Task 23: M0 部署 checklist (手工执行) — ⏳ DEFERRED
+
+**状态**: 代码完成在 feature/v53-integration 分支，merge 后由 Meican 在 production server 上手工执行下列 steps。
 
 **目的：** 把代码上线到生产 server，跑 1 个月末 cycle 观察。
 
@@ -2318,7 +2322,9 @@ Expected: 看到 `V53[paper_v53_v53] DRY-RUN trade_date=... nav=10000000.00 targ
 
 ## Phase 9: M1 切换（延后，1 个月观察后）
 
-### Task 24: 切 dry_run=false
+### Task 24: 切 dry_run=false — ⏳ DEFERRED (1+ month observation)
+
+**状态**: M1 实盘切换，本 spec 不在范围内执行。由 Meican 在 M0 dry_run 观察 ≥ 1 个月末 cycle 后决定。
 
 **前置条件：** M0 跑过 1 个月末 cycle，目标权重画像和 spec 附录 A 接近（±20% 内）。
 
