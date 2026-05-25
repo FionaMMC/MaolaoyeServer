@@ -295,25 +295,128 @@ class V53Adapter(Strategy):
 
         return out
 
+    def _diff_and_emit(
+        self,
+        ctx: Context,
+        current: dict[str, int],
+        target: dict[str, int],
+        target_ts: pd.Timestamp,
+    ) -> list[RawSignal]:
+        """对比 current vs target positions → 产生 RawSignal[]，SELL 先 BUY 后。
+
+        Args:
+            ctx: 当前调用上下文
+            current: 当前 QMT 持仓 {symbol: qty}
+            target: 调仓后目标 {symbol: qty}
+            target_ts: 调仓日 timestamp (用于查 reference price)
+        """
+        signals: list[RawSignal] = []
+        all_codes = set(current) | set(target)
+
+        # SELL first
+        for code in sorted(all_codes):
+            cur = current.get(code, 0)
+            tgt = target.get(code, 0)
+            if cur > tgt:
+                qty = cur - tgt
+                price = self._resolve_reference_price(ctx, code, target_ts)
+                if price is None or price <= 0:
+                    continue
+                signals.append(RawSignal(
+                    symbol=code, direction="SELL", quantity=qty,
+                    reference_price=price, price_offset=-0.005,
+                ))
+
+        # BUY second
+        for code in sorted(all_codes):
+            cur = current.get(code, 0)
+            tgt = target.get(code, 0)
+            if tgt > cur:
+                qty = tgt - cur
+                price = self._resolve_reference_price(ctx, code, target_ts)
+                if price is None or price <= 0:
+                    continue
+                signals.append(RawSignal(
+                    symbol=code, direction="BUY", quantity=qty,
+                    reference_price=price, price_offset=+0.005,
+                ))
+
+        return signals
+
     def run(self, ctx: Context, trade_date: int) -> list[RawSignal]:
-        """Phase M0 dry_run 骨架。Task 12-15 会填实完整调仓 pipeline。"""
+        """V53 完整调仓 pipeline:
+
+        1. 加载 config + bundle
+        2. 月末判断（非月末 return []）
+        3. 拼 close_px (bundle + IngestService 增量)
+        4. V53Strategy.compute_targets(close_px, target) → {QMT_code: weight}
+        5. NAV → weight → quantity (100 股整)
+        6. 风控过滤（QDII / 流动性 / max_w / blacklist）
+        7. diff vs ctx.positions() → RawSignal[]
+        8. dry_run=true → log + return []；dry_run=false → 返回真实 signals
+        """
+        from plugins.v53.strategy import V53Strategy
+
         target = pd.to_datetime(str(trade_date), format="%Y%m%d")
 
-        # 1. 加载 config + bundle（失败则优雅退化）
+        # 1. 加载资源
         try:
             self._load_resources()
         except Exception as e:
-            logger.warning("V53 资源加载失败 (bundle 可能未上传): %s", e)
+            logger.warning("V53 资源加载失败: %s", e)
             return []
 
-        # 2. 月末判断（非月末直接 return []，不做任何重计算）
+        # 2. 月末判断
         if not self._is_month_end(ctx, target):
             return []
 
-        # 3. Task 12-15 将在此处填实：拼数据 → 算权重 → diff → emit RawSignal[]
-        # 当前阶段只 log 月末识别，不发信号
-        logger.info(
-            "V53[%s] month-end detected on %s, awaiting Task 12-15 full pipeline",
-            ctx.instance_id, trade_date,
+        # 3. 拼 close_px
+        close_px = self._build_close_matrix(ctx, target)
+        cfg = self._cfg or {}
+        min_hist = int(cfg.get("min_history_days", 126))
+        if close_px.empty or len(close_px) < min_hist:
+            logger.warning(
+                "V53 close_px 不足 %d < %d 行, skip rebal",
+                len(close_px), min_hist,
+            )
+            return []
+
+        # 4. 调 V53Strategy
+        strat = V53Strategy(
+            quadrants=cfg.get("quadrants"),
+            method=cfg.get("algorithm", "inv_vol"),
         )
-        return []
+        try:
+            weights = strat.compute_targets(close_px, target)
+        except Exception as e:
+            logger.exception("V53 compute_targets 失败: %s", e)
+            return []
+
+        if not weights:
+            logger.warning("V53 weights empty, skip rebal")
+            return []
+
+        # 5. NAV → quantity
+        nav = self._compute_nav(ctx, target)
+        target_qty = self._weights_to_quantities(weights, nav, ctx, target)
+
+        # 6. 风控
+        target_qty = self._apply_risk_filters(ctx, target_qty, target)
+
+        # 7. diff
+        current_positions = ctx.positions()
+        signals = self._diff_and_emit(ctx, current_positions, target_qty, target)
+
+        # 8. dry_run 处理
+        if cfg.get("dry_run", True):
+            logger.info(
+                "V53[%s] DRY-RUN trade_date=%s nav=%.2f target_qty=%s would_emit=%d signals",
+                ctx.instance_id, trade_date, nav, target_qty, len(signals),
+            )
+            return []
+
+        logger.info(
+            "V53[%s] go-live trade_date=%s nav=%.2f emitted=%d signals",
+            ctx.instance_id, trade_date, nav, len(signals),
+        )
+        return signals

@@ -507,3 +507,117 @@ def test_risk_filter_disabled_when_thresholds_none(tmp_path):
     )
     assert out == {"511260.SH": 60000, "513500.SH": 5000}
     _reset_adapter_cache()
+
+
+# ── Task 15: diff + emit + complete run() ─────────────────────────────────
+def test_diff_and_emit_only_buys_when_no_current(tmp_path):
+    """current 空 → 全 BUY"""
+    _reset_adapter_cache()
+    from plugins.v53_adapter import V53Adapter
+    adapter = V53Adapter()
+    adapter._resolve_reference_price = lambda ctx, code, target: 100.0
+    sigs = adapter._diff_and_emit(
+        ctx=None,
+        current={},
+        target={"510300.SH": 1000, "511260.SH": 2000},
+        target_ts=pd.Timestamp("2024-04-30"),
+    )
+    assert len(sigs) == 2
+    assert all(s.direction == "BUY" for s in sigs)
+    qty_by_code = {s.symbol: s.quantity for s in sigs}
+    assert qty_by_code == {"510300.SH": 1000, "511260.SH": 2000}
+    _reset_adapter_cache()
+
+
+def test_diff_and_emit_sells_first_then_buys(tmp_path):
+    """diff: 卖 510300 / 买 511260 → SELL 在前 BUY 在后"""
+    _reset_adapter_cache()
+    from plugins.v53_adapter import V53Adapter
+    adapter = V53Adapter()
+    adapter._resolve_reference_price = lambda ctx, code, target: 100.0
+    sigs = adapter._diff_and_emit(
+        ctx=None,
+        current={"510300.SH": 3000, "511260.SH": 1000},
+        target={"510300.SH": 1000, "511260.SH": 5000},
+        target_ts=pd.Timestamp("2024-04-30"),
+    )
+    # 顺序：SELL 510300 (qty 2000) 在 BUY 511260 (qty 4000) 之前
+    assert len(sigs) == 2
+    assert sigs[0].direction == "SELL" and sigs[0].symbol == "510300.SH" and sigs[0].quantity == 2000
+    assert sigs[1].direction == "BUY" and sigs[1].symbol == "511260.SH" and sigs[1].quantity == 4000
+    _reset_adapter_cache()
+
+
+def test_diff_and_emit_no_change_emits_nothing(tmp_path):
+    """current == target → 0 signals"""
+    _reset_adapter_cache()
+    from plugins.v53_adapter import V53Adapter
+    adapter = V53Adapter()
+    adapter._resolve_reference_price = lambda ctx, code, target: 100.0
+    sigs = adapter._diff_and_emit(
+        ctx=None,
+        current={"510300.SH": 1000, "511260.SH": 2000},
+        target={"510300.SH": 1000, "511260.SH": 2000},
+        target_ts=pd.Timestamp("2024-04-30"),
+    )
+    assert sigs == []
+    _reset_adapter_cache()
+
+
+def test_diff_and_emit_close_position(tmp_path):
+    """target 不包含某 code → SELL all current"""
+    _reset_adapter_cache()
+    from plugins.v53_adapter import V53Adapter
+    adapter = V53Adapter()
+    adapter._resolve_reference_price = lambda ctx, code, target: 100.0
+    sigs = adapter._diff_and_emit(
+        ctx=None,
+        current={"512890.SH": 5000, "510300.SH": 1000},
+        target={"510300.SH": 1000},  # 完全 close 512890
+        target_ts=pd.Timestamp("2024-04-30"),
+    )
+    assert len(sigs) == 1
+    assert sigs[0].direction == "SELL"
+    assert sigs[0].symbol == "512890.SH"
+    assert sigs[0].quantity == 5000
+    _reset_adapter_cache()
+
+
+def test_full_run_dry_run_returns_empty_but_logs(tmp_path, monkeypatch, caplog):
+    """月末 + dry_run=true → log 写出目标 + return []，orders 表无新条目"""
+    _reset_adapter_cache()
+    import logging
+    import plugins.v53_adapter as adapter_mod
+    from plugins.v53_adapter import V53Adapter
+    from app.storage.parquet import ParquetStore
+    from app.strategy.context import Context
+
+    # 给 anchor ETF 510300.SH 写月度数据让月末判断 = True
+    days_int = [int(d.strftime("%Y%m%d"))
+                for d in pd.bdate_range("2024-04-01", "2024-04-30")]
+    last = max(days_int)
+    store = ParquetStore(root=tmp_path / "parquet")
+    store.append("etfs", "510300.SH", pd.DataFrame({
+        "trade_date": days_int,
+        "open": [3.0] * len(days_int), "high": [3.0] * len(days_int),
+        "low": [3.0] * len(days_int), "close": [3.0] * len(days_int),
+        "volume": [1_000_000] * len(days_int),
+    }))
+
+    ctx = Context(
+        instance_id="paper_v53_v53",
+        trade_date=last,
+        virtual_cash=10_000_000.0,
+        virtual_positions={},
+        parquet_store=store,
+    )
+
+    caplog.set_level(logging.INFO, logger="plugins.v53_adapter")
+    signals = V53Adapter().run(ctx, last)
+
+    # dry_run=true → return []
+    assert signals == []
+    # 但应有 DRY-RUN log
+    log_msgs = [r.getMessage() for r in caplog.records]
+    assert any("DRY-RUN" in m for m in log_msgs), f"no DRY-RUN log; logs={log_msgs}"
+    _reset_adapter_cache()
