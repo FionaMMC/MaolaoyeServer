@@ -1586,7 +1586,7 @@ git commit -m "feat(v53): 风控钩子 — QDII 溢价/流动性/max_single_etf_
 - Modify: `v2.3/server/plugins/v53_adapter.py`
 - Modify: `v2.3/server/tests/unit/test_v53_adapter.py`
 
-- [ ] **Step 1: 加 _diff_and_emit + 把 run() 完整起来**
+- [x] **Step 1: 加 _diff_and_emit + 把 run() 完整起来**
 
 加到 `plugins/v53_adapter.py`:
 
@@ -1676,7 +1676,7 @@ def _diff_and_emit(self, ctx, current, target_qty, target_ts: pd.Timestamp):
 
 run() 内调用：`signals = self._diff_and_emit(ctx, ctx.positions(), target_qty, target)`
 
-- [ ] **Step 2: 写测试 — 完整 run() 在 dry_run=true 下 return []**
+- [x] **Step 2: 写测试 — 完整 run() 在 dry_run=true 下 return []**
 
 ```python
 def test_run_dry_run_full_pipeline(tmp_path, monkeypatch):
@@ -1687,7 +1687,7 @@ def test_run_dry_run_full_pipeline(tmp_path, monkeypatch):
     pytest.skip("详细 fixture 见 review 阶段；run pass 通过手工验证")
 ```
 
-- [ ] **Step 3: 跑全部 v53 测试**
+- [x] **Step 3: 跑全部 v53 测试**
 
 ```bash
 cd v2.3/server
@@ -1696,12 +1696,14 @@ venv/bin/pytest plugins/v53/tests tests/unit/test_v53_adapter.py -v
 
 Expected: 全部 PASS（skip 不算）
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add v2.3/server/plugins/v53_adapter.py v2.3/server/tests/unit/test_v53_adapter.py
 git commit -m "feat(v53): _diff_and_emit + 完整 run() (dry_run 模式 log 但 return [])"
 ```
+
+**实施备注**: 修了 plan 3 处签名 bug — (1) _diff_and_emit 加 target_ts: pd.Timestamp 参数 (plan 用了不存在的 ctx.trade_date_ts) (2) V53Strategy(quadrants=, method=) 不是 V53Config 对象 (3) compute_targets(close_px, target) 不是 (returns,quadrants,...)。完整 run() 8 步：load → 月末 → close_px → V53Strategy → NAV → quantity → 风控 → diff → dry_run handling.
 
 ### Task 16: 注册 V53Adapter 到 StrategyPipeline registry
 
