@@ -1181,11 +1181,13 @@ git commit -m "feat(v53): V53Adapter 骨架 + 月末判断（anchor ETF trade_da
 
 ### Task 12: _build_returns_matrix — bundle + IngestService 增量拼接
 
+**实施备注**: rename from plan's `_build_returns_matrix` to `_build_close_matrix` 返回 close_px wide DataFrame（vendor compute_baseline 接受 close_px，内部 pct_change）。trade_date 类型协调：bundle 是 datetime，ctx.market 是 int YYYYMMDD，统一转 datetime 后 pivot。
+
 **Files:**
 - Modify: `v2.3/server/plugins/v53_adapter.py` — 加 `_build_returns_matrix`
 - Modify: `v2.3/server/tests/unit/test_v53_adapter.py` — 加测试
 
-- [ ] **Step 1: 写测试**
+- [x] **Step 1: 写测试**
 
 Append to `test_v53_adapter.py`:
 
@@ -1273,7 +1275,7 @@ def test_build_returns_matrix_with_incremental(tmp_path, monkeypatch):
     pytest.skip("详细实现见 Phase 5 review")  # 占位，节省篇幅
 ```
 
-- [ ] **Step 2: 实现 _build_returns_matrix**
+- [x] **Step 2: 实现 _build_returns_matrix**
 
 加到 `plugins/v53_adapter.py`:
 
@@ -1318,7 +1320,7 @@ def test_build_returns_matrix_with_incremental(tmp_path, monkeypatch):
         return returns
 ```
 
-- [ ] **Step 3: 跑测试**
+- [x] **Step 3: 跑测试**
 
 ```bash
 cd v2.3/server
@@ -1327,7 +1329,7 @@ venv/bin/pytest tests/unit/test_v53_adapter.py::test_build_returns_matrix_pure_b
 
 Expected: PASS
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add v2.3/server/plugins/v53_adapter.py v2.3/server/tests/unit/test_v53_adapter.py
