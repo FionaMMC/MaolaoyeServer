@@ -1441,7 +1441,7 @@ git commit -m "feat(v53): NAV + reference_price + weight→100股整 quantity"
 
 ⚠️ 实现前确认 Task 0 (O1 QDII IOPV) 的结论。这里写"如果 IOPV 不可得，用过去 20 日均值做近似"的版本；若 Task 0 决定关闭该 filter，把对应代码注释成 noop 但保留接口。
 
-- [ ] **Step 1: 加 _apply_risk_filters**
+- [x] **Step 1: 加 _apply_risk_filters**
 
 加到 `plugins/v53_adapter.py`:
 
@@ -1526,7 +1526,7 @@ git commit -m "feat(v53): NAV + reference_price + weight→100股整 quantity"
             return None
 ```
 
-- [ ] **Step 2: 写测试（每个 filter 独立）**
+- [x] **Step 2: 写测试（每个 filter 独立）**
 
 ```python
 def test_risk_filter_max_single_etf_weight():
@@ -1563,7 +1563,7 @@ class _FakeBlacklistCtx:
     def risk_blacklist(self) -> set[str]: return self._bl
 ```
 
-- [ ] **Step 3: 跑测试**
+- [x] **Step 3: 跑测试**
 
 ```bash
 venv/bin/pytest tests/unit/test_v53_adapter.py::test_risk_filter_max_single_etf_weight tests/unit/test_v53_adapter.py::test_risk_filter_blacklist -v
@@ -1571,12 +1571,14 @@ venv/bin/pytest tests/unit/test_v53_adapter.py::test_risk_filter_max_single_etf_
 
 Expected: 2 个 PASS
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add v2.3/server/plugins/v53_adapter.py v2.3/server/tests/unit/test_v53_adapter.py
 git commit -m "feat(v53): 风控钩子 — QDII 溢价/流动性/max_single_etf_weight/blacklist"
 ```
+
+**实施备注**: QDII IOPV (spec O1) 用 20 日 close 均值近似实现，待 Windows 侧确认 XtData 实时 IOPV API 后再换。max_single_etf_weight cap 公式 `int(max_w * nav / price / 100) * 100` 用 int() 向下取整避免超阈值。测试发现需用 `self._cfg`（实例属性优先）而非 `type(self)._cfg`（类属性），确保测试 monkeypatch 生效。共 22 tests pass (16 existing + 6 new)。
 
 ### Task 15: diff + emit RawSignal + dry_run 处理
 
