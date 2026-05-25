@@ -169,7 +169,12 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       <div class="meta" id="meta">Loading...</div>
     </div>
     <div class="toolbar">
-      <label style="font-size:0.85em;color:#8a93a0;">期间:</label>
+      <label style="font-size:0.85em;color:#8a93a0;">实例:</label>
+      <select id="instSel" onchange="onInstanceChange()">
+        <option value="paper_v20h_v20h_v1_3" selected>V20H 多头</option>
+        <option value="paper_v53_v53">V53 全天候</option>
+      </select>
+      <label style="font-size:0.85em;color:#8a93a0;margin-left:8px;">期间:</label>
       <select id="period-select" onchange="onPeriodChange()">
         <option value="7d">最近 7 天</option>
         <option value="30d" selected>最近 30 天</option>
@@ -361,7 +366,15 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       return document.getElementById('period-select').value;
     }
 
+    function getInstanceId() {
+      return document.getElementById('instSel').value;
+    }
+
     function onPeriodChange() {
+      refreshAll();
+    }
+
+    function onInstanceChange() {
       refreshAll();
     }
 
@@ -379,7 +392,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         const [health, summary, navData] = await Promise.all([
           api('/admin/health'),
           api('/admin/metrics/summary?period=' + period),
-          api('/admin/nav-history?instance_id=paper_v20h_v20h_v1_3&limit=300'),
+          api('/admin/nav-history?instance_id=' + getInstanceId() + '&limit=300'),
         ]);
 
         // KPIs
@@ -501,7 +514,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       try {
         const [summary, navData, weekly, monthly, yearly] = await Promise.all([
           api('/admin/metrics/summary?period=' + period),
-          api('/admin/nav-history?instance_id=paper_v20h_v20h_v1_3&limit=300'),
+          api('/admin/nav-history?instance_id=' + getInstanceId() + '&limit=300'),
           api('/admin/metrics/periodic?period=' + period + '&freq=weekly'),
           api('/admin/metrics/periodic?period=' + period + '&freq=monthly'),
           api('/admin/metrics/periodic?period=all&freq=yearly'),
@@ -559,7 +572,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         const [summary, dd, navData] = await Promise.all([
           api('/admin/metrics/summary?period=' + period),
           api('/admin/metrics/drawdown?period=' + period),
-          api('/admin/nav-history?instance_id=paper_v20h_v20h_v1_3&limit=300'),
+          api('/admin/nav-history?instance_id=' + getInstanceId() + '&limit=300'),
         ]);
 
         document.getElementById('kpis-risk').innerHTML = `
