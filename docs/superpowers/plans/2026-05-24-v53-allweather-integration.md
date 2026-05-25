@@ -725,7 +725,7 @@ Expected: build 输出 etf_close + etf_meta，然后 curl 报 `需要环境变�
 
 ⚠️ 实际上传要等到 Phase 4 V53Adapter 注册之后才能成功（DataUploadService 校验 `data_files` 白名单，未注册的 strategy 会 reject）。**先不要跑带环境变量的版本。**
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 cd /Users/mameican/Desktop/策略复现
@@ -896,7 +896,7 @@ git commit -m "feat(loader): strategies.yaml 解析 owned_symbols 写入 instanc
 **Files:**
 - Modify: `v2.3/server/strategies.yaml`
 
-- [ ] **Step 1: 加 paper_v53 group**
+- [x] **Step 1: 加 paper_v53 group**
 
 Edit `v2.3/server/strategies.yaml`，在 paper_v20h group 之后加：
 
@@ -919,7 +919,7 @@ Edit `v2.3/server/strategies.yaml`，在 paper_v20h group 之后加：
           - 512890.SH
 ```
 
-- [ ] **Step 2: 重启 server / 跑 loader 一次（确认 instance_state 写入）**
+- [x] **Step 2: 重启 server / 跑 loader 一次（确认 instance_state 写入）**
 
 ```bash
 cd v2.3/server
@@ -941,12 +941,14 @@ sqlite3 pipeline-server.db "SELECT instance_id, json(owned_symbols) FROM instanc
 
 Expected: 看到 `paper_v53_v53` 行，owned_symbols 是 10 个 ETF 的 JSON list。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add v2.3/server/strategies.yaml
 git commit -m "config(strategies): 加 paper_v53 group (10 ETF owned_symbols 白名单)"
 ```
+
+**实施备注**: Commit `66cfb9b`. yaml 解析验证：2 groups, paper_v20h.v20h_v1_3 owned=null (legacy), paper_v53.v53 owned=10 symbols。Step 2 prod loader 跑没做（worktree 无现成 db），但 test_pipeline_owned_symbols_* 3 个测试已覆盖 loader 行为，prod 部署阶段 (Task 23) 跑 migrate_db + 重启会自动落 owned_symbols 到 instance_state。
 
 ---
 
@@ -2135,7 +2137,7 @@ kill %1
 
 Expected: 看到 paper_v53 + paper_v20h 两个 instance 名出现
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add v2.3/server/app/api/dashboard.py
