@@ -67,6 +67,67 @@ class V53Adapter(Strategy):
             return False
         return target == same_month.max()
 
+    def _build_close_matrix(
+        self, ctx: Context, target: pd.Timestamp,
+    ) -> pd.DataFrame:
+        """拼 bundle (datetime trade_date) + IngestService (int YYYYMMDD trade_date) 增量。
+
+        Args:
+            ctx: 当前调用上下文
+            target: 调仓目标日期 (pd.Timestamp)
+
+        Returns:
+            close_px wide DataFrame:
+              - index = datetime, ≤ target
+              - columns = v53 internal keys (hs300, cyb, ...) — vendor 直接消费
+              - values = close
+            如果某个 ETF 完全无数据，该列将不出现。
+        """
+        from plugins.v53.code_map import ETF_KEYS, QMT_TO_V53_KEY, V53_KEY_TO_QMT
+
+        # 1. bundle (long format, QMT code, datetime trade_date)
+        bundle = type(self)._etf_close_bundle
+        if bundle is None:
+            return pd.DataFrame()
+        bundle = bundle[bundle["trade_date"] <= target][["trade_date", "code", "close"]]
+        bundle_end = bundle["trade_date"].max() if not bundle.empty else pd.Timestamp("1900-01-01")
+
+        # 2. IngestService 增量 (trade_date 是 int YYYYMMDD)
+        incr_pieces = []
+        for qmt_code in V53_KEY_TO_QMT.values():
+            try:
+                df = ctx.market(qmt_code, category="etfs")
+            except Exception:
+                continue
+            if df is None or df.empty:
+                continue
+            df = df.copy()
+            # int YYYYMMDD → datetime
+            df["trade_date"] = pd.to_datetime(df["trade_date"].astype(str), format="%Y%m%d")
+            # 只取 bundle_end 之后到 target 之间的部分（严格大于 bundle_end 避免重复）
+            df = df[(df["trade_date"] > bundle_end) & (df["trade_date"] <= target)]
+            if df.empty:
+                continue
+            df["code"] = qmt_code
+            incr_pieces.append(df[["trade_date", "code", "close"]])
+
+        combined = (
+            pd.concat([bundle, *incr_pieces], ignore_index=True)
+            if incr_pieces else bundle
+        )
+        if combined.empty:
+            return pd.DataFrame()
+
+        # 3. long → wide; 列名 QMT code → internal key
+        wide = combined.pivot_table(
+            index="trade_date", columns="code", values="close", aggfunc="last")
+        wide = wide.sort_index()
+        wide = wide.rename(columns=QMT_TO_V53_KEY)
+
+        # 4. 只保留 v53 关心的 10 个 internal key 顺序
+        keep = [k for k in ETF_KEYS if k in wide.columns]
+        return wide[keep]
+
     def run(self, ctx: Context, trade_date: int) -> list[RawSignal]:
         """Phase M0 dry_run 骨架。Task 12-15 会填实完整调仓 pipeline。"""
         target = pd.to_datetime(str(trade_date), format="%Y%m%d")
