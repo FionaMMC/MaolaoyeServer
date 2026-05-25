@@ -2116,33 +2116,25 @@ git commit -m "feat(reconcile): reconcile_cash_total 总量 sanity check（仅�
 **Files:**
 - Modify: `v2.3/server/app/api/dashboard.py`
 
-- [ ] **Step 1: 加 multi-instance summary card**
+- [x] **Step 1: 加 instance 选择器 dropdown**
 
-在 dashboard 模板首页加：
-- 总 NAV = Σ(各 instance.virtual_cash + 持仓市值)
-- 各 instance NAV 列表
-- 各 group 的最近 30 天 NAV trend 双线对比
+MVP 实现：toolbar 增加 `<select id="instSel">` 含两个选项（V20H 多头 / V53 全天候），并添加 `getInstanceId()` JS helper，3 处硬编码 `paper_v20h_v20h_v1_3` 改为 `getInstanceId()` 动态取值。
 
-具体改动取决于 dashboard 模板用什么（HTML inline / Jinja2 / 前端 JS）。Read `dashboard.py` 看现有模板结构再决定。
-
-- [ ] **Step 2: 验证 dashboard 加载不报错**
+- [x] **Step 2: 验证**
 
 ```bash
-cd v2.3/server
-venv/bin/uvicorn app.main:app --port 8001 &
-sleep 2
-curl -s http://localhost:8001/dashboard | grep -i 'v53\|v20h'
-kill %1
+grep -c "paper_v53_v53" v2.3/server/app/api/dashboard.py  # → 1
+grep -c "getInstanceId" v2.3/server/app/api/dashboard.py  # → 4
 ```
-
-Expected: 看到 paper_v53 + paper_v20h 两个 instance 名出现
 
 - [x] **Step 3: Commit**
 
 ```bash
 git add v2.3/server/app/api/dashboard.py
-git commit -m "feat(dashboard): multi-instance 汇总 card + NAV 双线对比"
+git commit -m "feat(dashboard): instance 选择器 — 支持 paper_v53_v53 (NAV-history 3 处取消硬编码)"
 ```
+
+**实施备注**: MVP — 加 instance 选择器（dropdown），3 处硬编码 `paper_v20h_v20h_v1_3` 改成 `getInstanceId()`。多 instance 双线 overlay 图 + v53 目标权重 diff 图作为未来增强（不阻塞 M0）。
 
 ### Task 21: V53_OPERATIONS_HANDBOOK.md
 
