@@ -2141,7 +2141,7 @@ git commit -m "feat(dashboard): instance 选择器 — 支持 paper_v53_v53 (NAV
 **Files:**
 - Create: `docs/V53_OPERATIONS_HANDBOOK.md`
 
-- [ ] **Step 1: 仿 V20H_OPERATIONS_HANDBOOK.md 写**
+- [x] **Step 1: 仿 V20H_OPERATIONS_HANDBOOK.md 写**
 
 骨架：
 ```
@@ -2196,12 +2196,14 @@ ETF OHLCV 实时数据 | server IngestService | client market_push.py | 每日 |
 [spec 第 7 节复制]
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add docs/V53_OPERATIONS_HANDBOOK.md
 git commit -m "docs: V53 运维手册（仿 V20H 手册）"
 ```
+
+**实施备注**: handbook 8 节，含算法机制 + 数据依赖 + 月末 SOP + reconcile 多 instance 排错 + M0→M1 切换 checklist + 文件速查。
 
 ---
 
@@ -2212,7 +2214,7 @@ git commit -m "docs: V53 运维手册（仿 V20H 手册）"
 **Files:**
 - Create: `v2.3/server/tests/integration/test_v53_pipeline_e2e.py`
 
-- [ ] **Step 1: 写 e2e 测试**
+- [x] **Step 1: 写 e2e 测试**
 
 ```python
 """V53 全 pipeline e2e —— 非月末 noop，月末 dry_run 写 log 但不发单。"""
@@ -2237,12 +2239,14 @@ def test_v53_pipeline_month_end_dry_run_logs_but_emits_zero(tmp_path, caplog):
 
 ⚠️ 完整 e2e fixture 需要 DataUploadService + IngestService + scheduler 全套 wiring。skill 推荐 review 阶段补全。如果时间紧，可以先靠 Phase 5 的单元测试 + 手工 M0 部署 smoke 替代。
 
-- [ ] **Step 2: Commit (作为 skeleton)**
+- [x] **Step 2: Commit (作为 skeleton)**
 
 ```bash
 git add v2.3/server/tests/integration/test_v53_pipeline_e2e.py
 git commit -m "test(v53): e2e skeleton (TODO: 完整 fixture)"
 ```
+
+**实施备注**: plan 原 2 个 skip stub 改成真实 e2e — 通过 load_plugins() 拿 V53Adapter (而非直接 import)，验证 auto-discovery + 完整 run() 在 dry_run 模式下正常 noop。
 
 ### Task 23: M0 部署 checklist (手工执行)
 
