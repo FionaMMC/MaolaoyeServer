@@ -1708,41 +1708,45 @@ git commit -m "feat(v53): _diff_and_emit + 完整 run() (dry_run 模式 log 但 
 ### Task 16: 注册 V53Adapter 到 StrategyPipeline registry
 
 **Files:**
-- Modify: `v2.3/server/app/scheduler/pipeline.py`（或 strategy registry 所在文件）
+- Modify: ~~`v2.3/server/app/scheduler/pipeline.py`~~ **不需要**——loader 是 auto-discovery
+- Create: `v2.3/server/tests/unit/test_v53_registry.py` (sanity test)
 
-- [ ] **Step 1: 找到 V20HAdapter 注册位置**
+- [x] **Step 1: 找到 V20HAdapter 注册位置**
 
 ```bash
 grep -rn "V20HAdapter\|registry\[" v2.3/server/app/ | head
 ```
 
-- [ ] **Step 2: 加 V53Adapter 注册**
+发现：`app/strategy/loader.py:load_plugins(plugins_dir)` 扫描 `plugins/*.py` 自动 discover Strategy 子类按 `.name` 注册。无手动 STRATEGY_REGISTRY 字典。V20HAdapter 也是这条路径。
 
-在 registry 字典里加：
+- [x] **Step 2: 加 V53Adapter 注册**
 
-```python
-from plugins.v53_adapter import V53Adapter
-...
-"v53": V53Adapter,
-```
+**No-op**——V53Adapter 存在于 `plugins/v53_adapter.py` 就被 auto-discover。无需手动注册。
 
-- [ ] **Step 3: 启动 server，确认能注册成功**
+- [x] **Step 3: 启动 server，确认能注册成功**
 
 ```bash
 cd v2.3/server
 venv/bin/python -c "
-from app.scheduler.pipeline import STRATEGY_REGISTRY  # 调整名字
-assert 'v53' in STRATEGY_REGISTRY
-print('v53 registered:', STRATEGY_REGISTRY['v53'])
+from app.strategy.loader import load_plugins
+reg = load_plugins('plugins')
+print('Registered:', sorted(reg.keys()))
 "
+# Output: Registered: ['buy_on_dip_example', 'v20h_v1_3', 'v53']
 ```
 
-- [ ] **Step 4: Commit**
+✓ v53 注册成功。
+
+- [x] **Step 4: Commit**
 
 ```bash
-git add v2.3/server/app/scheduler/pipeline.py
-git commit -m "feat(v53): 注册 V53Adapter 到 strategy registry"
+git add v2.3/server/tests/unit/test_v53_registry.py
+git commit -m "test(v53): Task 16 sanity — V53Adapter 被 load_plugins auto-discover 并以 name='v53' 注册"
 ```
+
+Commit: `fda102e`. 2 sanity tests pass (auto-discovery + 与 v20h 不冲突).
+
+**实施备注**: Plan 假设有手动 `STRATEGY_REGISTRY` 字典需修改 — 实际是 plugin auto-discovery。Task 简化为加 sanity test 验证 auto-registration。
 
 ---
 
