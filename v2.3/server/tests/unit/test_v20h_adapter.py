@@ -853,3 +853,118 @@ start_date: "2024-04-03"
     V20HAdapter._pred_df = None
     V20HAdapter._v12_series = None
     V20HAdapter._index_close = None
+
+
+def test_adapter_kcb_200_share_minimum_rule(tmp_path, monkeypatch):
+    """科创板 (688/689) 单笔委托 < 200 股账户级会废单。
+    Regression: 5/26 + 5/27 实证 10 单 100 股 688x SELL 全部 CANCELLED。
+    """
+    import plugins.v20h_adapter as adapter_mod
+    from plugins.v20h_adapter import V20HAdapter
+    from app.storage.parquet import ParquetStore
+    from app.strategy.context import Context
+
+    fake_data_dir = tmp_path / "data"
+    fake_data_dir.mkdir()
+
+    # 准备 pred：包含 1 个普通票 + 3 个科创板票
+    codes6 = ["600001", "688001", "688002", "688003"]
+    closes = [10.0, 100.0, 150.0, 200.0]
+    pred_dates = pd.date_range("20240403", periods=43, freq="B")
+    target_date_dt = pred_dates[-1]
+    target_date_int = int(target_date_dt.strftime("%Y%m%d"))
+    pred_rows = [
+        {"date": d, "code": c, "close": closes[i],
+         "prob_top": 0.9 - i * 0.01, "excess_ret": 0.01}
+        for d in pred_dates for i, c in enumerate(codes6)
+    ]
+    pd.DataFrame(pred_rows).to_parquet(fake_data_dir / "pred_csi1000.parquet")
+    v12 = pd.DataFrame({"exposure": [0.5] * 43}, index=pred_dates)
+    v12.to_parquet(fake_data_dir / "v12_exp_hs300.parquet")
+    idx_df = pd.DataFrame({"open": [6000]*43, "high": [6010]*43, "low": [5990]*43,
+                           "close": [6005]*43, "volume": [0]*43}, index=pred_dates)
+    idx_df.to_parquet(fake_data_dir / "index_csi1000.parquet")
+
+    monkeypatch.setattr(adapter_mod, "_V20H_DIR", tmp_path)
+    V20HAdapter._cfg = None
+    V20HAdapter._pred_df = None
+    V20HAdapter._v12_series = None
+    V20HAdapter._index_close = None
+
+    cfg_yaml = """
+capital_init: 10_000_000
+cut_pct: 0.0
+rebal_freq: 42
+weight_cap: 1.5
+q10_quantile: 0.10
+q20_quantile: 0.20
+q40_quantile: 0.40
+q_warmup_days: 1
+use_vol_target: false
+target_vol_ann: 0.15
+vol_lookback: 20
+stock_cmn_rate: 0.0003
+min_stock_cmn: 5.0
+stamp_duty: 0.0005
+bond_yield: 0.035
+fut_cmn_rate: 0.0005
+basis_cost: 0.03
+fut_margin_ratio: 0.15
+roll_cost_bps: 10
+lot_size: 100
+cash_buffer: 0.02
+start_date: "2024-04-03"
+"""
+    (tmp_path / "config.yaml").write_text(cfg_yaml, encoding="utf-8")
+
+    store = ParquetStore(root=tmp_path / "parquet")
+    for code6, close in zip(codes6, closes):
+        suffix = ".SH" if code6.startswith("6") else ".SZ"
+        store.append("stocks", f"{code6}{suffix}", pd.DataFrame([{
+            "trade_date": target_date_int, "open": close, "high": close,
+            "low": close*0.99, "close": close, "volume": 1000,
+            "amount": close*1000, "suspendFlag": 0,
+        }]))
+    store.append("indexes", "000852.SH", pd.DataFrame([{
+        "trade_date": target_date_int, "open": 6000, "high": 6010,
+        "low": 5990, "close": 6005, "volume": 0, "amount": 0,
+    }]))
+
+    # 持仓:
+    # - 600001.SH: 500 股（非科创板，无 200 限制）
+    # - 688001.SH: 100 股（科创板，持仓 < 200，cap_weight 想 trim 也跳过）
+    # - 688002.SH: 300 股（科创板，持仓 ≥ 200，cap_weight 100 应 round up 到 200）
+    # - 688003.SH: 1000 股（科创板，正常 trim）
+    virtual_positions = {
+        "600001.SH": 500,
+        "688001.SH": 100,
+        "688002.SH": 300,
+        "688003.SH": 1000,
+    }
+    ctx = Context(
+        instance_id="paper_v20h_v20h_v1_3",
+        trade_date=target_date_int,
+        virtual_cash=5_000_000.0,
+        virtual_positions=virtual_positions,
+        parquet_store=store,
+    )
+
+    # 让 strategy 想各 trim 100 股（直接用 monkeypatch override 不太方便，
+    # 这里直接构造 step() 输出后 emit 阶段的行为：手动调用 _emit）
+    # 简化做法：直接验证 adapter.run 不发出 100 股的 688x SELL
+    adapter = V20HAdapter()
+    signals = adapter.run(ctx, target_date_int)
+
+    # 找所有科创板 SELL 信号
+    kcb_sells = [s for s in signals
+                 if (s.symbol.startswith("688") or s.symbol.startswith("689"))
+                 and s.direction == "SELL"]
+    for s in kcb_sells:
+        assert s.quantity >= 200, (
+            f"科创板 SELL {s.symbol} qty={s.quantity} 违反 200 股下限"
+        )
+
+    V20HAdapter._cfg = None
+    V20HAdapter._pred_df = None
+    V20HAdapter._v12_series = None
+    V20HAdapter._index_close = None

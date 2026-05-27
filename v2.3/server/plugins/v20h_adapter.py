@@ -243,10 +243,47 @@ class V20HAdapter(Strategy):
         # 当下市场严重偏离 → SELL 限价虚高卖不出 / BUY 限价虚低买不到。
         signals: list[RawSignal] = []
         n_fallback = 0
+        n_kcb_skipped = 0       # 科创板 < 200 股被跳过的
+        n_kcb_rounded_up = 0    # 科创板 SELL 100 → 200 兜底
+
+        def _is_kcb(code6: str) -> bool:
+            """科创板 (688/689 开头)。单笔委托量最低 200 股，否则废单。"""
+            return code6.startswith("688") or code6.startswith("689")
 
         def _emit(code6: str, qty: int, direction: str) -> None:
-            nonlocal n_fallback
+            nonlocal n_fallback, n_kcb_skipped, n_kcb_rounded_up
             qmt = _v20h_to_qmt_code(code6)
+
+            # ── 科创板 200 股下限保护 ──
+            # 5/26-5/27 实证：100 股 SELL 全部废单，账户级规则
+            # SELL: 如果持仓 >= 200 → round up qty=200；如果持仓 < 200 → 跳过
+            #       注意 SELL 不能超过实际持仓，所以"round up"实际是判断
+            #       「能不能凑出 ≥200 卖」
+            # BUY:  如果 < 200，跳过（不应该出现这种情况）
+            if _is_kcb(code6) and qty < 200:
+                if direction == "SELL":
+                    cur_held = ctx_positions.get(code6, 0)
+                    if cur_held >= 200:
+                        # 持仓够 ≥ 200，把 qty 提到 200（cap_weight 多 trim 一点）
+                        qty = 200
+                        n_kcb_rounded_up += 1
+                    else:
+                        # 持仓 < 200 直接跳过（避免 100 股废单）
+                        # 这意味着 cap_weight 想 trim 但没法精细控制 → 留着不动
+                        n_kcb_skipped += 1
+                        logger.debug(
+                            "V20H[%s] skip 科创板 SELL %s qty=%d (持仓 %d < 200)",
+                            ctx.instance_id, qmt, qty, cur_held,
+                        )
+                        return
+                else:  # BUY
+                    n_kcb_skipped += 1
+                    logger.debug(
+                        "V20H[%s] skip 科创板 BUY %s qty=%d (< 200 起步)",
+                        ctx.instance_id, qmt, qty,
+                    )
+                    return
+
             price, used_fallback = self._resolve_reference_price(
                 ctx, code6, qmt, prices_today, trade_date,
             )
@@ -271,6 +308,12 @@ class V20HAdapter(Strategy):
         # 后 BUY
         for code6, qty in to_buy.items():
             _emit(code6, qty, "BUY")
+
+        if n_kcb_skipped or n_kcb_rounded_up:
+            logger.info(
+                "V20H[%s] 科创板 200 股规则: skipped %d, rounded_up_to_200 %d",
+                ctx.instance_id, n_kcb_skipped, n_kcb_rounded_up,
+            )
 
         if n_fallback > 0:
             logger.warning(
