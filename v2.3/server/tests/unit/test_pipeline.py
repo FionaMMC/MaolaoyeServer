@@ -176,10 +176,44 @@ def test_pipeline_runs_perf_snapshot(setup):
     })
     pipeline.run(20260430)
 
+    # 注意：pipeline 用 today 作为 snapshot 日期 (不是 trade_date)
+    # trade_date=20260430 是 future date，snapshot 应该写在 today
+    import datetime as _dt
+    today_str = _dt.datetime.now().strftime("%Y%m%d")
     with sf() as s:
-        snap = s.get(PerfSnapshot, ("real_A_noop", "20260430"))
-        assert snap is not None
+        snap = s.get(PerfSnapshot, ("real_A_noop", today_str))
+        assert snap is not None, f"snapshot 应该写在 today={today_str}，不是 trade_date=20260430"
         assert snap.nav == 1000.0
+
+
+def test_pipeline_snapshot_not_under_future_trade_date(setup):
+    """Regression: 5/27 早 9 点 trigger trade_date=20260527 不应该提前在 perf_snapshots
+    写 20260527 的快照（当时市场还没收盘）。修复后 snapshot 写在 today。
+    """
+    from app.models import PerfSnapshot
+
+    pipeline, sf, store, yaml_path = setup
+    _write_yaml(yaml_path, {
+        "account_groups": [{
+            "group_id": "real_A",
+            "qmt_account_id": "X",
+            "strategies": [{"strategy_id": "noop", "virtual_initial_cash": 1000}],
+        }],
+    })
+    # 一个明显的 future date
+    future_date = 21260101
+    pipeline.run(future_date)
+
+    import datetime as _dt
+    today_str = _dt.datetime.now().strftime("%Y%m%d")
+
+    with sf() as s:
+        # future date 那条不应该写
+        future_snap = s.get(PerfSnapshot, ("real_A_noop", str(future_date)))
+        assert future_snap is None, "不该提前为 future trade_date 写 snapshot"
+        # today 那条应该有
+        today_snap = s.get(PerfSnapshot, ("real_A_noop", today_str))
+        assert today_snap is not None, "应该用 today 作为 snapshot 日期"
 
 
 def test_pipeline_idempotent_same_date_no_dupes(setup):

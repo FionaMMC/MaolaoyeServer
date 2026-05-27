@@ -193,8 +193,17 @@ class StrategyPipeline:
         # 6. 写订单 + 映射
         self.orders_queue.write_aggregated(agg.orders, agg.mappings)
 
-        # 7. NAV 快照（即使本日无信号也算）
-        self.perf.snapshot_all(trade_date)
+        # 7. NAV 快照
+        # 关键：用「**today**」作为快照日期，不是 trade_date。
+        # 因为 trigger 通常在 T 日 16:00 跑、trade_date 是 T+1，如果用 trade_date 写
+        # 会出现「T+1 还没到就写了 T+1 的 NAV 快照」（错误地用 T 收盘价 + T EOD state
+        # 当成 T+1 的收益）。
+        # 改成用 today，意味着：
+        #   - T 日 16:00 trigger T+1 → 写 snapshot[today=T]，用 T EOD state + T close → 正确
+        #   - T 日 9:00 同日 trigger T  → 也写 snapshot[today=T]，但是 pre-trade state
+        #     → 后面 16:00 trigger 时 UPSERT 覆盖为正确版本
+        today_str = datetime.now().strftime("%Y%m%d")
+        self.perf.snapshot_all(int(today_str))
 
         summary = {
             "trade_date": trade_date,

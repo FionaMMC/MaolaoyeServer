@@ -609,3 +609,130 @@ async def reconcile_positions(
         # 返回 422 而非 500，告诉 client 是数据校验问题而非系统故障
         raise HTTPException(status_code=422, detail=str(e))
     return APIResponse[ReconcileResult](code=0, message="ok", data=result)
+
+
+# ── 15. /admin/heartbeat : client 活动心跳检查 ─────────────────────────────
+@router.get(
+    "/heartbeat",
+    response_model=APIResponse[dict],
+    dependencies=[Depends(verify_api_key)],
+)
+async def heartbeat(
+    sf=Depends(get_session_factory),
+):
+    """检查 client 端是否按时跑了每日流程。返回告警列表 + 各步骤时间戳。
+
+    每天 client 应该做的事：
+      09:10  order_submit.py     → GET /orders?date=T  (T = 今天)
+      15:10  trade_result_push   → POST /trade-result
+      15:30  data_collector      → POST /market-data
+      16:00  trigger_pipeline    → POST /admin/run-pipeline?trade_date=T+1
+
+    通过 server 数据库追溯每一步的实际发生时间：
+      - GET /orders 看 raw_signals 表（生成信号的时间）
+      - trade_result 看 trades 表 received_at
+      - market-data 看 stocks parquet 的最新 trade_date
+      - run-pipeline 看 raw_signals 表的 signal_time (T+1 valid_date)
+
+    适合外部 cron / UptimeRobot 调用做自动监控：
+        curl -H "Authorization: Bearer $KEY" .../admin/heartbeat
+    """
+    from app.models import RawSignal, Trade
+
+    now = datetime.now()
+    today = now.strftime("%Y%m%d")
+    today_dt = now.strftime("%Y-%m-%d")
+    is_trading_day_proxy = now.isoweekday() <= 5  # 简化：周一到周五；不考虑节假日
+
+    alerts: list[str] = []
+    timeline = {}
+
+    with sf() as session:
+        # 1. 今天有没有 trigger pipeline (从 raw_signals 表看 signal_time)
+        last_signal = session.execute(
+            select(RawSignal.signal_time, RawSignal.valid_date)
+            .order_by(desc(RawSignal.signal_time))
+            .limit(1)
+        ).first()
+        if last_signal:
+            timeline["last_signal_time"] = last_signal[0]
+            timeline["last_signal_valid_date"] = last_signal[1]
+        else:
+            timeline["last_signal_time"] = None
+
+        # 2. 今天有没有 trade_result 推回（trades 表 received_at）
+        last_trade = session.execute(
+            select(Trade.received_at)
+            .order_by(desc(Trade.received_at))
+            .limit(1)
+        ).first()
+        timeline["last_trade_result"] = last_trade[0] if last_trade else None
+
+        # 3. 今天有没有为今天 trigger 过 (信号 valid_date 包含今天 OR 明天的)
+        today_or_future_signals = session.execute(
+            select(func.count())
+            .select_from(RawSignal)
+            .where(RawSignal.valid_date >= today)
+        ).scalar()
+        timeline["pending_signals_for_today_or_later"] = today_or_future_signals
+
+    # 4. 看 market_data 最新 trade_date（从 stocks parquet）
+    latest_market_date = None
+    stocks_dir = Path("/opt/qmt-server/v2.3/server/data/market/daily/stocks")
+    if not stocks_dir.exists():
+        stocks_dir = Path("./data/market/daily/stocks")  # local dev fallback
+    if stocks_dir.exists():
+        # 随便挑一只票看最新日期（用一个高频活跃股票）
+        for stem in ["000001.SZ", "600000.SH", "000002.SZ"]:
+            fp = stocks_dir / f"{stem}.parquet"
+            if fp.exists():
+                try:
+                    import pandas as pd
+                    df = pd.read_parquet(fp, columns=["trade_date"])
+                    if not df.empty:
+                        latest_market_date = str(int(df["trade_date"].max()))
+                        break
+                except Exception:
+                    pass
+    timeline["latest_market_data_date"] = latest_market_date
+
+    # 5. 判断告警
+    if is_trading_day_proxy:
+        # 9:30 之后应该看到当天 trigger（或者前一天 16:00 trigger 后的当天 signal valid_date）
+        if now.hour >= 10 and now.hour < 15:
+            # 今天 9-15 点期间，应该已经有当天的 PENDING 订单
+            # （或者至少昨晚 trigger 应该把今天的 valid_date 信号写进来）
+            if timeline.get("pending_signals_for_today_or_later", 0) == 0:
+                alerts.append(
+                    f"⚠ {today_dt} 09:00 之后 没有任何 valid_date >= {today} 的 raw_signals，"
+                    f"是不是 partner 昨晚没 trigger / 今早 client 没启动？"
+                )
+
+        # 15:30 之后应该看到当天的 OHLCV 推送
+        if now.hour >= 16 and latest_market_date:
+            if int(latest_market_date) < int(today):
+                alerts.append(
+                    f"⚠ {today_dt} 16:00 之后 OHLCV 最新仍是 {latest_market_date}，"
+                    f"partner 还没推今天的行情数据"
+                )
+
+        # 16:00 之后应该看到 trade_result（如果有委托）
+        if now.hour >= 17:
+            last_tr = timeline.get("last_trade_result")
+            if last_tr and last_tr[:10] != today_dt:
+                alerts.append(
+                    f"⚠ {today_dt} 17:00 之后 trade_result 最新仍是 {last_tr[:10]}，"
+                    f"partner 还没推今天的成交回报"
+                )
+
+    return APIResponse[dict](
+        code=0, message="ok",
+        data={
+            "now": now.isoformat(timespec="seconds"),
+            "today": today,
+            "is_trading_day_proxy": is_trading_day_proxy,
+            "timeline": timeline,
+            "alerts": alerts,
+            "status": "alert" if alerts else "ok",
+        },
+    )
