@@ -86,6 +86,7 @@ class SettlementService:
     ) -> TradeResultResponseData:
         """处理一批成交回报。"""
         matched = 0
+        duplicate = 0
         unmatched: list[str] = []
 
         with self.session_factory() as session:
@@ -93,6 +94,30 @@ class SettlementService:
                 order = session.get(Order, result.order_id)
                 if order is None:
                     unmatched.append(result.order_id)
+                    continue
+
+                # ── 幂等守卫（P0-1 / 5/12 重复结算事故）──────────────────────
+                # 同一笔成交回报被重复推送（客户端网络重试 / 全量重推）时绝不能
+                # 二次入账。幂等键 = order_id + filled_time + filled_quantity +
+                # filled_price。命中已存在记录 → 整笔跳过：不写 trades、不动虚拟
+                # 账本、不改 order.status。合法的分笔成交（filled_time/数量不同）
+                # 不会命中，照常入账。
+                already = session.execute(
+                    select(Trade.id).where(
+                        Trade.order_id == result.order_id,
+                        Trade.filled_time == result.filled_time,
+                        Trade.filled_quantity == result.filled_quantity,
+                        Trade.filled_price == result.filled_price,
+                    )
+                ).first()
+                if already is not None:
+                    duplicate += 1
+                    logger.warning(
+                        "settle 幂等守卫跳过重复成交: order=%s time=%s qty=%s px=%s "
+                        "— 客户端重推，已忽略不再入账",
+                        result.order_id, result.filled_time,
+                        result.filled_quantity, result.filled_price,
+                    )
                     continue
 
                 # 写 trades 表
@@ -116,6 +141,12 @@ class SettlementService:
                 matched += 1
 
             session.commit()
+
+        if duplicate:
+            logger.warning(
+                "settle trade_date=%s: 忽略 %d 笔重复成交回报（幂等守卫）",
+                trade_date, duplicate,
+            )
 
         return TradeResultResponseData(
             trade_date=trade_date,

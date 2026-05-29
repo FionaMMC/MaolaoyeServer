@@ -413,3 +413,61 @@ def test_settle_normal_fill_no_divergence(tmp_path: Path):
     with sf() as s:
         order = s.get(Order, "oid1")
         assert order.bookkeeping_divergence is False
+
+
+# ── P0-1: 成交回报幂等（5/12 重复推送事故回归）──────────────────────────────
+def test_settle_duplicate_fill_is_idempotent(tmp_path: Path):
+    """重复推送同一笔成交回报（客户端网络重试 / 全量重推）必须是 no-op。
+
+    Regression: 5/12 客户端隔 35 分钟重推同一批回报。settle() 当时无幂等守卫，
+    导致 22 笔订单 Σ成交量 = 2× 委托量，虚拟账本现金/持仓被双重应用，静默腐蚀
+    （余量足够时连 bookkeeping_divergence 都不触发）。
+    """
+    sf = _factory(tmp_path)
+    _seed(sf)
+    svc = _make_svc(sf)
+    fill = TradeResult(
+        order_id="oid1", filled_quantity=300, filled_price=10.0,
+        filled_time="2026-04-30T09:25:00+08:00", status="FILLED",
+    )
+    svc.settle("20260430", [fill])   # 第一次
+    svc.settle("20260430", [fill])   # 第二次：完全相同 → 必须 no-op
+
+    with sf() as s:
+        m = s.get(InstanceState, "real_A_m")
+        r = s.get(InstanceState, "real_A_r")
+        # 账本只移动一次（不是双倍）
+        assert m.virtual_cash == 1_000_000.0 - 1000.0
+        assert m.virtual_positions == {"600519.SH": 100}
+        assert r.virtual_cash == 2_000_000.0 - 2000.0
+        assert r.virtual_positions == {"600519.SH": 200}
+        # trades 表不重复记录这笔成交
+        assert len(s.query(Trade).filter_by(order_id="oid1").all()) == 1
+
+
+def test_settle_distinct_partial_fills_both_apply(tmp_path: Path):
+    """同一 order 的两笔【不同】部分成交（filled_time/数量不同）都必须入账。
+
+    保证幂等去重不会误杀合法的分笔成交（防过度去重）。
+    """
+    sf = _factory(tmp_path)
+    _seed(sf)
+    svc = _make_svc(sf)
+    # 早盘成交 100 股
+    svc.settle("20260430", [
+        TradeResult(order_id="oid1", filled_quantity=100, filled_price=10.0,
+                    filled_time="2026-04-30T09:30:00+08:00", status="PARTIAL"),
+    ])
+    # 午盘成交剩余 200 股（不同 filled_time + 不同数量）
+    svc.settle("20260430", [
+        TradeResult(order_id="oid1", filled_quantity=200, filled_price=10.0,
+                    filled_time="2026-04-30T13:00:00+08:00", status="FILLED"),
+    ])
+    with sf() as s:
+        m = s.get(InstanceState, "real_A_m")
+        r = s.get(InstanceState, "real_A_r")
+        # 两笔都入账：m 累计拿到 100 股，r 累计 200 股（总 300）
+        assert m.virtual_positions.get("600519.SH", 0) == 100
+        assert r.virtual_positions.get("600519.SH", 0) == 200
+        # trades 表有两条不同记录
+        assert len(s.query(Trade).filter_by(order_id="oid1").all()) == 2
