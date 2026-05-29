@@ -19,6 +19,35 @@ def test_adapter_class_attrs():
     assert V20HAdapter.name == "v20h_v1_3"
 
 
+def test_load_cached_reloads_when_file_mtime_changes(tmp_path):
+    """P0-2: 资源按文件 mtime 缓存，文件被覆盖（data-upload）后自动重载。
+
+    Regression: adapter 把 pred 等加载进类级缓存且永不失效，长驻进程在每周
+    pred 刷新上传后仍用旧 pred 直到重启（静默吞掉新数据）。修复后 mtime 变化
+    即触发重载，无需重启。
+    """
+    import os
+    from plugins.v20h_adapter import _load_cached
+
+    f = tmp_path / "res.txt"
+    f.write_text("v1")
+    n_loads = []
+
+    def loader(p):
+        n_loads.append(1)
+        return p.read_text()
+
+    assert _load_cached(f, loader) == "v1"
+    assert _load_cached(f, loader) == "v1"   # 命中缓存，不重载
+    assert len(n_loads) == 1
+
+    # 模拟 data-upload 覆盖文件（mtime 前进）
+    f.write_text("v2")
+    os.utime(f, (f.stat().st_atime, f.stat().st_mtime + 100))
+    assert _load_cached(f, loader) == "v2"   # mtime 变 → 自动重载
+    assert len(n_loads) == 2
+
+
 def test_adapter_handles_missing_external_data(tmp_path, monkeypatch):
     """pred_csi1000 缺失（外部数据未上传）→ 优雅退化，返回空 list，不 crash。"""
     import plugins.v20h_adapter as adapter_mod
@@ -168,6 +197,67 @@ start_date: "2024-04-03"
     V20HAdapter._pred_df = None
     V20HAdapter._v12_series = None
     V20HAdapter._index_close = None
+
+
+def test_adapter_strategy_state_idempotent_on_same_date_rerun(tmp_path, monkeypatch):
+    """R2: 同一 trade_date 重复 trigger 不应把 equity_history/daily_rets 越堆越长。
+
+    Regression: pipeline 同日 9:00 + 16:00 两次 trigger（文档化流程）会让 step()
+    对同一天重复 append，污染波动率目标窗口（线上实测出现连续重复 equity 点 +
+    一串 0.0 daily_ret）。重跑同一天必须【替换】而非【叠加】当日的状态点。
+    """
+    import plugins.v20h_adapter as adapter_mod
+    from plugins.v20h_adapter import V20HAdapter
+    from app.storage.parquet import ParquetStore
+    from app.strategy.context import Context
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    pd.DataFrame({
+        "date": [pd.Timestamp("20240403")],
+        "code": ["600000"], "close": [10.0], "prob_top": [0.9],
+    }).to_parquet(data_dir / "pred_csi1000.parquet")
+    v12_idx = pd.date_range("20240401", periods=5, freq="B")
+    pd.DataFrame({"exposure": [0.5] * 5}, index=v12_idx).to_parquet(
+        data_dir / "v12_exp_hs300.parquet")
+    idx_df = pd.DataFrame({"close": [6005.0] * 5}, index=v12_idx)
+    idx_df.index.name = "date"
+    idx_df.to_parquet(data_dir / "index_csi1000.parquet")
+    (tmp_path / "config.yaml").write_text(
+        "capital_init: 10_000_000\ncut_pct: 0.10\nrebal_freq: 42\nweight_cap: 1.5\n"
+        "q10_quantile: 0.10\nq20_quantile: 0.20\nq40_quantile: 0.40\nq_warmup_days: 1\n"
+        "use_vol_target: false\ntarget_vol_ann: 0.15\nvol_lookback: 20\n"
+        "stock_cmn_rate: 0.0003\nmin_stock_cmn: 5.0\nstamp_duty: 0.0005\nbond_yield: 0.035\n"
+        "fut_cmn_rate: 0.0005\nbasis_cost: 0.03\nfut_margin_ratio: 0.15\nroll_cost_bps: 10\n"
+        "lot_size: 100\ncash_buffer: 0.02\nstart_date: \"2024-04-03\"\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(adapter_mod, "_V20H_DIR", tmp_path)
+
+    store = ParquetStore(root=tmp_path / "parquet")
+    store.append("stocks", "600000.SH", pd.DataFrame([{
+        "trade_date": 20240403, "open": 10.0, "high": 10.0, "low": 9.9,
+        "close": 10.0, "volume": 1000, "amount": 10000, "suspendFlag": 0,
+    }]))
+    store.append("indexes", "000852.SH", pd.DataFrame([{
+        "trade_date": 20240403, "open": 6000, "high": 6010, "low": 5990,
+        "close": 6005, "volume": 0, "amount": 0,
+    }]))
+
+    def _run(state):
+        ctx = Context(
+            instance_id="paper_v20h_v20h_v1_3", trade_date=20240403,
+            virtual_cash=10_000_000.0, virtual_positions={},
+            parquet_store=store, strategy_state=state,
+        )
+        V20HAdapter().run(ctx, 20240403)
+        return ctx.pop_next_strategy_state()
+
+    state1 = _run(None)              # 首次 trigger
+    state2 = _run(dict(state1))      # 同日重复 trigger（喂回上次状态）
+
+    assert len(state2["equity_history"]) == len(state1["equity_history"])
+    assert len(state2["daily_rets"]) == len(state1["daily_rets"])
 
 
 def test_adapter_filters_blacklisted_symbols(tmp_path, monkeypatch):

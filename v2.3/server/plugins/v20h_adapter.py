@@ -37,6 +37,53 @@ def _qmt_to_v20h_code(qmt: str) -> str:
     return qmt.split(".")[0]
 
 
+# ── 资源缓存：路径 → (mtime, value)，按文件 mtime 自动失效（P0-2 修复）─────────
+# 旧实现把 pred/v12/index 加载进类级缓存且永不失效 → 长驻 uvicorn 进程在每周
+# pred 刷新上传后仍用旧 pred 直到重启（静默吞掉新数据）。改成按 mtime 缓存后，
+# data-upload 覆盖文件即触发下次 run() 重载，无需重启。
+_RESOURCE_CACHE: dict[str, tuple[float, object]] = {}
+
+
+def _load_cached(path: Path, loader):
+    """用 loader(path) 加载资源，按文件 mtime 缓存；mtime 变化时自动重载。
+
+    文件不存在时 path.stat() 抛 FileNotFoundError，由调用方 run() 的 try/except
+    捕获并优雅退化（返回空 signals）。
+    """
+    key = str(path)
+    mtime = path.stat().st_mtime
+    hit = _RESOURCE_CACHE.get(key)
+    if hit is not None and hit[0] == mtime:
+        return hit[1]
+    value = loader(path)
+    _RESOURCE_CACHE[key] = (mtime, value)
+    return value
+
+
+def _read_cfg(path: Path) -> StrategyConfig:
+    with path.open() as f:
+        return StrategyConfig(**yaml.safe_load(f))
+
+
+def _read_pred(path: Path) -> pd.DataFrame:
+    df = pd.read_parquet(path)
+    if not pd.api.types.is_datetime64_any_dtype(df["date"]):
+        df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
+def _read_v12(path: Path) -> pd.Series:
+    v12 = pd.read_parquet(path).squeeze()
+    v12.index = pd.to_datetime(v12.index)
+    return v12
+
+
+def _read_index(path: Path) -> pd.Series:
+    idx_df = pd.read_parquet(path)
+    idx_df.index = pd.to_datetime(idx_df.index)
+    return idx_df["close"]
+
+
 class V20HAdapter(Strategy):
     """V20H v1.3 适配器 — Phase 14c 实盘。"""
 
@@ -57,31 +104,15 @@ class V20HAdapter(Strategy):
     _index_close: pd.Series | None = None
 
     def _load_resources(self) -> None:
-        """懒加载 config + 外部数据。失败则记日志后续 run() 返回空。"""
-        if self._cfg is None:
-            cfg_path = _V20H_DIR / "config.yaml"
-            with cfg_path.open() as f:
-                cfg_dict = yaml.safe_load(f)
-            type(self)._cfg = StrategyConfig(**cfg_dict)
+        """加载 config + 外部数据；按文件 mtime 缓存，刷新后自动重载（P0-2 修复）。
 
-        if self._pred_df is None:
-            pred_path = _V20H_DIR / "data" / "pred_csi1000.parquet"
-            df = pd.read_parquet(pred_path)
-            if not pd.api.types.is_datetime64_any_dtype(df["date"]):
-                df["date"] = pd.to_datetime(df["date"])
-            type(self)._pred_df = df
-
-        if self._v12_series is None:
-            v12_path = _V20H_DIR / "data" / "v12_exp_hs300.parquet"
-            v12 = pd.read_parquet(v12_path).squeeze()
-            v12.index = pd.to_datetime(v12.index)
-            type(self)._v12_series = v12
-
-        if self._index_close is None:
-            idx_path = _V20H_DIR / "data" / "index_csi1000.parquet"
-            idx_df = pd.read_parquet(idx_path)
-            idx_df.index = pd.to_datetime(idx_df.index)
-            type(self)._index_close = idx_df["close"]
+        失败（如文件缺失）则抛异常，由 run() 的 try/except 捕获后返回空 signals。
+        """
+        cls = type(self)
+        cls._cfg = _load_cached(_V20H_DIR / "config.yaml", _read_cfg)
+        cls._pred_df = _load_cached(_V20H_DIR / "data" / "pred_csi1000.parquet", _read_pred)
+        cls._v12_series = _load_cached(_V20H_DIR / "data" / "v12_exp_hs300.parquet", _read_v12)
+        cls._index_close = _load_cached(_V20H_DIR / "data" / "index_csi1000.parquet", _read_index)
 
     def run(self, ctx: Context, trade_date: int) -> list[RawSignal]:
         """Phase 14c 实盘：输出真实 RawSignal[]，期货部分仍 skip 直到 v2.4。"""
@@ -152,12 +183,23 @@ class V20HAdapter(Strategy):
         # 没有持久 state 时按 __init__ 默认：last_rb_idx=-rebal_freq → 当天就 rebal
         # 这是首次跑/迁移期的正确行为。
         persisted = ctx.strategy_state() or {}
+        # 同日重复 trigger 幂等（R2 修复）：上次落库的 last_trade_date == 本次 →
+        # equity_history/daily_rets 里已经有本 trade_date 的点。重跑必须【替换】
+        # 而非【叠加】，否则同日 9:00 + 16:00 两次 trigger 会把当日点 append 两遍，
+        # 污染波动率目标窗口（线上实测出现连续重复 equity 点 + 一串 0.0 daily_ret）。
+        is_rerun = str(persisted.get("last_trade_date")) == str(trade_date)
         if "last_rb_idx" in persisted:
             strategy.last_rb_idx = int(persisted["last_rb_idx"])
         if "equity_history" in persisted:
-            strategy.equity_history = list(persisted["equity_history"])
+            eq_hist = list(persisted["equity_history"])
+            if is_rerun and len(eq_hist) > 1:
+                eq_hist = eq_hist[:-1]   # 去掉上次为本 trade_date append 的 equity 点
+            strategy.equity_history = eq_hist
         if "daily_rets" in persisted:
-            strategy.daily_rets = list(persisted["daily_rets"])
+            daily_rets = list(persisted["daily_rets"])
+            if is_rerun and daily_rets:
+                daily_rets = daily_rets[:-1]   # 同上：去掉本日的 daily_ret
+            strategy.daily_rets = daily_rets
         if "prev_hedge" in persisted:
             strategy.prev_hedge = float(persisted["prev_hedge"])
 
