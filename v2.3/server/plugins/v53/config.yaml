@@ -1,11 +1,12 @@
 # plugins/v53/config.yaml — V53 全天候 10 ETF 配置
-# M0 阶段 dry_run: true（adapter run() 末尾会 log 目标 + return [], 不发 RawSignal）
-# M1 切换：改 dry_run: false
+# dry_run: true → adapter run() 末尾只 log 目标 + return []，不发 RawSignal
+# dry_run: false → 输出真实 RawSignal[]（M1 实盘，每月首交易日自动调仓）
+# 2026-05-31 M0→M1：切 false 以执行首次建仓（6/1 集合竞价）
 strategy_id: v53
 algorithm: inv_vol
 risk_lookback: 252         # vendor reference_config.RISK_PARITY_WINDOW (informational; vendor hardcoded)
 min_history_days: 126      # vendor reference_config.MIN_HISTORY_DAYS (informational; vendor hardcoded)
-dry_run: true
+dry_run: false
 
 quadrants:
   growth_up:      [hs300, cyb, gold, commodity2, commodity3, sp500, nasdaq, dividend]
