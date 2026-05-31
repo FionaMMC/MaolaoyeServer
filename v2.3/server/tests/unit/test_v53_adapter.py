@@ -356,7 +356,8 @@ def test_compute_nav_cash_plus_positions(tmp_path, monkeypatch):
 
 
 def test_weights_to_quantities_basic():
-    """1000万 × 0.67 / 110元 = 60909 股 → round(609.09)=609 lots × 100 = 60900"""
+    """默认留 1% 现金 buffer：投 990 万。
+    990万 × 0.67 / 110 = 60300 股 = 603 lots × 100"""
     _reset_adapter_cache()
     from plugins.v53_adapter import V53Adapter
     adapter = V53Adapter()
@@ -366,9 +367,23 @@ def test_weights_to_quantities_basic():
     qty = adapter._weights_to_quantities(
         {"511260.SH": 0.67, "510300.SH": 0.063},
         nav=10_000_000.0, ctx=None, target=pd.Timestamp("2024-04-30"))
-    assert qty["511260.SH"] == 60900
-    # 1000万 × 0.063 / 3 = 210000 shares = 2100 lots × 100
-    assert qty["510300.SH"] == 210000
+    assert qty["511260.SH"] == 60300
+    # 990万 × 0.063 / 3 = 207900 shares = 2079 lots × 100
+    assert qty["510300.SH"] == 207900
+    _reset_adapter_cache()
+
+
+def test_weights_to_quantities_reserves_cash_buffer():
+    """满仓舍入+手续费会溢出，所以默认留 1% 现金 buffer：
+    nav=100万, w=1.0, price=10 → 投 99万 → 990 lots → 99,000 股(不是 100,000)"""
+    _reset_adapter_cache()
+    from plugins.v53_adapter import V53Adapter
+    adapter = V53Adapter()  # _cfg=None → 默认 cash_buffer 0.01
+    adapter._resolve_reference_price = lambda ctx, code, target: 10.0
+    qty = adapter._weights_to_quantities(
+        {"510300.SH": 1.0}, nav=1_000_000.0, ctx=None,
+        target=pd.Timestamp("2024-04-30"))
+    assert qty["510300.SH"] == 99000
     _reset_adapter_cache()
 
 

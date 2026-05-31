@@ -7,6 +7,7 @@ algorithm: inv_vol
 risk_lookback: 252         # vendor reference_config.RISK_PARITY_WINDOW (informational; vendor hardcoded)
 min_history_days: 126      # vendor reference_config.MIN_HISTORY_DAYS (informational; vendor hardcoded)
 dry_run: false
+cash_buffer: 0.01          # 留 1% 现金不投：防满仓 100 股舍入+手续费溢出导致最后一笔被切
 
 quadrants:
   growth_up:      [hs300, cyb, gold, commodity2, commodity3, sp500, nasdaq, dividend]

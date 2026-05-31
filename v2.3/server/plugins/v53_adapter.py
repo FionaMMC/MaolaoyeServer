@@ -177,15 +177,22 @@ class V53Adapter(Strategy):
         self, weights: dict[str, float], nav: float,
         ctx: Context, target: pd.Timestamp,
     ) -> dict[str, int]:
-        """权重 dict → 100 股整 数量 dict。权重 0 / 无价格 / qty<100 都 skip。"""
+        """权重 dict → 100 股整 数量 dict。权重 0 / 无价格 / qty<100 都 skip。
+
+        留 cash_buffer（默认 1%）现金不投：满仓时 100 股舍入向上取整 + 手续费
+        会让总成本略超 NAV，导致 server precheck 把最后一笔单按现金不足切掉
+        （如黄金 518880）。投 nav×(1-buffer) 给舍入/手续费留出空间。
+        """
+        cash_buffer = float((type(self)._cfg or {}).get("cash_buffer", 0.01))
+        investable = nav * (1.0 - cash_buffer)
         out: dict[str, int] = {}
         for qmt_code, w in weights.items():
-            if w <= 0 or nav <= 0:
+            if w <= 0 or investable <= 0:
                 continue
             price = self._resolve_reference_price(ctx, qmt_code, target)
             if price is None or price <= 0:
                 continue
-            lots = round(nav * w / price / 100)
+            lots = round(investable * w / price / 100)
             if lots > 0:
                 out[qmt_code] = int(lots) * 100
         return out
