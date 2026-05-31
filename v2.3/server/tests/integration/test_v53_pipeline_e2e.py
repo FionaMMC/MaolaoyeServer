@@ -62,14 +62,20 @@ def test_e2e_non_month_end_returns_empty(v53_strategy_class, tmp_path):
 
 
 def test_e2e_month_end_dry_run_logs_and_returns_empty(v53_strategy_class, tmp_path, caplog):
-    """月末 + dry_run=true 配置 → DRY-RUN log + return []"""
+    """调仓日（新月首交易日）+ dry_run=true 配置 → DRY-RUN log + return []"""
     import logging
+    # 该 e2e 走 load_plugins 真实路径，须有真实 bundle 才能算到 DRY-RUN 这步。
+    # bundle 被 gitignore（refresh_v53_bundle.sh 生成），无则 skip。
+    bundle = Path(__file__).resolve().parent.parent.parent / "plugins" / "v53" / "data" / "etf_close.parquet"
+    if not bundle.exists():
+        pytest.skip(f"真实 bundle 缺失，跳过 e2e: {bundle}")
+    # anchor 数据只到 4/30；target=5/6（新月首交易日）→ 调仓日
     days = _bdays_as_int("2024-04-01", "2024-04-30")
-    last = max(days)
-    ctx = _make_ctx(tmp_path, last, anchor_days=days)
+    target_int = 20240506
+    ctx = _make_ctx(tmp_path, target_int, anchor_days=days)
     adapter: Strategy = v53_strategy_class()
     caplog.set_level(logging.INFO)
-    sigs = adapter.run(ctx, last)
+    sigs = adapter.run(ctx, target_int)
 
     # dry_run=true → 0 signals
     assert sigs == []

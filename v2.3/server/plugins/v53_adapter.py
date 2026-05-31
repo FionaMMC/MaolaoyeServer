@@ -49,7 +49,13 @@ class V53Adapter(Strategy):
             type(self)._etf_meta = pd.read_parquet(_V53_DIR / "data" / "etf_meta.parquet")
 
     def _is_month_end(self, ctx: Context, target: pd.Timestamp) -> bool:
-        """从 anchor ETF 的 trade_date 序列推：target 是其当月最大 trade_date 吗？
+        """约定 B：target(执行日) 是「次月第一个交易日」吗？是 → 调仓。
+
+        服务器侧无前向交易日历，所以不能直接判断「target 是不是当月最后交易日」。
+        改用：最近一个可用收盘日（< target）与 target 是否跨月。
+        真实流程里 target=trade_date 是下一个交易日（未来），其 EOD 尚未入库，
+        anchor 数据只到上一个交易日 T；若 T 落在上月 → target 是新月首交易日 → 调仓。
+        每月仅在第一个交易日触发一次（第二个交易日起最近收盘日已是本月 → False）。
 
         ctx.market 返回 trade_date 是 int YYYYMMDD，需要转 datetime 才能比 year/month。
         """
@@ -62,10 +68,11 @@ class V53Adapter(Strategy):
             return False
         # trade_date 是 int YYYYMMDD
         td = pd.to_datetime(df["trade_date"].astype(str), format="%Y%m%d")
-        same_month = td[(td.dt.year == target.year) & (td.dt.month == target.month)]
-        if same_month.empty:
+        prior = td[td < target]
+        if prior.empty:
             return False
-        return target == same_month.max()
+        last_close = prior.max()
+        return (last_close.year, last_close.month) != (target.year, target.month)
 
     def _build_close_matrix(
         self, ctx: Context, target: pd.Timestamp,

@@ -59,27 +59,54 @@ def _dates_in_month(year: int, month: int) -> list[int]:
     return sorted({int(d.strftime("%Y%m%d")) for d in rng})
 
 
-def test_is_month_end_true(tmp_path):
+# 约定 B：调仓在「次月第一个交易日」开盘执行，权重用上月最后收盘日的数据算。
+# 服务器侧无前向交易日历，所以判断逻辑 = 「target(执行日) 与最近可用收盘日是否跨月」。
+# 关键：在真实流程里 target=trade_date 是「下一个交易日」(未来)，它本身的 EOD
+# 还没入库，所以 anchor 数据只到上一个交易日 T。下面的 ctx 都不包含 target 当日数据。
+def test_is_month_end_true_first_trading_day_of_new_month(tmp_path):
+    """target 是新月第一个交易日（最近收盘日落在上月）→ True（触发调仓）"""
     _reset_adapter_cache()
     from plugins.v53_adapter import V53Adapter
-    # 2024-04 所有工作日；最后一个是 2024-04-30 (周二)
-    days = _dates_in_month(2024, 4)
-    last = max(days)  # 20240430
-    ctx = _make_ctx(tmp_path, last, anchor_trade_dates=days)
-    target = pd.to_datetime(str(last), format="%Y%m%d")
+    april = _dates_in_month(2024, 4)         # 数据只到 4/30
+    target_int = 20240506                     # 5 月首个交易日（5/1-5/5 假期，示意）
+    ctx = _make_ctx(tmp_path, target_int, anchor_trade_dates=april)
+    target = pd.to_datetime(str(target_int), format="%Y%m%d")
+    assert V53Adapter()._is_month_end(ctx, target) is True
+    _reset_adapter_cache()
+
+
+def test_is_month_end_true_year_boundary(tmp_path):
+    """跨年：12 月最后收盘日 → 1 月首交易日也算调仓日 → True"""
+    _reset_adapter_cache()
+    from plugins.v53_adapter import V53Adapter
+    dec = _dates_in_month(2024, 12)          # 数据到 2024-12-31
+    target_int = 20250102                     # 2025 年首个交易日
+    ctx = _make_ctx(tmp_path, target_int, anchor_trade_dates=dec)
+    target = pd.to_datetime(str(target_int), format="%Y%m%d")
     assert V53Adapter()._is_month_end(ctx, target) is True
     _reset_adapter_cache()
 
 
 def test_is_month_end_false_midmonth(tmp_path):
+    """月中：最近收盘日与 target 同月 → False"""
     _reset_adapter_cache()
     from plugins.v53_adapter import V53Adapter
-    days = _dates_in_month(2024, 4)
-    # ctx.trade_date must be the last day so ctx.market returns ALL April dates;
-    # then we ask _is_month_end with a mid-month target — it should return False
-    # because 2024-04-15 != max(April biz days) = 2024-04-30.
-    ctx = _make_ctx(tmp_path, 20240430, anchor_trade_dates=days)
-    target = pd.to_datetime("20240415", format="%Y%m%d")
+    # 4 月数据只到 4/15；target=4/16（同月）
+    april_through_15 = [d for d in _dates_in_month(2024, 4) if d < 20240416]
+    ctx = _make_ctx(tmp_path, 20240416, anchor_trade_dates=april_through_15)
+    target = pd.to_datetime("20240416", format="%Y%m%d")
+    assert V53Adapter()._is_month_end(ctx, target) is False
+    _reset_adapter_cache()
+
+
+def test_is_month_end_false_second_trading_day_of_month(tmp_path):
+    """新月第二个交易日：最近收盘日已是本月 → False（每月只触发一次）"""
+    _reset_adapter_cache()
+    from plugins.v53_adapter import V53Adapter
+    # 4 月数据 + 5 月首个交易日 5/6 都已入库；target=5/7
+    days = _dates_in_month(2024, 4) + [20240506]
+    ctx = _make_ctx(tmp_path, 20240507, anchor_trade_dates=days)
+    target = pd.to_datetime("20240507", format="%Y%m%d")
     assert V53Adapter()._is_month_end(ctx, target) is False
     _reset_adapter_cache()
 
@@ -88,22 +115,20 @@ def test_is_month_end_no_anchor_data(tmp_path):
     """anchor ETF 没有数据 → False（保守不调仓）"""
     _reset_adapter_cache()
     from plugins.v53_adapter import V53Adapter
-    ctx = _make_ctx(tmp_path, 20240430)  # 无 anchor_trade_dates
-    target = pd.to_datetime("20240430", format="%Y%m%d")
+    ctx = _make_ctx(tmp_path, 20240506)  # 无 anchor_trade_dates
+    target = pd.to_datetime("20240506", format="%Y%m%d")
     assert V53Adapter()._is_month_end(ctx, target) is False
     _reset_adapter_cache()
 
 
 # ── run() 短路行为 ────────────────────────────────────────────────────────
-def test_run_returns_empty_when_not_month_end(tmp_path):
-    """非月末 → run() return []，bundle 不需要加载"""
+def test_run_returns_empty_when_not_rebalance_day(tmp_path):
+    """非调仓日（月中）→ run() return []"""
     _reset_adapter_cache()
     from plugins.v53_adapter import V53Adapter
-    days = _dates_in_month(2024, 4)
-    ctx = _make_ctx(tmp_path, 20240415, anchor_trade_dates=days)
-    # bundle 不存在，但因为非月末提前 return []，不会触发 _load_resources 失败
-    # ⚠️ 当前 plugins/v53/data/ 有真实 bundle (Task 6 已 copy)，会被加载，但不影响 _is_month_end 之后立即 return
-    assert V53Adapter().run(ctx, 20240415) == []
+    april_through_15 = [d for d in _dates_in_month(2024, 4) if d < 20240416]
+    ctx = _make_ctx(tmp_path, 20240416, anchor_trade_dates=april_through_15)
+    assert V53Adapter().run(ctx, 20240416) == []
     _reset_adapter_cache()
 
 
@@ -114,10 +139,10 @@ def test_run_returns_empty_when_bundle_missing(tmp_path, monkeypatch):
     from plugins.v53_adapter import V53Adapter
     # 把 _V53_DIR 指向空目录 → bundle 读不到
     monkeypatch.setattr(adapter_mod, "_V53_DIR", tmp_path / "empty_v53_dir")
-    days = _dates_in_month(2024, 4)
-    ctx = _make_ctx(tmp_path, max(days), anchor_trade_dates=days)
-    # 即使是月末，资源加载失败应优雅返回空
-    assert V53Adapter().run(ctx, max(days)) == []
+    april = _dates_in_month(2024, 4)
+    # 调仓日（新月首交易日），但资源加载失败应优雅返回空
+    ctx = _make_ctx(tmp_path, 20240506, anchor_trade_dates=april)
+    assert V53Adapter().run(ctx, 20240506) == []
     _reset_adapter_cache()
 
 
@@ -584,7 +609,7 @@ def test_diff_and_emit_close_position(tmp_path):
 
 
 def test_full_run_dry_run_returns_empty_but_logs(tmp_path, monkeypatch, caplog):
-    """月末 + dry_run=true → log 写出目标 + return []，orders 表无新条目"""
+    """调仓日（新月首交易日）+ dry_run=true → log 写出目标 + return []，orders 表无新条目"""
     _reset_adapter_cache()
     import logging
     import plugins.v53_adapter as adapter_mod
@@ -592,10 +617,13 @@ def test_full_run_dry_run_returns_empty_but_logs(tmp_path, monkeypatch, caplog):
     from app.storage.parquet import ParquetStore
     from app.strategy.context import Context
 
-    # 给 anchor ETF 510300.SH 写月度数据让月末判断 = True
+    # 自带 mini bundle（覆盖到 2024-04-30），避免依赖 gitignore 的真实 bundle
+    v53dir = _make_bundle_in_tmp_dir(tmp_path, bundle_end_date="2024-04-30")
+    monkeypatch.setattr(adapter_mod, "_V53_DIR", v53dir)
+
+    # anchor ETF 510300.SH 数据只到 4/30；target=5/6（新月首交易日）→ 月末判断 True
     days_int = [int(d.strftime("%Y%m%d"))
                 for d in pd.bdate_range("2024-04-01", "2024-04-30")]
-    last = max(days_int)
     store = ParquetStore(root=tmp_path / "parquet")
     store.append("etfs", "510300.SH", pd.DataFrame({
         "trade_date": days_int,
@@ -604,16 +632,17 @@ def test_full_run_dry_run_returns_empty_but_logs(tmp_path, monkeypatch, caplog):
         "volume": [1_000_000] * len(days_int),
     }))
 
+    target_int = 20240506
     ctx = Context(
         instance_id="paper_v53_v53",
-        trade_date=last,
+        trade_date=target_int,
         virtual_cash=10_000_000.0,
         virtual_positions={},
         parquet_store=store,
     )
 
     caplog.set_level(logging.INFO, logger="plugins.v53_adapter")
-    signals = V53Adapter().run(ctx, last)
+    signals = V53Adapter().run(ctx, target_int)
 
     # dry_run=true → return []
     assert signals == []
