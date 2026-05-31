@@ -152,9 +152,14 @@ def print_report(result: dict) -> None:
     print("=" * 70 + "\n")
 
 
-def _compute_strategy_cash(start_capital: float = 10_000_000) -> float:
-    """从本地 DB 估算策略实际可用现金。
+def _compute_strategy_cash(start_capital: float = 10_000_000,
+                           account_group: str = "paper_v20h") -> float:
+    """从本地 DB 估算某 account_group 策略实际可用现金。
     排除 5.7 异常买入，用 local_orders SUCCESS 订单的委托金额近似。
+
+    必须按 account_group 过滤：local_orders 是全策略共用一张表，V20H 和
+    V53（共用 QMT 账户 301300148788）的成交都写在这里，不过滤会把别的策略
+    的买卖也算进来，导致现金严重失真。
     """
     import sqlite3
     db_path = getattr(config, "DB_PATH", None)
@@ -167,9 +172,10 @@ def _compute_strategy_cash(start_capital: float = 10_000_000) -> float:
         SELECT direction, SUM(submitted_quantity * submitted_price)
         FROM local_orders
         WHERE submit_status = 'SUCCESS'
+          AND account_group = ?
           AND NOT (submitted_at LIKE '2026-05-07%%' AND direction = 'BUY')
         GROUP BY direction
-    """)
+    """, (account_group,))
     buy_cost = 0.0
     sell_back = 0.0
     for direction, amt in cur.fetchall():
@@ -215,8 +221,8 @@ def main() -> None:
     # 1. 拉 QMT 真实账户
     qmt_raw_cash, positions = query_qmt_account(qmt_account_id)
 
-    # 2. 策略现金（排除全账户闲置资金）
-    strategy_cash = _compute_strategy_cash(args.start_capital)
+    # 2. 策略现金（排除全账户闲置资金 + 别的 account_group 的成交）
+    strategy_cash = _compute_strategy_cash(args.start_capital, args.account_group)
     if strategy_cash is None:
         strategy_cash = qmt_raw_cash
     log.info(f"对账发送：现金=¥{strategy_cash:,.2f} 持仓={len(positions)}只")
