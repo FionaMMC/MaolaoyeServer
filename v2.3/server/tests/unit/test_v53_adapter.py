@@ -494,7 +494,8 @@ def test_risk_filter_qdii_below_threshold_keeps(tmp_path):
 
 
 def test_risk_filter_liquidity_skips_when_volume_low(tmp_path):
-    """target qty=1000，liquidity_multiplier=100 → 需要 vol >= 100,000；vol=50,000 → skip"""
+    """qty=1000, liquidity_multiplier=100 → 需要 ≥100,000 股。
+    volume 单位是手(×100股)：vol=500手=50,000股 < 100,000 → skip"""
     _reset_adapter_cache()
     from plugins.v53_adapter import V53Adapter
     adapter = V53Adapter()
@@ -503,15 +504,39 @@ def test_risk_filter_liquidity_skips_when_volume_low(tmp_path):
         "159985.SZ": pd.DataFrame({
             "trade_date": [20240429, 20240430],
             "close": [3.0, 3.0],
-            "volume": [40_000, 50_000],
+            "volume": [400, 500],  # 手 → 50,000 股
         }),
     }
     out = adapter._apply_risk_filters(
         ctx=_FakeBlacklistCtx(set(), market_data=market_data),
-        target_qty={"159985.SZ": 1000},  # 需要 100k vol，实际 50k
+        target_qty={"159985.SZ": 1000},  # 需要 100k 股，实际 50k 股
         target=pd.Timestamp("2024-04-30"),
     )
     assert "159985.SZ" not in out
+    _reset_adapter_cache()
+
+
+def test_risk_filter_liquidity_treats_volume_as_lots(tmp_path):
+    """volume 单位是手(1手=100股)。vol=50,000手=5,000,000股，qty=1000，
+    liq_mul=100 → 需要 100,000 股 → 5M 远超 → 不该 skip。
+    (旧 bug: 把 vol 当股 → 50000 < 100000 → 误 skip 掉本来很活跃的 ETF)"""
+    _reset_adapter_cache()
+    from plugins.v53_adapter import V53Adapter
+    adapter = V53Adapter()
+    adapter._cfg = {"risk_filters": {"liquidity_multiplier": 100}}
+    market_data = {
+        "159985.SZ": pd.DataFrame({
+            "trade_date": [20240429, 20240430],
+            "close": [3.0, 3.0],
+            "volume": [40_000, 50_000],  # 手 → 5,000,000 股
+        }),
+    }
+    out = adapter._apply_risk_filters(
+        ctx=_FakeBlacklistCtx(set(), market_data=market_data),
+        target_qty={"159985.SZ": 1000},  # 需要 100k 股，实际 5M 股 → 充裕
+        target=pd.Timestamp("2024-04-30"),
+    )
+    assert "159985.SZ" in out
     _reset_adapter_cache()
 
 
@@ -620,6 +645,11 @@ def test_full_run_dry_run_returns_empty_but_logs(tmp_path, monkeypatch, caplog):
     # 自带 mini bundle（覆盖到 2024-04-30），避免依赖 gitignore 的真实 bundle
     v53dir = _make_bundle_in_tmp_dir(tmp_path, bundle_end_date="2024-04-30")
     monkeypatch.setattr(adapter_mod, "_V53_DIR", v53dir)
+
+    # 显式强制 dry_run: true 测试 dry-run 路径（不依赖部署配置——生产已切 false）
+    cfg_path = v53dir / "config.yaml"
+    cfg_path.write_text(
+        cfg_path.read_text().replace("dry_run: false", "dry_run: true"))
 
     # anchor ETF 510300.SH 数据只到 4/30；target=5/6（新月首交易日）→ 月末判断 True
     days_int = [int(d.strftime("%Y%m%d"))

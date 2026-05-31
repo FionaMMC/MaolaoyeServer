@@ -193,7 +193,12 @@ class V53Adapter(Strategy):
     def _latest_volume(
         self, ctx: Context, qmt_code: str, target: pd.Timestamp,
     ) -> int | None:
-        """ctx.market 最近一天的 volume（≤ target）。"""
+        """ctx.market 最近一天的 volume，转成「股」（≤ target）。
+
+        QMT/行情 volume 字段单位是「手」(1 手 = 100 股)；流动性过滤要和
+        qty(股) 同单位比较，所以这里 ×100 换算成股。
+        (经 amount/close 核实：volume × 100 ≈ 实际成交股数。)
+        """
         try:
             df = ctx.market(qmt_code, category="etfs")
         except Exception:
@@ -207,7 +212,7 @@ class V53Adapter(Strategy):
             return None
         v = df2.iloc[-1].get("volume", 0)
         try:
-            return int(v)
+            return int(v) * 100  # 手 → 股
         except (TypeError, ValueError):
             return None
 
