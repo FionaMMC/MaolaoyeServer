@@ -100,6 +100,7 @@ def post_reconcile(
     qmt_cash: float,
     qmt_positions: dict[str, int],
     dry_run: bool,
+    force: bool = False,
 ) -> dict:
     payload = {
         "instance_id": instance_id,
@@ -108,6 +109,7 @@ def post_reconcile(
         "qmt_positions": qmt_positions,
         "snapshot_time": datetime.now().isoformat(timespec="seconds"),
         "dry_run": dry_run,
+        "force": force,
     }
     headers = {"Authorization": f"Bearer {config.API_KEY}"}
     url = f"{config.SERVER_BASE_URL}/admin/reconcile-positions"
@@ -206,6 +208,10 @@ def main() -> None:
         help="不传则 dry_run；传了才真正改 server 状态",
     )
     parser.add_argument(
+        "--force", action="store_true",
+        help="跳过 server 端大批量 close 护栏（仅在确认快照完整后用，配合 --apply）",
+    )
+    parser.add_argument(
         "--start-capital", type=float, default=10_000_000,
         help="策略初始资金（默认 10,000,000）",
     )
@@ -234,6 +240,7 @@ def main() -> None:
         qmt_cash=strategy_cash,
         qmt_positions=positions,
         dry_run=not args.apply,
+        force=args.force,
     )
 
     # 3. 打印报告

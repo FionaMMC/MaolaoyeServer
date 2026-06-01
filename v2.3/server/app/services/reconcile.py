@@ -48,9 +48,22 @@ class OwnershipOverlap(Exception):
     """两个 instance 的 owned_symbols 列表有重叠（启动校验失败）。"""
 
 
+class ReconcileGuardTripped(ReconcileSanityCheckFailed):
+    """apply 会清掉过多 server 持仓（疑似快照不完整）→ 拦截，需 force=true 覆盖。
+
+    继承 ReconcileSanityCheckFailed，让 endpoint 现有的 422 处理直接覆盖。
+    背景：V53 曾被一份只含 5/10 ETF 的快照 apply，误删 5 个好仓。
+    """
+
+
 # 单股最大合理持仓（防 QMT 模拟器默认股的 100 亿股污染）
 # V20H 单股理论上限：¥10M NAV × 1.5×cap / 800持仓 / 1元价 ≈ 19K 股
 MAX_REASONABLE_QTY_PER_STOCK = 100_000
+
+# apply 大批量 close 护栏：当快照缺失大量持仓时，server_only 会被当幽灵清掉。
+# 同时满足"绝对数 ≥ MIN"且"占 server 持仓 ≥ FRACTION"才拦截（避免小批量正常清理误伤）。
+GUARD_MIN_CLOSE = 3
+GUARD_CLOSE_FRACTION = 0.34
 
 
 class ReconcileService:
@@ -181,6 +194,26 @@ class ReconcileService:
                     n_matched, n_mismatched, n_server_only, n_qmt_only,
                 )
                 return result
+
+            # 护栏：apply 会把 server_only 持仓清掉。若快照不完整（缺大量持仓），
+            # 会误删一批好仓（V53 曾被只含 5/10 ETF 的快照 apply 删掉 5 个）。
+            # 绝对数 ≥ MIN 且占 server 持仓 ≥ FRACTION 时拦截，须 force=true 才覆盖。
+            n_srv = len(server_positions)
+            if (not snapshot.force
+                    and n_server_only >= GUARD_MIN_CLOSE
+                    and n_srv > 0
+                    and n_server_only >= GUARD_CLOSE_FRACTION * n_srv):
+                logger.error(
+                    "reconcile GUARD: instance=%s 阻止 apply — 会清掉 %d/%d 持仓"
+                    "（占比 %.0f%%），疑似快照不完整。确认完整后加 force=true。",
+                    snapshot.instance_id, n_server_only, n_srv,
+                    100.0 * n_server_only / n_srv,
+                )
+                raise ReconcileGuardTripped(
+                    f"apply 会清掉 {n_server_only}/{n_srv} 个 server 持仓"
+                    f"（{100.0 * n_server_only / n_srv:.0f}%），疑似快照不完整，已拦截。"
+                    f"确认 QMT 快照完整后用 force=true 覆盖。"
+                )
 
             # 实际 apply：覆盖 virtual_positions（不覆盖 virtual_cash，由 settlement 维护）
             # 注意：直接 assign 一个 dict 才能让 SQLAlchemy 的 mutable JSON 类型识别为 dirty

@@ -99,3 +99,32 @@ def test_compute_strategy_cash_v53_isolated(qqp):
     mod, _ = qqp
     cash = mod._compute_strategy_cash(start_capital=10_000_000, account_group="paper_v53")
     assert cash == pytest.approx(0.0)
+
+
+def test_post_reconcile_includes_force(qqp, monkeypatch):
+    """--force 透传到 payload 的 force 字段（server 端护栏的逃生口）。"""
+    mod, _ = qqp
+    import config
+    import requests
+    config.SERVER_BASE_URL = "http://test:8000"
+    config.API_KEY = "k"
+
+    captured = {}
+
+    class _Resp:
+        def raise_for_status(self): pass
+        def json(self): return {"code": 0, "data": {"ok": True}}
+
+    def _fake_post(url, json=None, headers=None, timeout=None):
+        captured["payload"] = json
+        return _Resp()
+
+    monkeypatch.setattr(requests, "post", _fake_post, raising=False)
+
+    mod.post_reconcile("inst", "acc", 1000.0, {"600519.SH": 100},
+                       dry_run=False, force=True)
+    assert captured["payload"]["force"] is True
+    assert captured["payload"]["dry_run"] is False
+
+    mod.post_reconcile("inst", "acc", 1000.0, {}, dry_run=True)  # 默认 force=False
+    assert captured["payload"]["force"] is False

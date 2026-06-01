@@ -18,6 +18,10 @@ class QmtPositionSnapshot(BaseModel):
         default=True,
         description="True=仅返回 diff 报告不改 server；False=apply 修改 instance_state",
     )
+    force: bool = Field(
+        default=False,
+        description="apply 时跳过大批量 close 护栏（确认快照完整后才用）",
+    )
 
 
 class PositionDiff(BaseModel):

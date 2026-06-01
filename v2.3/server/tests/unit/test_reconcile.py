@@ -10,6 +10,7 @@ from app.schemas.reconcile import QmtPositionSnapshot
 from app.services.reconcile import (
     InstanceNotFound,
     OwnershipOverlap,
+    ReconcileGuardTripped,
     ReconcileService,
 )
 
@@ -32,7 +33,7 @@ def _seed_instance(sf, instance_id: str, cash: float, positions: dict[str, int])
 
 
 def _snapshot(instance_id: str, qmt_cash: float, qmt_positions: dict[str, int],
-              dry_run: bool = True) -> QmtPositionSnapshot:
+              dry_run: bool = True, force: bool = False) -> QmtPositionSnapshot:
     return QmtPositionSnapshot(
         instance_id=instance_id,
         qmt_account_id="TEST123",
@@ -40,6 +41,7 @@ def _snapshot(instance_id: str, qmt_cash: float, qmt_positions: dict[str, int],
         qmt_positions=qmt_positions,
         snapshot_time=datetime.now().isoformat(),
         dry_run=dry_run,
+        force=force,
     )
 
 
@@ -131,6 +133,57 @@ def test_reconcile_dryrun_qty_mismatch(tmp_path: Path):
     assert result.diffs[0].server_qty == 100
     assert result.diffs[0].qmt_qty == 200
     assert result.diffs[0].diff == 100
+
+
+def _pos_n(n: int) -> dict[str, int]:
+    """生成 n 只持仓 {000001.SH:100, ...}。"""
+    return {f"{i:06d}.SH": 100 for i in range(1, n + 1)}
+
+
+def test_reconcile_apply_guard_blocks_mass_close(tmp_path: Path):
+    """护栏：apply 时快照缺失大量持仓（server_only 占比高）→ 拦截，state 不变。
+
+    复现 V53 事故：server 有 10 只，快照只含 5 只 → apply 会清掉另 5 只。
+    """
+    sf = _factory(tmp_path)
+    _seed_instance(sf, "inst", 50_000.0, _pos_n(10))
+    svc = ReconcileService(sf)
+    snap5 = {k: 100 for k in list(_pos_n(10))[:5]}  # 只含 5 只
+    snap = _snapshot("inst", 50_000.0, snap5, dry_run=False)
+
+    with pytest.raises(ReconcileGuardTripped):
+        svc.reconcile(snap)
+    # state 未被改动，仍 10 只
+    with sf() as s:
+        assert len(s.get(InstanceState, "inst").virtual_positions) == 10
+
+
+def test_reconcile_apply_guard_force_overrides(tmp_path: Path):
+    """force=True → 跳过护栏，强制 apply（确认快照完整后的逃生口）。"""
+    sf = _factory(tmp_path)
+    _seed_instance(sf, "inst", 50_000.0, _pos_n(10))
+    svc = ReconcileService(sf)
+    snap5 = {k: 100 for k in list(_pos_n(10))[:5]}
+    snap = _snapshot("inst", 50_000.0, snap5, dry_run=False, force=True)
+
+    result = svc.reconcile(snap)
+    assert result.applied is True
+    with sf() as s:
+        assert len(s.get(InstanceState, "inst").virtual_positions) == 5
+
+
+def test_reconcile_apply_small_close_allowed(tmp_path: Path):
+    """关掉少量持仓（低于护栏阈值）→ 正常 apply，不拦截。"""
+    sf = _factory(tmp_path)
+    _seed_instance(sf, "inst", 50_000.0, _pos_n(10))
+    svc = ReconcileService(sf)
+    snap9 = {k: 100 for k in list(_pos_n(10))[:9]}  # 只 close 1 只
+    snap = _snapshot("inst", 50_000.0, snap9, dry_run=False)
+
+    result = svc.reconcile(snap)
+    assert result.applied is True
+    with sf() as s:
+        assert len(s.get(InstanceState, "inst").virtual_positions) == 9
 
 
 def test_reconcile_apply_changes_state(tmp_path: Path):
