@@ -279,6 +279,29 @@ def test_reconcile_filters_outlier_positions(tmp_path: Path):
         assert inst.virtual_positions == {"600519.SH": 100}
 
 
+def test_reconcile_keeps_large_etf_positions(tmp_path: Path):
+    """ETF 合法大额持仓（几十万股）不应被离群过滤。
+
+    复现 V53 根因：红利 ETF 71.3万股、商品 ETF 十几~二十万股都是正常量级
+    （ETF 1-2 元/份，1000万建仓自然几十万股），旧阈值 100K 把它们当幽灵仓丢了，
+    导致 reconcile 只看到 5/10 个 ETF。阈值须高于 ETF 量级、低于真幽灵仓(100亿)。
+    """
+    sf = _factory(tmp_path)
+    _seed_instance(sf, "inst", 50_000.0, {})
+    svc = ReconcileService(sf)
+
+    snap = _snapshot("inst", 50_000.0, {
+        "512890.SH": 713_100,          # 红利 ETF，合法大额 → 保留
+        "159985.SZ": 216_500,          # 商品 ETF，合法 → 保留
+        "000001.SZ": 10_000_000_000,   # 100 亿股幽灵仓 → 仍过滤
+    }, dry_run=False)
+    svc.reconcile(snap)
+
+    with sf() as s:
+        inst = s.get(InstanceState, "inst")
+        assert inst.virtual_positions == {"512890.SH": 713_100, "159985.SZ": 216_500}
+
+
 def test_reconcile_rejects_huge_cash_deviation(tmp_path: Path):
     """cash 偏离检查已从 instance 级移除（改由 reconcile_cash_total 在 portfolio 级检查）。
     apply 模式不再因 cash 偏离而 raise；cash 不被覆写，positions 正常对齐。

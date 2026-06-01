@@ -56,9 +56,12 @@ class ReconcileGuardTripped(ReconcileSanityCheckFailed):
     """
 
 
-# 单股最大合理持仓（防 QMT 模拟器默认股的 100 亿股污染）
-# V20H 单股理论上限：¥10M NAV × 1.5×cap / 800持仓 / 1元价 ≈ 19K 股
-MAX_REASONABLE_QTY_PER_STOCK = 100_000
+# 单标的最大合理持仓（防 QMT 模拟器默认股的 100 亿股污染）。
+# 真幽灵仓是 100 亿股（10^10）；与 client query_qmt_positions 的幽灵阈值(>10^7)对齐。
+# 注意：阈值必须高于 ETF 量级！ETF 1-2 元/份，1000万建仓单只可达 70万+ 股
+# （如红利 512890 ~71万股）。旧值 100K 是按股票(V20H 单股 ~19K)设的，会把
+# 合法大额 ETF 仓当幽灵丢掉 → 导致 V53 reconcile 只看到 5/10 个 ETF（事故根因）。
+MAX_REASONABLE_QTY_PER_STOCK = 10_000_000
 
 # apply 大批量 close 护栏：当快照缺失大量持仓时，server_only 会被当幽灵清掉。
 # 同时满足"绝对数 ≥ MIN"且"占 server 持仓 ≥ FRACTION"才拦截（避免小批量正常清理误伤）。
