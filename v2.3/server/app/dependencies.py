@@ -127,6 +127,9 @@ def get_strategy_pipeline(
         perf=perf,
         strategies_yaml_path=Path(settings.strategies_file),
         blacklist=blacklist,
+        max_staleness_days=settings.max_data_staleness_days,
+        freshness_probe_category=settings.data_freshness_probe_category,
+        freshness_probe_symbol=settings.data_freshness_probe_symbol,
     )
 
 

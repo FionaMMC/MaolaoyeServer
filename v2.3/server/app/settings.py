@@ -44,6 +44,18 @@ class Settings(BaseSettings):
     stock_min_commission: float = 5.0       # 单笔最低 5 元
     stock_stamp_duty_sell: float = 0.0005   # 千五印花税（仅卖出收）
 
+    # 调度：APScheduler 每交易日 cron 触发策略管线。
+    # 生产部署须显式 QMT_SCHEDULER_ENABLED=true（默认 false，避免测试/本地误触发）。
+    scheduler_enabled: bool = False
+    scheduler_cron_hour: int = 16
+    scheduler_cron_minute: int = 0
+
+    # 数据新鲜度护栏：最新行情比 trade_date 旧超过该天数时，管线跳过不下单。
+    # 探针标的默认中证1000 指数（每日推送、必在）。
+    max_data_staleness_days: int = 5
+    data_freshness_probe_category: str = "indexes"
+    data_freshness_probe_symbol: str = "000852.SH"
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

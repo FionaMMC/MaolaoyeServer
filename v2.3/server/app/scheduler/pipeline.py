@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Type
 
@@ -28,6 +28,11 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
+def _to_date(yyyymmdd: int) -> date:
+    d = int(yyyymmdd)
+    return date(d // 10000, (d // 100) % 100, d % 100)
+
+
 class StrategyPipeline:
     """同步执行：策略 → 预检 → 归集 → 落库 → NAV 快照。"""
 
@@ -42,6 +47,9 @@ class StrategyPipeline:
         perf: PerfService,
         strategies_yaml_path: Path,
         blacklist: BlacklistService | None = None,
+        max_staleness_days: int | None = None,
+        freshness_probe_category: str = "indexes",
+        freshness_probe_symbol: str = "000852.SH",
     ):
         self.registry = registry
         self.store = parquet_store
@@ -52,6 +60,24 @@ class StrategyPipeline:
         self.perf = perf
         self.strategies_yaml_path = Path(strategies_yaml_path)
         self.blacklist = blacklist or BlacklistService(session_factory)
+        # 数据新鲜度护栏：None=关闭（向后兼容）。设为天数则：最新行情比 trade_date
+        # 旧超过该天数时，管线跳过，不写 raw_signals/orders，防止拿陈旧价下错单。
+        self.max_staleness_days = max_staleness_days
+        self.freshness_probe_category = freshness_probe_category
+        self.freshness_probe_symbol = freshness_probe_symbol
+
+    def _market_staleness_days(self, trade_date: int) -> int | None:
+        """行情比 trade_date 旧几天。护栏关（None）或探针缺失（无法评估）时返回 None。"""
+        if self.max_staleness_days is None:
+            return None
+        latest = self.store.latest_date(
+            self.freshness_probe_category, self.freshness_probe_symbol)
+        if latest is None:
+            logger.warning(
+                "freshness_probe_missing %s/%s — 无法评估行情新鲜度，放行",
+                self.freshness_probe_category, self.freshness_probe_symbol)
+            return None
+        return (_to_date(trade_date) - _to_date(latest)).days
 
     def run(self, trade_date: int) -> dict:
         """完整管线。返回执行摘要。
@@ -61,6 +87,24 @@ class StrategyPipeline:
         """
         valid_date_str = str(trade_date)
         logger.info("pipeline_start trade_date=%s", trade_date)
+
+        # 00. 数据新鲜度护栏：行情比 trade_date 旧太多 → 跳过，绝不拿陈旧价下单。
+        #     （灾备/回填历史 trade_date 时行情正好在该日附近，diff 小，自然放行。）
+        stale = self._market_staleness_days(trade_date)
+        if stale is not None and stale > self.max_staleness_days:
+            latest = self.store.latest_date(
+                self.freshness_probe_category, self.freshness_probe_symbol)
+            logger.error(
+                "pipeline_skipped stale_market_data probe=%s/%s latest=%s trade_date=%s "
+                "staleness_days=%s tolerance=%s",
+                self.freshness_probe_category, self.freshness_probe_symbol,
+                latest, trade_date, stale, self.max_staleness_days)
+            return {
+                "signals": 0, "passed": 0, "orders": 0, "instances": 0,
+                "skipped": "stale_market_data",
+                "latest_market_date": latest, "trade_date": trade_date,
+                "staleness_days": stale,
+            }
 
         # 0a. 自动晋升：把最近 REJECTED 的 symbol 持久化到 risk_blacklist 表
         #     这样即使后面 clear-state 清了 orders，黑名单不丢

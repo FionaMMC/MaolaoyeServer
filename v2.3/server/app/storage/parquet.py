@@ -87,6 +87,16 @@ class ParquetStore:
         df = pd.read_parquet(path, columns=[_PK])
         return bool((df[_PK] == trade_date).any())
 
+    def latest_date(self, category: Category, symbol: str) -> int | None:
+        """返回该标的最新 trade_date；文件缺失或空返回 None。"""
+        path = self._file(category, symbol)
+        if not path.exists():
+            return None
+        df = pd.read_parquet(path, columns=[_PK])
+        if df.empty:
+            return None
+        return int(df[_PK].max())
+
     def list_symbols(self, category: Category) -> list[str]:
         d = self._category_dir(category)
         if not d.exists():

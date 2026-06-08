@@ -37,19 +37,55 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.warning("validate_no_overlap 跳过（DB 尚未初始化或无 instance_state 表）: %s", e)
 
     # 启动 APScheduler
-    scheduler = None
+    # ⚠ 多 worker 部署注意：每个 worker 各起一个 scheduler，cron 会重复触发。
+    #    管线幂等（同 trade_date 先清后写）可容忍，但建议调度跑在单进程
+    #    （uvicorn --workers 1，或独立 scheduler 进程）以免并发写 SQLite 抢锁。
+    app.state.scheduler = None
     try:
-        from app.scheduler.runtime import make_scheduler  # noqa: F401
-        # 注意：这里直接构造 pipeline（绕开 Depends，因为 Depends 只在请求里有）
-        # ...实际部署时 scheduler 应该用同样的 Settings 实例
-        log.info("scheduler 已预备（实际启动需要 Plan 13 部署文档配置）")
+        settings = getattr(app.state, "settings", None) or get_settings()
+        if settings.scheduler_enabled:
+            from app.db import make_engine, make_session_factory
+            from app.dependencies import (
+                get_blacklist_service, get_orders_queue_service,
+                get_parquet_store, get_perf_service, get_strategy_pipeline,
+            )
+            from app.scheduler.runtime import make_scheduler
+
+            _eng = make_engine(settings.db_url)
+            _sf2 = make_session_factory(_eng)
+            store = get_parquet_store(settings)
+            pipeline = get_strategy_pipeline(
+                settings=settings, sf=_sf2, store=store,
+                orders_queue=get_orders_queue_service(_sf2),
+                perf=get_perf_service(_sf2, store),
+                blacklist=get_blacklist_service(_sf2),
+            )
+
+            def _pipeline_run(trade_date: int) -> dict:
+                return pipeline.run(trade_date)
+
+            scheduler = make_scheduler(
+                _pipeline_run,
+                cron_hour=settings.scheduler_cron_hour,
+                cron_minute=settings.scheduler_cron_minute,
+            )
+            scheduler.start()
+            app.state.scheduler = scheduler
+            log.info(
+                "scheduler_started hour=%s minute=%s staleness_guard=%sd",
+                settings.scheduler_cron_hour, settings.scheduler_cron_minute,
+                settings.max_data_staleness_days,
+            )
+        else:
+            log.info("scheduler_disabled (set QMT_SCHEDULER_ENABLED=true to enable)")
     except Exception as e:
         log.warning("scheduler 启动失败: %s", e)
 
     yield
 
-    if scheduler:
-        scheduler.shutdown(wait=False)
+    sched = getattr(app.state, "scheduler", None)
+    if sched is not None:
+        sched.shutdown(wait=False)
     log.info("server_stopping")
 
 
@@ -65,6 +101,8 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
         version="2.3.0",
         lifespan=_lifespan,
     )
+    # lifespan 读取这里的 settings（含 create_app 的 override），而非全局 get_settings()。
+    app.state.settings = settings
 
     @app.exception_handler(APIError)
     async def _api_error_handler(request: Request, exc: APIError):
