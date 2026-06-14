@@ -141,3 +141,27 @@ def get_data_upload_service(
 ) -> DataUploadService:
     registry = _strategy_registry(str(settings.plugins_dir))
     return DataUploadService(registry=registry)
+
+
+from app.services.ops_monitor import OpsMonitorService
+from app.services.alerts import AlertEngine
+
+
+def get_ops_monitor(
+    sf=Depends(get_session_factory),
+    store: ParquetStore = Depends(get_parquet_store),
+    settings: Settings = Depends(get_settings),
+) -> OpsMonitorService:
+    return OpsMonitorService(sf, parquet_store=store, settings=settings)
+
+
+def get_alert_engine(
+    ops: OpsMonitorService = Depends(get_ops_monitor),
+    sf=Depends(get_session_factory),
+) -> AlertEngine:
+    from sqlalchemy import select
+    from app.models import InstanceState, PerfSnapshot
+    with sf() as s:
+        a = {r[0] for r in s.execute(select(InstanceState.instance_id)).all()}
+        b = {r[0] for r in s.execute(select(PerfSnapshot.instance_id).distinct()).all()}
+    return AlertEngine(ops, instances=sorted(a | b))
