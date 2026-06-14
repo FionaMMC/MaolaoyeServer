@@ -61,3 +61,28 @@ class OpsMonitorService:
                             "ratio": round(ratio, 4) if p else None,
                             "from_date": rows[0][0], "to_date": rows[1][0]})
         return out
+
+    def pipeline_runs(self, lookback_days: int = 14, today: str | None = None) -> list[dict]:
+        from sqlalchemy import func
+        end = _d(today) if today else datetime.now().date()
+        days = [(end - timedelta(days=k)) for k in range(lookback_days + 1)]
+        out = []
+        with self.sf() as s:
+            for dd in sorted(days):
+                vd = dd.strftime("%Y%m%d")
+                weekday = dd.isoweekday() <= 5
+                sig = s.execute(select(RawSignal.signal_time)
+                                .where(RawSignal.valid_date == vd).limit(1)).first()
+                norders = s.execute(select(func.count()).select_from(Order)
+                                    .where(Order.valid_date == vd)).scalar() or 0
+                status = "weekend" if not weekday else ("ok" if sig else "missing")
+                out.append({"valid_date": vd, "weekday": weekday, "status": status,
+                            "signal_time": sig[0] if sig else None, "orders": int(norders)})
+        return out
+
+    def data_freshness(self, today: str | None = None,
+                       probe: tuple[str, str] = ("indexes", "000852.SH")) -> dict:
+        t = _d(today) if today else datetime.now().date()
+        latest = self.store.latest_date(*probe) if self.store else None
+        lag = (t - _d(str(latest))).days if latest else None
+        return {"market_latest": latest, "market_lag_days": lag, "probe": f"{probe[0]}/{probe[1]}"}
