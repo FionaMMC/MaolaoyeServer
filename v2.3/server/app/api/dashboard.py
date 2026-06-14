@@ -220,6 +220,9 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     <div class="tab" data-view="trades" onclick="showTab('trades')">
       <span class="icon">💼</span>交易分析
     </div>
+    <div class="tab" data-view="ops" onclick="showTab('ops')">
+      <span class="icon">🛠</span>运营与对账
+    </div>
   </div>
 
   <!-- 概览 -->
@@ -316,6 +319,32 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       <div class="card wide">
         <h2>Orders 状态矩阵 <span class="hint">按当前期间</span></h2>
         <div id="orders-matrix"><div class="loading">Loading...</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 运营与对账 -->
+  <div class="view" id="view-ops">
+    <div class="grid">
+      <div class="card wide">
+        <h2>告警列表 <span class="hint">critical → warn → info</span></h2>
+        <div id="ops-alerts"><div class="loading">Loading...</div></div>
+      </div>
+      <div class="card wide">
+        <h2>管线运行记录 <span class="hint">最近 14 天</span></h2>
+        <div id="ops-runs"><div class="loading">Loading...</div></div>
+      </div>
+      <div class="card">
+        <h2>行情新鲜度</h2>
+        <div id="ops-freshness"><div class="loading">Loading...</div></div>
+      </div>
+      <div class="card">
+        <h2>快照完整性</h2>
+        <div id="ops-integrity"><div class="loading">Loading...</div></div>
+      </div>
+      <div class="card wide">
+        <h2>隔夜仓位异常 <span class="hint">倍增/归零检测</span></h2>
+        <div id="ops-anomalies"><div class="loading">Loading...</div></div>
       </div>
     </div>
   </div>
@@ -867,6 +896,48 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       }
     }
 
+    // ── 运营与对账 ──────────────────────────────────────────────
+    async function loadOps(){
+      const inst = getInstanceId();
+      const [al, runs, integ, anom] = await Promise.all([
+        api('/admin/alerts'),
+        api('/admin/ops/pipeline-runs?days=14'),
+        api('/admin/ops/snapshot-integrity?instance_id='+inst+'&lookback=30'),
+        api('/admin/ops/reconcile-anomalies?instance_id='+inst),
+      ]);
+      // Alert feed (sort critical>warn>info)
+      const sev={critical:0,warn:1,info:2};
+      const alerts=(al.alerts||[]).slice().sort((a,b)=>sev[a.severity]-sev[b.severity]);
+      document.getElementById('ops-alerts').innerHTML = alerts.length
+        ? alerts.map(a=>`<div class="${a.severity==='critical'?'crit':(a.severity==='warn'?'stale':'')}">
+            <b>[${a.severity}]</b> ${a.message} <span style="color:#8a93a0">· ${a.as_of}</span></div>`).join('')
+        : '<div style="color:#4ade80">✓ 无告警</div>';
+      // Pipeline runs table
+      document.getElementById('ops-runs').innerHTML =
+        '<table><tr><th>valid_date</th><th>status</th><th>signal_time</th><th class="num">orders</th></tr>'+
+        (runs.runs||[]).map(r=>`<tr><td>${r.valid_date}</td>
+          <td><span class="${r.status==='missing'?'crit':(r.status==='ok'?'':'')}">${r.status}</span></td>
+          <td>${r.signal_time||'—'}</td><td class="num">${r.orders}</td></tr>`).join('')+'</table>';
+      // Freshness (from META if present)
+      const fr=(window.META&&window.META.freshness)||{};
+      document.getElementById('ops-freshness').innerHTML =
+        `行情 latest: <span class="${staleClass(fr.market_lag_days)}">${fr.market_latest||'—'}`+
+        `${fr.market_lag_days!=null?` (${fr.market_lag_days}d)`:''}</span> · probe ${fr.probe||'—'}`;
+      // Snapshot integrity
+      const iss=integ.issues||[];
+      document.getElementById('ops-integrity').innerHTML = iss.length
+        ? iss.map(i=>`<div class="stale">⚠ ${i.type} @ ${i.date} — ${i.detail||''}</div>`).join('')
+        : '<div style="color:#4ade80">✓ 无冻结/缺口</div>';
+      // Reconcile anomalies
+      const an=anom.overnight_position_anomalies||[];
+      document.getElementById('ops-anomalies').innerHTML = an.length
+        ? '<table><tr><th>symbol</th><th class="num">prev</th><th class="num">cur</th><th class="num">×</th><th>window</th></tr>'+
+          an.map(a=>`<tr class="crit"><td>${a.symbol}</td><td class="num">${fmtNum(a.prev_qty)}</td>
+            <td class="num">${fmtNum(a.cur_qty)}</td><td class="num">${a.ratio??'∞'}</td>
+            <td>${a.from_date}→${a.to_date}</td></tr>`).join('')+'</table>'
+        : '<div style="color:#4ade80">✓ 无隔夜异常</div>';
+    }
+
     // ── 主刷新 ─────────────────────────────────────────────────
     async function refreshAll() {
       if (!checkAuth()) return;
@@ -878,6 +949,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         else if (currentTab === 'risk') await renderRisk();
         else if (currentTab === 'strategy') await renderStrategy();
         else if (currentTab === 'trades') await renderTrades();
+        else if (currentTab === 'ops') await loadOps();
         document.getElementById('meta').textContent =
           `last refresh ${new Date().toLocaleString()} | tab=${currentTab} | period=${getPeriod()}`;
       } catch (e) {
