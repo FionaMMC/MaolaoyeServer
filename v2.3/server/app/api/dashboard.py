@@ -147,6 +147,20 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       width: 100%; padding: 10px; background: #4ea1ff; color: #fff;
       border: none; border-radius: 4px; cursor: pointer; font-weight: 500;
     }
+
+    #health-strip {
+      display: flex; flex-wrap: wrap; gap: 16px; align-items: center;
+      padding: 8px 16px; background: #131a21; border-radius: 6px;
+      margin-bottom: 12px; font-size: 0.83em; border: 1px solid #2a3340;
+    }
+    #health-strip span { color: #8a93a0; }
+    #health-strip b { color: #d4d8de; }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+           vertical-align: middle; margin-right: 3px; }
+    .dot.ok  { background: #4ade80; }
+    .dot.bad { background: #f87171; }
+    .stale   { color: #fbbf24; }
+    .crit    { color: #f87171; }
   </style>
 </head>
 <body>
@@ -187,6 +201,8 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       <button class="primary" onclick="refreshAll()">↻ 刷新</button>
     </div>
   </div>
+
+  <div id="health-strip"><span style="color:#8a93a0">加载中…</span></div>
 
   <div class="tabs">
     <div class="tab active" data-view="overview" onclick="showTab('overview')">
@@ -340,6 +356,46 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       const body = await r.json();
       if (body.code !== 0) throw new Error(body.message || 'API error');
       return body.data;
+    }
+
+    // ── 共享工具函数 ────────────────────────────────────────────
+    function fmtNum(x){ return x==null?'—':Number(x).toLocaleString(); }
+    function fmtPct(x){ return x==null?'—':(x*100).toFixed(2)+'%'; }
+    function staleClass(lagDays){ if(lagDays==null) return ''; return lagDays>5?'crit':(lagDays>1?'stale':''); }
+
+    let META = null, LAST_VERSION = null;
+
+    async function metaPoll(){
+      try{
+        const r = await api('/admin/dashboard-meta');
+        META = r;
+        renderHealthStrip(META);
+        const v = JSON.stringify(META.version);
+        if(v !== LAST_VERSION){ LAST_VERSION = v; onVersionChanged(); }
+      }catch(e){ renderHealthStripError(); }
+    }
+
+    function onVersionChanged(){
+      if(typeof refreshAll==='function') refreshAll();
+    }
+
+    function renderHealthStrip(m){
+      const a = m.alerts||{}; const fr = m.freshness||{};
+      const lag = fr.market_lag_days;
+      const lastRun = m.last_pipeline_run;
+      const el = document.getElementById('health-strip');
+      if(!el) return;
+      el.innerHTML =
+        '<span>账户 NAV <b>' + fmtNum(m.account_nav) + '</b></span>' +
+        '<span>行情 <span class="' + staleClass(lag) + '">' + (fr.market_latest||'—') + (lag!=null?' ('+lag+'d)':'') + '</span></span>' +
+        '<span>管线 <span class="dot ' + (lastRun&&lastRun.status==='ok'?'ok':'bad') + '"></span>' + (lastRun?lastRun.valid_date:'—') + '</span>' +
+        '<span class="' + (a.critical?'crit':'') + '">告警 ' + (a.critical||0) + '🔴 / ' + (a.warn||0) + '🟡</span>' +
+        '<span style="color:#8a93a0">as-of ' + (m.timestamp||'') + '</span>';
+    }
+
+    function renderHealthStripError(){
+      const el=document.getElementById('health-strip');
+      if(el) el.innerHTML='<span class="crit">⚠ dashboard-meta 不可达</span>';
     }
 
     function fmt(n, opts = {}) {
@@ -833,7 +889,11 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       document.getElementById('api-key-input').focus();
     } else {
       refreshAll();
-      setInterval(refreshAll, 60000);
+      // Primary refresh driver: meta poll every 15s; version change triggers analytics refresh.
+      // Safety fallback: analytics also refresh every 120s in case meta polling stalls.
+      metaPoll();
+      setInterval(metaPoll, 15000);
+      setInterval(refreshAll, 120000);
     }
   </script>
 </body>
