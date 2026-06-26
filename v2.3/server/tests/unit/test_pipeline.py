@@ -1,5 +1,5 @@
 """StrategyPipeline 集成测试（用真实 SQLite + 真实 Parquet + 内联策略）"""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -254,18 +254,101 @@ def test_pipeline_idempotent_same_date_no_dupes(setup):
         assert len(orders) == 1, f"幂等失效：第二次跑后 orders 应该 1 条，实际 {len(orders)}"
 
 
+def test_pipeline_rerun_preserves_settled_orders_no_orphan(setup):
+    """Regression（2026-06 孤儿成交事故）：已结算订单不可被重算删除。
+
+    复现链路：order A 收到成交回报 → settle() 写 Trade(A)、置 A=FILLED。之后 pipeline
+    重算同一 valid_date → 旧版 _clear_for_date 把 A 删了 → Trade(A) 成孤儿；同时
+    aggregate() 生成新 uuid order B（PENDING），客户端永不针对 B 回报 → SELL 永久卡
+    PENDING。修复后：该日已结算 → 整轮重算跳过，A 与其 trade 原样保留，不重生成 order。
+    """
+    from app.models import Trade
+    from app.services.ops_monitor import OpsMonitorService
+
+    pipeline, sf, store, yaml_path = setup
+    _write_yaml(yaml_path, {
+        "account_groups": [{
+            "group_id": "real_A",
+            "qmt_account_id": "X",
+            "strategies": [{"strategy_id": "always_buy", "virtual_initial_cash": 100000}],
+        }],
+    })
+
+    # 第一次跑：生成 order A
+    pipeline.run(20260430)
+    with sf() as s:
+        orders = s.query(Order).all()
+        assert len(orders) == 1
+        order_a = orders[0].order_id
+
+    # 模拟成交回报：写 trade + 标记 FILLED（等价 settle() 的落库效果）
+    with sf() as s:
+        s.add(Trade(order_id=order_a, filled_quantity=100, filled_price=10.0,
+                    filled_time="2026-04-30T09:15:00", status="FILLED",
+                    received_at=_now()))
+        s.get(Order, order_a).status = "FILLED"
+        s.commit()
+
+    # 第二次跑同一 valid_date：必须保留已结算的 order A
+    summary2 = pipeline.run(20260430)
+    assert summary2.get("skipped") == "already_settled"
+
+    with sf() as s:
+        # order A 仍在（没被删）→ 其 trade 非孤儿
+        assert s.get(Order, order_a) is not None, \
+            "已结算的 order 被重算删除 → trade 成孤儿"
+        # 没有为同一日重生成重复 order
+        all_orders = s.query(Order).filter(Order.valid_date == "20260430").all()
+        assert len(all_orders) == 1, \
+            f"重算应跳过、不该重生成 order，实际 {len(all_orders)} 条"
+
+    # orphan_fills 必须为 0（任务验收口径）
+    orphans = OpsMonitorService(sf).orphan_fills(lookback_days=3650)
+    assert orphans == [], f"重算后出现孤儿成交: {orphans}"
+
+
+def test_clear_for_date_preserves_settled_orders(setup):
+    """_clear_for_date（/admin/clear-state 的实现）只删未结算单，保留已结算单。
+
+    保护手动 clear-state 路径：操作员清某日时不应连带删掉已收到成交回报的订单。
+    """
+    from app.models import Trade
+
+    pipeline, sf, store, yaml_path = setup
+    with sf() as s:
+        s.add(Order(order_id="settled-1", account_group="real_A", symbol="600519.SH",
+                    direction="SELL", quantity=100, limit_price=10.0,
+                    valid_date="20260430", status="FILLED", created_at=_now()))
+        s.add(Order(order_id="pending-1", account_group="real_A", symbol="000001.SZ",
+                    direction="BUY", quantity=100, limit_price=10.0,
+                    valid_date="20260430", status="PENDING", created_at=_now()))
+        s.add(Trade(order_id="settled-1", filled_quantity=100, filled_price=10.0,
+                    filled_time="2026-04-30T09:15:00", status="FILLED", received_at=_now()))
+        s.commit()
+
+    cleared = pipeline._clear_for_date("20260430")
+
+    with sf() as s:
+        assert s.get(Order, "settled-1") is not None, "已结算 order 不该被 clear 删除"
+        assert s.get(Order, "pending-1") is None, "未结算 PENDING order 应被 clear 删除"
+    assert cleared["orders"] == 1, "只应删除 pending-1 这一条"
+    assert cleared.get("preserved_settled") == 1
+
+
 def test_pipeline_blacklist_filters_strategy(setup):
     """pipeline 应自动从过去 N 天 REJECTED orders 提取黑名单，传给 ctx。"""
     from app.models import Order as OrderRow
 
     pipeline, sf, store, yaml_path = setup
 
-    # 注入历史 REJECTED：模拟 600519.SH 之前被 QMT 拒过
+    # 注入历史 REJECTED：模拟 600519.SH 之前被 QMT 拒过。
+    # 日期必须相对今天（黑名单 cutoff = now - 30 天），写死月份会随时间滑出窗口。
+    recent = (datetime.now() - timedelta(days=3)).strftime("%Y%m%d")
     with sf() as s:
         s.add(OrderRow(
             order_id="hist-rej-1", account_group="real_A",
             symbol="600519.SH", direction="BUY", quantity=100, limit_price=10.0,
-            valid_date="20260501", status="REJECTED", created_at=_now(),
+            valid_date=recent, status="REJECTED", created_at=_now(),
         ))
         s.commit()
 

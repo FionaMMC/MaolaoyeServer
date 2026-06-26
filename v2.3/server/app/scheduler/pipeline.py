@@ -10,7 +10,7 @@ from typing import Type
 import yaml
 from sqlalchemy import delete, select
 
-from app.models import InstanceState, Order, OrderSignalMap, RawSignal
+from app.models import InstanceState, Order, OrderSignalMap, RawSignal, Trade
 from app.services.aggregate import AggregateService, TaggedSignal
 from app.services.blacklist import BlacklistService
 from app.services.orders_queue import OrdersQueueService
@@ -104,6 +104,22 @@ class StrategyPipeline:
                 "skipped": "stale_market_data",
                 "latest_market_date": latest, "trade_date": trade_date,
                 "staleness_days": stale,
+            }
+
+        # 00b. 已结算护栏（2026-06 孤儿成交事故根因）：该 valid_date 已收到成交回报
+        #      → 绝不重算。重算会先 _clear_for_date 删掉已结算订单 → 其 trades 变孤儿；
+        #      再 aggregate 生成新 uuid 订单（PENDING），客户端永不针对它回报 → SELL
+        #      永久卡 PENDING。何况该日竞价已成交，重算策略也无意义。直接跳过，保持原状。
+        settled = self._settled_order_ids(valid_date_str)
+        if settled:
+            logger.error(
+                "pipeline_skipped already_settled valid_date=%s settled_orders=%d "
+                "— 该日订单已收到成交回报，拒绝重算以免孤儿化 trades / 重生 PENDING",
+                valid_date_str, len(settled))
+            return {
+                "signals": 0, "passed": 0, "orders": 0, "instances": 0,
+                "skipped": "already_settled", "valid_date": valid_date_str,
+                "settled_orders": len(settled),
             }
 
         # 0a. 自动晋升：把最近 REJECTED 的 symbol 持久化到 risk_blacklist 表
@@ -321,40 +337,75 @@ class StrategyPipeline:
             session.commit()
         return result
 
+    def _settled_order_ids(self, valid_date: str) -> set[str]:
+        """该 valid_date 下已收到成交回报（trades 表有记录）的 order_id 集合。
+
+        "已结算" = 客户端已针对该订单回报成交。删这种订单会孤儿化其 trades，
+        所以它既是 run() 重算护栏的判据，也是 _clear_for_date 的保留名单。
+        """
+        with self.session_factory() as session:
+            return {
+                r[0]
+                for r in session.execute(
+                    select(Order.order_id)
+                    .where(Order.valid_date == valid_date)
+                    .where(Order.order_id.in_(select(Trade.order_id)))
+                ).all()
+            }
+
     def _clear_for_date(self, valid_date: str) -> dict[str, int]:
         """清除指定 valid_date 的 raw_signals + orders + order_signal_map。
 
         order_signal_map 通过 raw_signals 的 signal_id 反查删除。
+
+        例外：已结算订单（trades 表有记录）一律保留——删它会让其 trades 变孤儿。
+        其关联的 raw_signals/order_signal_map 一并保留，保持账面可追溯。
         """
         with self.session_factory() as session:
-            sig_ids = [
+            # 受保护订单（已结算）+ 其关联 signal_id —— 不删。两个集合都很小
+            # （只含本日已成交的少数单），用作排除名单，避免对全日 signal 物化大 IN 列表。
+            settled_order_ids = {
                 r[0]
                 for r in session.execute(
-                    select(RawSignal.signal_id).where(RawSignal.valid_date == valid_date)
+                    select(Order.order_id)
+                    .where(Order.valid_date == valid_date)
+                    .where(Order.order_id.in_(select(Trade.order_id)))
                 ).all()
-            ]
-            order_ids = [
-                r[0]
-                for r in session.execute(
-                    select(Order.order_id).where(Order.valid_date == valid_date)
-                ).all()
-            ]
-            mapping_count = 0
-            if sig_ids:
-                mapping_count = session.execute(
-                    delete(OrderSignalMap).where(OrderSignalMap.signal_id.in_(sig_ids))
-                ).rowcount or 0
-            sig_count = session.execute(
-                delete(RawSignal).where(RawSignal.valid_date == valid_date)
-            ).rowcount or 0
-            order_count = session.execute(
-                delete(Order).where(Order.valid_date == valid_date)
-            ).rowcount or 0
+            }
+            protected_sig_ids: set[str] = set()
+            if settled_order_ids:
+                protected_sig_ids = {
+                    r[0]
+                    for r in session.execute(
+                        select(OrderSignalMap.signal_id)
+                        .where(OrderSignalMap.order_id.in_(settled_order_ids))
+                    ).all()
+                }
+
+            # 本日全部 signal 用子查询表达（不物化成 Python 列表 → 不撞 SQLite IN 上限）。
+            # 必须先删 OSM（其 WHERE 引用 raw_signals），再删 raw_signals。
+            date_sig_ids = select(RawSignal.signal_id).where(
+                RawSignal.valid_date == valid_date)
+            osm_stmt = delete(OrderSignalMap).where(
+                OrderSignalMap.signal_id.in_(date_sig_ids))
+            sig_stmt = delete(RawSignal).where(RawSignal.valid_date == valid_date)
+            order_stmt = delete(Order).where(Order.valid_date == valid_date)
+            if protected_sig_ids:
+                osm_stmt = osm_stmt.where(
+                    OrderSignalMap.signal_id.notin_(protected_sig_ids))
+                sig_stmt = sig_stmt.where(RawSignal.signal_id.notin_(protected_sig_ids))
+            if settled_order_ids:
+                order_stmt = order_stmt.where(Order.order_id.notin_(settled_order_ids))
+
+            mapping_count = session.execute(osm_stmt).rowcount or 0
+            sig_count = session.execute(sig_stmt).rowcount or 0
+            order_count = session.execute(order_stmt).rowcount or 0
             session.commit()
         return {
             "raw_signals": sig_count,
             "orders": order_count,
             "order_signal_map": mapping_count,
+            "preserved_settled": len(settled_order_ids),
         }
 
     def reset_instance_states(self) -> dict[str, dict]:

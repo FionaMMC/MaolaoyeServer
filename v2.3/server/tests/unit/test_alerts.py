@@ -57,3 +57,22 @@ def test_pipeline_no_snapshot_no_signal_still_flagged_critical(sf):
     alerts = eng.run_checks(today="20260626")
     crit = [a for a in alerts if a.category == "pipeline" and a.severity == "critical"]
     assert crit
+
+
+def test_alert_engine_flags_stale_pending_and_orphan_fills(sf):
+    from app.models import Order, Trade
+    with sf() as s:
+        s.add(Order(order_id="zombie", account_group="paper_v20h", symbol="600330.SH",
+                    direction="SELL", quantity=100, limit_price=1.0, valid_date="20260622",
+                    status="PENDING", created_at="2026-06-22T16:00:00+08:00"))
+        s.add(Trade(order_id="ghost", filled_quantity=100, filled_price=10.0,
+                    filled_time="2026-06-24T15:10:01+08:00", status="FILLED",
+                    received_at="2026-06-24T15:10:01+08:00"))
+        s.commit()
+    eng = AlertEngine(OpsMonitorService(sf), instances=["paper_v20h_v20h_v1_3"])
+    alerts = eng.run_checks(today="20260626")
+    cats = {a.category for a in alerts}
+    assert "stale_pending" in cats
+    assert "orphan_fills" in cats
+    assert all(a.severity == "warn" for a in alerts
+               if a.category in ("stale_pending", "orphan_fills"))

@@ -62,3 +62,45 @@ def test_data_freshness_reports_lag(sf, tmp_path):
     fr = svc.data_freshness(today="20260608", probe=("indexes", "000852.SH"))
     assert fr["market_latest"] == 20260430
     assert fr["market_lag_days"] == 39
+
+
+# ── 僵尸挂单 / 孤儿成交（幽灵卖单监控盲区，2026-06 复发）─────────────────
+from app.models import Order, Trade
+
+
+def _order(s, oid, vd, status="PENDING", direction="SELL", symbol="600330.SH", qty=100):
+    s.add(Order(order_id=oid, account_group="paper_v20h", symbol=symbol,
+                direction=direction, quantity=qty, limit_price=1.0,
+                valid_date=vd, status=status,
+                created_at=f"{vd[:4]}-{vd[4:6]}-{vd[6:8]}T16:00:00+08:00"))
+
+
+def _trade(s, oid, received_at, qty=100, status="FILLED"):
+    s.add(Trade(order_id=oid, filled_quantity=qty, filled_price=10.0,
+                filled_time=received_at, status=status, received_at=received_at))
+
+
+def test_stale_pending_flags_old_pending_skips_fresh_and_terminal(sf):
+    with sf() as s:
+        _order(s, "old_pending", "20260622", status="PENDING")     # 4 天前，僵尸
+        _order(s, "fresh_pending", "20260626", status="PENDING")   # 今天发的，未到期，不算
+        _order(s, "old_filled", "20260622", status="FILLED")       # 已成交，不算
+        s.commit()
+    svc = OpsMonitorService(sf)
+    stale = svc.stale_pending_orders(max_age_days=2, today="20260626")
+    ids = {o["order_id"] for o in stale}
+    assert ids == {"old_pending"}
+    assert stale[0]["age_days"] == 4
+
+
+def test_orphan_fills_flags_unmatched_recent_skips_matched_and_stale(sf):
+    with sf() as s:
+        _order(s, "real_order", "20260623", status="PENDING")
+        _trade(s, "real_order", "2026-06-24T15:10:01+08:00")            # 有父订单，不算
+        _trade(s, "ghost_recent", "2026-06-24T15:10:01+08:00")         # 无父订单 + 近期，孤儿
+        _trade(s, "ghost_old", "2026-06-01T15:10:01+08:00")            # 无父订单但超出窗口，不算
+        s.commit()
+    svc = OpsMonitorService(sf)
+    orphans = svc.orphan_fills(lookback_days=7, today="20260626")
+    ids = {o["order_id"] for o in orphans}
+    assert ids == {"ghost_recent"}

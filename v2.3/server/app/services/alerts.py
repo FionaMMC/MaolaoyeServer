@@ -34,12 +34,15 @@ class DashboardSink:
 
 class AlertEngine:
     def __init__(self, ops, instances: list[str], sinks: list[AlertSink] | None = None,
-                 overnight_threshold: float = 0.5, market_lag_warn: int = 3):
+                 overnight_threshold: float = 0.5, market_lag_warn: int = 3,
+                 pending_max_age_days: int = 2, orphan_lookback_days: int = 7):
         self.ops = ops
         self.instances = instances
         self.sinks = sinks or []
         self.overnight_threshold = overnight_threshold
         self.market_lag_warn = market_lag_warn
+        self.pending_max_age_days = pending_max_age_days
+        self.orphan_lookback_days = orphan_lookback_days
 
     def run_checks(self, today: str | None = None) -> list[Alert]:
         alerts: list[Alert] = []
@@ -73,6 +76,24 @@ class AlertEngine:
                 category="pipeline",
                 message=f"管线缺失运行：{', '.join(r['valid_date'] for r in missing)}",
                 as_of=last["valid_date"], detail={"missing": [r["valid_date"] for r in missing]}))
+        stale = self.ops.stale_pending_orders(self.pending_max_age_days, today=today)
+        if stale:
+            earliest = stale[0]
+            alerts.append(Alert(
+                id=f"stale_pending:{earliest['valid_date']}:{len(stale)}", severity="warn",
+                category="stale_pending",
+                message=f"{len(stale)} 笔挂单僵在 PENDING（最早 {earliest['valid_date']}，已 {earliest['age_days']} 天）—— 成交回报 order_id 对不上，卖单收不到 fill",
+                as_of=earliest["valid_date"],
+                detail={"count": len(stale), "orders": stale[:20]}))
+        orphans = self.ops.orphan_fills(self.orphan_lookback_days, today=today)
+        if orphans:
+            last_orph = orphans[-1]
+            alerts.append(Alert(
+                id=f"orphan_fills:{last_orph['received_at'][:10]}:{len(orphans)}", severity="warn",
+                category="orphan_fills",
+                message=f"近 {self.orphan_lookback_days} 天 {len(orphans)} 笔成交 order_id 对不上任何订单（孤儿成交，client↔server 闭环断裂）",
+                as_of=last_orph["received_at"],
+                detail={"count": len(orphans), "sample": orphans[:20]}))
         for s in self.sinks:
             s.emit(alerts)
         return alerts

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import date, datetime, timedelta
 from sqlalchemy import select, desc
-from app.models import PerfSnapshot, RawSignal, Order, InstanceState
+from app.models import PerfSnapshot, RawSignal, Order, InstanceState, Trade
 
 
 def _d(yyyymmdd: str) -> date:
@@ -105,3 +105,46 @@ class OpsMonitorService:
         latest = self.store.latest_date(*probe) if self.store else None
         lag = (t - _d(str(latest))).days if latest else None
         return {"market_latest": latest, "market_lag_days": lag, "probe": f"{probe[0]}/{probe[1]}"}
+
+    def stale_pending_orders(self, max_age_days: int = 2,
+                             today: str | None = None) -> list[dict]:
+        """status=PENDING 且 valid_date 早于 today-max_age_days 的僵尸挂单（升序）。
+
+        模拟盘成交回报 order_id 对不上时，server 真实下的卖单拿不到匹配 fill，
+        永远停在 PENDING：既污染订单/告警视图，又意味着 vol_target 减仓没在虚拟
+        账本兑现。背靠 valid_date 而非 created_at——挂单过了竞价日就不可能再成交。
+        """
+        end = _d(today) if today else datetime.now().date()
+        cutoff = (end - timedelta(days=max_age_days)).strftime("%Y%m%d")
+        with self.sf() as s:
+            rows = s.execute(
+                select(Order.order_id, Order.account_group, Order.symbol,
+                       Order.direction, Order.quantity, Order.valid_date)
+                .where(Order.status == "PENDING", Order.valid_date <= cutoff)
+                .order_by(Order.valid_date)
+            ).all()
+        return [{"order_id": oid, "account_group": ag, "symbol": sym,
+                 "direction": direction, "quantity": qty, "valid_date": vd,
+                 "age_days": (end - _d(vd)).days}
+                for oid, ag, sym, direction, qty, vd in rows]
+
+    def orphan_fills(self, lookback_days: int = 7,
+                     today: str | None = None) -> list[dict]:
+        """近 lookback_days 天 order_id 在 orders 表无父订单的成交（孤儿成交）。
+
+        client↔server 的 order_id 闭环断裂的直接证据。限定时间窗，避免历史存量
+        孤儿（模拟盘累计上千笔）长期淹没告警，只反映"当下闭环是否还在断"。
+        """
+        end = _d(today) if today else datetime.now().date()
+        cutoff = (end - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        with self.sf() as s:
+            order_ids = {x[0] for x in s.execute(select(Order.order_id)).all()}
+            rows = s.execute(
+                select(Trade.order_id, Trade.filled_quantity,
+                       Trade.filled_price, Trade.received_at)
+                .where(Trade.received_at >= cutoff)
+                .order_by(Trade.received_at)
+            ).all()
+        return [{"order_id": oid, "filled_quantity": q, "filled_price": px,
+                 "received_at": ra}
+                for oid, q, px, ra in rows if oid not in order_ids]
