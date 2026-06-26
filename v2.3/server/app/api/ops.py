@@ -57,7 +57,8 @@ async def dashboard_meta(ops: OpsMonitorService = Depends(get_ops_monitor),
     for inst, d, nav in rows:
         navs.setdefault(inst, (d, nav))
     runs = ops.pipeline_runs(5)
-    last_run = next((r for r in reversed(runs) if r["status"] == "ok"), None)
+    # no_signal（有快照无信号）也算管线跑过——周更策略非调仓日不能算"最近运行=几天前"
+    last_run = next((r for r in reversed(runs) if r["status"] in ("ok", "no_signal")), None)
     return APIResponse[dict](code=0, message="ok", data={
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "freshness": fr,

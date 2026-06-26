@@ -43,12 +43,15 @@ def test_pipeline_runs_marks_missing_weekday(sf):
                         direction="SELL", quantity=100, reference_price=1.0,
                         price_offset=0.0, limit_price=1.0, valid_date="20260528",
                         signal_time="2026-05-28T16:00:00+08:00", precheck_status="PASS"))
+        # 周更策略：0529 这天只标了 NAV 快照（管线确实跑了），但没有调仓信号
+        _snap(s, inst, "20260529", 1_000_000, 0.0, {"600000.SH": 100})
         s.commit()
     svc = OpsMonitorService(sf)
     runs = svc.pipeline_runs(lookback_days=4, today="20260601")
     by = {r["valid_date"]: r for r in runs}
-    assert by["20260528"]["status"] == "ok"
-    assert by["20260529"]["status"] == "missing"
+    assert by["20260528"]["status"] == "ok"          # 有信号 → 正常
+    assert by["20260529"]["status"] == "no_signal"   # 有快照无信号 → 管线跑了但没调仓，非缺失
+    assert by["20260601"]["status"] == "missing"     # 既无信号又无快照 → 真缺失
 
 def test_data_freshness_reports_lag(sf, tmp_path):
     import pandas as pd

@@ -63,6 +63,15 @@ class OpsMonitorService:
         return out
 
     def pipeline_runs(self, lookback_days: int = 14, today: str | None = None) -> list[dict]:
+        """逐交易日推断管线是否跑过。
+
+        关键：run-detection 以 perf_snapshot（每个交易日收盘标 NAV 的心跳）为准，
+        而非 raw_signals。周更策略只在调仓日发信号，非调仓交易日零信号是常态——
+        但只要当天写了快照，管线就确实跑过。于是三态：
+          ok        有信号（跑了且调仓）
+          no_signal 无信号但有快照（跑了，当天没调仓）—— 不是缺失，不该告警
+          missing   无信号且无快照（管线真没跑）—— 唯一触发 critical 的状态
+        """
         from sqlalchemy import func
         end = _d(today) if today else datetime.now().date()
         days = [(end - timedelta(days=k)) for k in range(lookback_days + 1)]
@@ -73,10 +82,20 @@ class OpsMonitorService:
                 weekday = dd.isoweekday() <= 5
                 sig = s.execute(select(RawSignal.signal_time)
                                 .where(RawSignal.valid_date == vd).limit(1)).first()
+                snap = s.execute(select(PerfSnapshot.date)
+                                 .where(PerfSnapshot.date == vd).limit(1)).first()
                 norders = s.execute(select(func.count()).select_from(Order)
                                     .where(Order.valid_date == vd)).scalar() or 0
-                status = "weekend" if not weekday else ("ok" if sig else "missing")
+                if not weekday:
+                    status = "weekend"
+                elif sig:
+                    status = "ok"
+                elif snap:
+                    status = "no_signal"
+                else:
+                    status = "missing"
                 out.append({"valid_date": vd, "weekday": weekday, "status": status,
+                            "snapshot": bool(snap),
                             "signal_time": sig[0] if sig else None, "orders": int(norders)})
         return out
 
