@@ -13,6 +13,15 @@ def _now():
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
+def _recent_date(days_ago: int = 3) -> str:
+    """A valid_date inside the default 30-day lookback window, anchored to *now*.
+
+    BlacklistService 的 cutoff 是 datetime.now() - lookback，所以测试注入的拒单日期
+    必须相对今天、而非写死某个月份——否则随着时间推移会滑出窗口、测试失效。
+    """
+    return (datetime.now() - timedelta(days=days_ago)).strftime("%Y%m%d")
+
+
 @pytest.fixture
 def sf(tmp_path: Path):
     engine = make_engine(f"sqlite:///{tmp_path}/t.db")
@@ -47,8 +56,8 @@ def test_blacklist_skips_non_rejected(sf):
 
 
 def test_blacklist_collects_rejected_symbols(sf):
-    _add_order(sf, symbol="600001.SH", status="REJECTED", valid_date="20260507", order_id="a")
-    _add_order(sf, symbol="600002.SH", status="REJECTED", valid_date="20260507", order_id="b")
+    _add_order(sf, symbol="600001.SH", status="REJECTED", valid_date=_recent_date(), order_id="a")
+    _add_order(sf, symbol="600002.SH", status="REJECTED", valid_date=_recent_date(), order_id="b")
 
     svc = BlacklistService(sf)
     assert svc.compute() == {"600001.SH", "600002.SH"}
@@ -56,9 +65,9 @@ def test_blacklist_collects_rejected_symbols(sf):
 
 def test_blacklist_dedup_same_symbol(sf):
     """同一 symbol 多次 REJECTED 还是只算一个 entry。"""
-    _add_order(sf, symbol="600001.SH", status="REJECTED", valid_date="20260507", order_id="a")
-    _add_order(sf, symbol="600001.SH", status="REJECTED", valid_date="20260508", order_id="b")
-    _add_order(sf, symbol="600001.SH", status="REJECTED", valid_date="20260509", order_id="c")
+    _add_order(sf, symbol="600001.SH", status="REJECTED", valid_date=_recent_date(3), order_id="a")
+    _add_order(sf, symbol="600001.SH", status="REJECTED", valid_date=_recent_date(2), order_id="b")
+    _add_order(sf, symbol="600001.SH", status="REJECTED", valid_date=_recent_date(1), order_id="c")
 
     svc = BlacklistService(sf)
     assert svc.compute() == {"600001.SH"}
@@ -66,9 +75,9 @@ def test_blacklist_dedup_same_symbol(sf):
 
 def test_blacklist_min_rejections_threshold(sf):
     """min_rejections=2 时，只被拒 1 次的不入名单。"""
-    _add_order(sf, symbol="600001.SH", status="REJECTED", valid_date="20260507", order_id="a")
-    _add_order(sf, symbol="600002.SH", status="REJECTED", valid_date="20260507", order_id="b")
-    _add_order(sf, symbol="600002.SH", status="REJECTED", valid_date="20260508", order_id="c")
+    _add_order(sf, symbol="600001.SH", status="REJECTED", valid_date=_recent_date(3), order_id="a")
+    _add_order(sf, symbol="600002.SH", status="REJECTED", valid_date=_recent_date(3), order_id="b")
+    _add_order(sf, symbol="600002.SH", status="REJECTED", valid_date=_recent_date(2), order_id="c")
 
     svc = BlacklistService(sf)
     assert svc.compute(min_rejections=2) == {"600002.SH"}
@@ -119,7 +128,7 @@ def test_blacklist_manual_add_and_remove(sf):
 
 def test_blacklist_compute_unions_auto_and_manual(sf):
     """compute() 返回（自动派生 ∪ 手工）的并集。"""
-    _add_order(sf, symbol="600001.SH", status="REJECTED", valid_date="20260507", order_id="a")
+    _add_order(sf, symbol="600001.SH", status="REJECTED", valid_date=_recent_date(), order_id="a")
     svc = BlacklistService(sf)
     svc.add_manual(["600002.SH"], reason="ST")
     assert svc.compute() == {"600001.SH", "600002.SH"}
@@ -129,9 +138,9 @@ def test_blacklist_auto_promote_persists_rejected(sf):
     """auto_promote 把过去 REJECTED 的 symbol 永久存进 risk_blacklist 表。"""
     from app.models import RiskBlacklistEntry
 
-    _add_order(sf, symbol="600001.SH", status="REJECTED", valid_date="20260507", order_id="a")
-    _add_order(sf, symbol="600002.SH", status="REJECTED", valid_date="20260507", order_id="b")
-    _add_order(sf, symbol="600003.SH", status="FILLED", valid_date="20260507", order_id="c")
+    _add_order(sf, symbol="600001.SH", status="REJECTED", valid_date=_recent_date(), order_id="a")
+    _add_order(sf, symbol="600002.SH", status="REJECTED", valid_date=_recent_date(), order_id="b")
+    _add_order(sf, symbol="600003.SH", status="FILLED", valid_date=_recent_date(), order_id="c")
 
     svc = BlacklistService(sf)
     info = svc.auto_promote()
@@ -152,7 +161,7 @@ def test_blacklist_auto_promote_persists_rejected(sf):
 def test_blacklist_auto_promote_survives_clear_state(sf):
     """关键回归：clear-state 把 orders 表清空后，黑名单仍能拿到原 REJECTED symbol。"""
     from sqlalchemy import delete
-    _add_order(sf, symbol="600001.SH", status="REJECTED", valid_date="20260507", order_id="a")
+    _add_order(sf, symbol="600001.SH", status="REJECTED", valid_date=_recent_date(), order_id="a")
     svc = BlacklistService(sf)
 
     # auto_promote 把 600001 永久化
