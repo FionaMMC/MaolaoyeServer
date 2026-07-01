@@ -41,13 +41,15 @@ def _reset_adapter_cache():
     V53Adapter._cfg = None
     V53Adapter._etf_close_bundle = None
     V53Adapter._etf_meta = None
+    V53Adapter._etf_divid = None
 
 
 # ── class attribute tests ─────────────────────────────────────────────────
 def test_adapter_class_attrs():
     from plugins.v53_adapter import V53Adapter
     assert V53Adapter.name == "v53"
-    assert V53Adapter.data_files == ["etf_close.parquet", "etf_meta.parquet"]
+    assert V53Adapter.data_files == [
+        "etf_close.parquet", "etf_meta.parquet", "etf_divid.parquet"]
 
 
 # ── 月末判断 ──────────────────────────────────────────────────────────────
@@ -694,4 +696,106 @@ def test_full_run_dry_run_returns_empty_but_logs(tmp_path, monkeypatch, caplog):
     # 但应有 DRY-RUN log
     log_msgs = [r.getMessage() for r in caplog.records]
     assert any("DRY-RUN" in m for m in log_msgs), f"no DRY-RUN log; logs={log_msgs}"
+    _reset_adapter_cache()
+
+
+# ── 后复权（总回报）建模价：修分红假跌污染波动 ─────────────────────────────
+def _divid_df(rows):
+    """rows: list of (code, ex_date_str, cash) → 分红表 DataFrame。"""
+    return pd.DataFrame(rows, columns=["code", "ex_date", "cash"]).assign(
+        ex_date=lambda d: pd.to_datetime(d["ex_date"]))
+
+
+def test_to_total_return_removes_dividend_fake_drop():
+    """除息日的账面假跌应被总回报还原：该日 pct_change ≈ 0（波动不再被污染）。"""
+    _reset_adapter_cache()
+    from plugins.v53_adapter import V53Adapter
+    dates = pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04",
+                            "2024-01-05", "2024-01-08"])
+    wide = pd.DataFrame({"bond": [100.0, 100.0, 100.0, 99.0, 99.0]}, index=dates)
+    V53Adapter._etf_divid = _divid_df([("511260.SH", "2024-01-05", 1.0)])
+
+    tr = V53Adapter()._to_total_return(wide)
+    tr_ret = tr["bond"].pct_change()
+    # 复权后除息日总回报 ≈ 0（(99+1)/100 - 1）
+    assert abs(tr_ret.loc[pd.Timestamp("2024-01-05")]) < 1e-9
+    # 对照：原始序列这一天确有 -1% 假跌
+    raw_ret = wide["bond"].pct_change()
+    assert abs(raw_ret.loc[pd.Timestamp("2024-01-05")] + 0.01) < 1e-9
+    _reset_adapter_cache()
+
+
+def test_to_total_return_leaves_nondividend_column_unchanged():
+    """无分红的列：总回报序列应逐值等于原始序列。"""
+    _reset_adapter_cache()
+    from plugins.v53_adapter import V53Adapter
+    dates = pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04"])
+    wide = pd.DataFrame({"hs300": [10.0, 10.1, 10.05]}, index=dates)
+    V53Adapter._etf_divid = _divid_df([("511260.SH", "2024-01-05", 1.0)])
+
+    tr = V53Adapter()._to_total_return(wide)
+    pd.testing.assert_series_equal(tr["hs300"], wide["hs300"], check_names=False)
+    _reset_adapter_cache()
+
+
+def test_to_total_return_noop_when_no_divid_table():
+    """分红表为空 → 原样返回（优雅退化，行为与未接入前一致）。"""
+    _reset_adapter_cache()
+    from plugins.v53_adapter import V53Adapter
+    dates = pd.to_datetime(["2024-01-02", "2024-01-03"])
+    wide = pd.DataFrame({"bond": [100.0, 99.0]}, index=dates)
+    V53Adapter._etf_divid = pd.DataFrame(columns=["code", "ex_date", "cash"])
+    tr = V53Adapter()._to_total_return(wide)
+    pd.testing.assert_frame_equal(tr, wide)
+    _reset_adapter_cache()
+
+
+def test_load_resources_divid_absent_sets_empty(tmp_path, monkeypatch):
+    """etf_divid.parquet 缺失 → _etf_divid 为空 DataFrame（不 crash，退化为不复权）。"""
+    _reset_adapter_cache()
+    import plugins.v53_adapter as adapter_mod
+    from plugins.v53_adapter import V53Adapter
+    v53dir = _make_bundle_in_tmp_dir(tmp_path, bundle_end_date="2024-04-30")
+    monkeypatch.setattr(adapter_mod, "_V53_DIR", v53dir)
+    adapter = V53Adapter()
+    adapter._load_resources()
+    assert V53Adapter._etf_divid is not None
+    assert len(V53Adapter._etf_divid) == 0
+    _reset_adapter_cache()
+
+
+def test_load_resources_loads_divid_when_present(tmp_path, monkeypatch):
+    """etf_divid.parquet 存在 → 加载并把 ex_date 解析成 datetime。"""
+    _reset_adapter_cache()
+    import plugins.v53_adapter as adapter_mod
+    from plugins.v53_adapter import V53Adapter
+    v53dir = _make_bundle_in_tmp_dir(tmp_path, bundle_end_date="2024-04-30")
+    _divid_df([("511260.SH", "2024-03-25", 0.6711)]).to_parquet(
+        v53dir / "data" / "etf_divid.parquet", index=False)
+    monkeypatch.setattr(adapter_mod, "_V53_DIR", v53dir)
+    adapter = V53Adapter()
+    adapter._load_resources()
+    assert len(V53Adapter._etf_divid) == 1
+    assert V53Adapter._etf_divid.iloc[0]["code"] == "511260.SH"
+    assert pd.api.types.is_datetime64_any_dtype(V53Adapter._etf_divid["ex_date"])
+    _reset_adapter_cache()
+
+
+def test_resolve_reference_price_unaffected_by_dividend_table(tmp_path):
+    """接入分红表后，成交/盯市参考价仍取原始 close（复权只用于建模，不污染执行）。"""
+    _reset_adapter_cache()
+    from app.storage.parquet import ParquetStore
+    from app.strategy.context import Context
+    from plugins.v53_adapter import V53Adapter
+    V53Adapter._etf_divid = _divid_df([("511260.SH", "2024-04-30", 5.0)])
+    store = ParquetStore(root=tmp_path / "parquet")
+    store.append("etfs", "511260.SH", pd.DataFrame({
+        "trade_date": [20240429, 20240430],
+        "open": [110.0, 110.0], "high": [110.0, 110.0], "low": [110.0, 110.0],
+        "close": [110.0, 109.0], "volume": [0, 0],  # 4/30 除息，账面 close 109
+    }))
+    ctx = Context("paper_v53_v53", 20240430, 0.0, {}, store)
+    price = V53Adapter()._resolve_reference_price(
+        ctx, "511260.SH", pd.Timestamp("2024-04-30"))
+    assert price == 109.0  # 原始 close，不是复权价
     _reset_adapter_cache()
