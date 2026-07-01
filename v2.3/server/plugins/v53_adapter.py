@@ -343,7 +343,8 @@ class V53Adapter(Strategy):
                     continue
                 signals.append(RawSignal(
                     symbol=code, direction="SELL", quantity=qty,
-                    reference_price=price, price_offset=-0.005,
+                    # SELL offset 必须为 0：QMT 对卖单按偏移后的限价校验会废单。
+                    reference_price=price, price_offset=0.0,
                 ))
 
         # BUY second

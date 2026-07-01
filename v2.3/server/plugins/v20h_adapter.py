@@ -338,7 +338,9 @@ class V20HAdapter(Strategy):
                 direction=direction,
                 quantity=qty,
                 reference_price=price,
-                price_offset=-0.005 if direction == "SELL" else +0.005,
+                # SELL offset 必须为 0：QMT 对卖单按偏移后的限价校验会废单，
+                # 卖不出去 → 挂 PENDING → 被扫成 EXPIRED。BUY 仍 +0.5% 保成交。
+                price_offset=0.0 if direction == "SELL" else +0.005,
             ))
 
         # 先 SELL（V20H 不要的标的中 size 减少的）
