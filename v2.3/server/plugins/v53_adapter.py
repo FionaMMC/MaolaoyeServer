@@ -29,12 +29,14 @@ class V53Adapter(Strategy):
 
     name = "v53"
     data_dir: ClassVar[Path | None] = _V53_DIR / "data"
-    data_files: ClassVar[list[str]] = ["etf_close.parquet", "etf_meta.parquet"]
+    data_files: ClassVar[list[str]] = [
+        "etf_close.parquet", "etf_meta.parquet", "etf_divid.parquet"]
 
     # class-level 缓存（首次 _load_resources 后保留）
     _cfg: ClassVar[dict | None] = None
     _etf_close_bundle: ClassVar[pd.DataFrame | None] = None
     _etf_meta: ClassVar[pd.DataFrame | None] = None
+    _etf_divid: ClassVar[pd.DataFrame | None] = None
 
     def _load_resources(self) -> None:
         """懒加载 config + bundled data。各自独立加载。"""
@@ -47,6 +49,18 @@ class V53Adapter(Strategy):
             type(self)._etf_close_bundle = df
         if type(self)._etf_meta is None:
             type(self)._etf_meta = pd.read_parquet(_V53_DIR / "data" / "etf_meta.parquet")
+        if type(self)._etf_divid is None:
+            # 分红表用于把建模价转成后复权（总回报），供波动/权重估计。
+            # 本地端未推送时优雅退化为空表 → 建模价 == 原始价（不复权）。
+            divid_path = _V53_DIR / "data" / "etf_divid.parquet"
+            if divid_path.exists():
+                d = pd.read_parquet(divid_path)
+                if "ex_date" in d.columns:
+                    d["ex_date"] = pd.to_datetime(d["ex_date"])
+                type(self)._etf_divid = d
+            else:
+                type(self)._etf_divid = pd.DataFrame(
+                    columns=["code", "ex_date", "cash"])
 
     def _is_month_end(self, ctx: Context, target: pd.Timestamp) -> bool:
         """约定 B：target(执行日) 是「次月第一个交易日」吗？是 → 调仓。
@@ -134,6 +148,50 @@ class V53Adapter(Strategy):
         # 4. 只保留 v53 关心的 10 个 internal key 顺序
         keep = [k for k in ETF_KEYS if k in wide.columns]
         return wide[keep]
+
+    def _to_total_return(self, close_px: pd.DataFrame) -> pd.DataFrame:
+        """原始（不复权）close 矩阵 → 总回报（后复权）矩阵，仅供波动/权重建模。
+
+        分红除息日 close 会出现与市场无关的账面「假跌」，抬高波动估计，导致
+        inv_vol 系统性低配高分红资产（债券 511260、红利 512890 等）。这里把
+        除息现金加回后 pct_change 即为总回报，假跌消失。
+
+        注意：只影响喂给 V53Strategy 的建模价。成交/盯市走 _resolve_reference_price
+        读原始 close，本函数完全不碰它们 —— 实盘成交与券商持仓仍按不复权对账。
+
+        分红表为空/缺失 → 原样返回（优雅退化，与未接入前逐值一致）。
+        """
+        from plugins.v53.code_map import V53_KEY_TO_QMT
+
+        divid = type(self)._etf_divid
+        if divid is None or len(divid) == 0 or close_px.empty:
+            return close_px
+
+        out = close_px.copy()
+        idx = out.index
+        for key in out.columns:
+            qmt = V53_KEY_TO_QMT.get(key)
+            if qmt is None:
+                continue
+            sub = divid[divid["code"] == qmt]
+            if sub.empty:
+                continue
+            # 除息日 → 每份现金，对齐到 close 的交易日 index（非交易日的除息日忽略）
+            div_on_date = (
+                sub.set_index("ex_date")["cash"]
+                .groupby(level=0).sum()
+                .reindex(idx)
+                .fillna(0.0)
+            )
+            if div_on_date.abs().sum() == 0.0:
+                continue
+            raw = out[key]
+            prev = raw.shift(1)
+            factor = (raw + div_on_date) / prev
+            # 缺前收（首行/停牌）或前收非正 → 该日不调整
+            factor = factor.where(prev > 0, other=1.0).fillna(1.0)
+            out[key] = float(raw.iloc[0]) * factor.cumprod()
+        return out
 
     def _resolve_reference_price(
         self, ctx: Context, qmt_code: str, target: pd.Timestamp,
@@ -401,13 +459,15 @@ class V53Adapter(Strategy):
             )
             return []
 
-        # 4. 调 V53Strategy
+        # 4. 调 V53Strategy（建模用后复权总回报价，消除分红假跌对波动的污染；
+        #    执行/盯市仍用原始 close，见 _resolve_reference_price）
+        close_px_model = self._to_total_return(close_px)
         strat = V53Strategy(
             quadrants=cfg.get("quadrants"),
             method=cfg.get("algorithm", "inv_vol"),
         )
         try:
-            weights = strat.compute_targets(close_px, target)
+            weights = strat.compute_targets(close_px_model, target)
         except Exception as e:
             logger.exception("V53 compute_targets 失败: %s", e)
             return []
