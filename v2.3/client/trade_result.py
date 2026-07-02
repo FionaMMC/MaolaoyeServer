@@ -260,6 +260,10 @@ def _build_push_results(records: list[dict]) -> list[dict]:
             "filled_quantity": r["filled_quantity"],
             "filled_price":    r["filled_price"],
             "status":          r["status"],
+            # 可选字段（v2.3 服务端向后兼容）：order_id 未匹配时服务器
+            # 据此给出候选订单，恢复不用再靠猜
+            "symbol":          r.get("symbol"),
+            "direction":       r.get("direction"),
         }
         if r["filled_time"]:
             entry["filled_time"] = r["filled_time"]

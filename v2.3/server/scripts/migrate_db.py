@@ -57,6 +57,13 @@ def main() -> int:
         else:
             print("[migrate] instance_state.strategy_state already exists, skip")
 
+        # 2026-07-02 成交未匹配事故: orders.fetched_at（已拉取护栏判据）
+        if not column_exists(con, "orders", "fetched_at"):
+            print("[migrate] ALTER TABLE orders ADD fetched_at")
+            con.execute(text("ALTER TABLE orders ADD COLUMN fetched_at VARCHAR"))
+        else:
+            print("[migrate] orders.fetched_at already exists, skip")
+
         # v53 集成: instance_state.owned_symbols
         if not column_exists(con, "instance_state", "owned_symbols"):
             print("[migrate] ALTER TABLE instance_state ADD owned_symbols")

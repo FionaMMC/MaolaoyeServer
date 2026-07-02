@@ -61,6 +61,16 @@ class OrdersQueueService:
                 .order_by(Order.created_at)
             )
             rows = session.execute(stmt).scalars().all()
+            # 拉取即盖章（只记首次）：fetched_at 非空的日期不允许默认重算，
+            # 否则 order_id 换新 → 客户端次日成交回报全量 unmatched（2026-07-02 事故）。
+            now = _now_iso()
+            stamped = False
+            for r in rows:
+                if r.fetched_at is None:
+                    r.fetched_at = now
+                    stamped = True
+            if stamped:
+                session.commit()
             return [
                 OrderItem(
                     order_id=r.order_id,

@@ -2,7 +2,6 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
 
 from app.db import init_db, make_engine, make_session_factory
 from app.models import InstanceState, Order, OrderSignalMap, RawSignal, Trade
@@ -471,3 +470,46 @@ def test_settle_distinct_partial_fills_both_apply(tmp_path: Path):
         assert r.virtual_positions.get("600519.SH", 0) == 200
         # trades 表有两条不同记录
         assert len(s.query(Trade).filter_by(order_id="oid1").all()) == 2
+
+
+def test_settle_unmatched_returns_candidates_by_symbol(tmp_path: Path):
+    """unmatched 时按 (valid_date, symbol, direction, quantity) 给出候选订单，
+    把『静默丢账』变成可一键恢复（2026-07-02 事故改进）。"""
+    sf = _factory(tmp_path)
+    _seed(sf)  # oid1: 600519.SH BUY 300 PENDING @20260430
+    svc = _make_svc(sf)
+
+    resp = svc.settle("20260430", [TradeResult(
+        order_id="ghost-uuid", filled_quantity=300, filled_price=10.0,
+        status="FILLED", symbol="600519.SH", direction="BUY",
+    )])
+    assert resp.unmatched_order_ids == ["ghost-uuid"]
+    assert resp.unmatched_candidates == {"ghost-uuid": ["oid1"]}
+
+
+def test_settle_unmatched_candidates_quantity_fallback(tmp_path: Path):
+    """老客户端 payload 无 symbol/direction → 按 quantity 兜底匹配候选。"""
+    sf = _factory(tmp_path)
+    _seed(sf)
+    svc = _make_svc(sf)
+
+    resp = svc.settle("20260430", [TradeResult(
+        order_id="ghost-uuid", filled_quantity=300, filled_price=10.0,
+        status="FILLED",
+    )])
+    assert resp.unmatched_order_ids == ["ghost-uuid"]
+    assert resp.unmatched_candidates == {"ghost-uuid": ["oid1"]}
+
+
+def test_settle_unmatched_no_candidates_empty(tmp_path: Path):
+    """没有可匹配的候选时不给建议（不误导）。"""
+    sf = _factory(tmp_path)
+    _seed(sf)
+    svc = _make_svc(sf)
+
+    resp = svc.settle("20260430", [TradeResult(
+        order_id="ghost-uuid", filled_quantity=999, filled_price=10.0,
+        status="FILLED", symbol="000001.SZ", direction="SELL",
+    )])
+    assert resp.unmatched_order_ids == ["ghost-uuid"]
+    assert resp.unmatched_candidates == {}

@@ -2,7 +2,6 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import pandas as pd
 import pytest
 import yaml
 
@@ -650,3 +649,93 @@ def test_pipeline_reset_instance_states(setup):
         inst = s.get(InstanceState, "real_A_always_buy")
         assert inst.virtual_cash == 100000.0
         assert inst.virtual_positions == {}
+
+
+def test_pipeline_rerun_refuses_after_client_fetch(setup):
+    """Regression（2026-07-02 成交未匹配事故）：客户端已拉取（fetched_at 非空）的
+    valid_date 不允许默认重算——重算会换掉 order_id，客户端次日按旧 ID 回报成交
+    → 服务器全量 unmatched，成交静默不入账。"""
+    pipeline, sf, store, yaml_path = setup
+    _write_yaml(yaml_path, {
+        "account_groups": [{
+            "group_id": "real_A",
+            "qmt_account_id": "X",
+            "strategies": [{"strategy_id": "always_buy", "virtual_initial_cash": 100000}],
+        }],
+    })
+
+    pipeline.run(20260430)
+    with sf() as s:
+        orders = s.query(Order).all()
+        assert len(orders) == 1
+        order_a = orders[0].order_id
+        # 模拟客户端 GET /orders 拉取
+        s.get(Order, order_a).fetched_at = _now()
+        s.commit()
+
+    summary2 = pipeline.run(20260430)
+    assert summary2.get("skipped") == "already_fetched"
+    assert summary2.get("fetched_orders") == 1
+
+    with sf() as s:
+        # 订单未被换掉：仍是 order_a
+        orders = s.query(Order).all()
+        assert [o.order_id for o in orders] == [order_a], \
+            "已拉取的订单被重算换掉 → 次日成交回报将全量 unmatched"
+
+
+def test_pipeline_rerun_force_overrides_fetch_guard(setup):
+    """force=True 显式重算已拉取批次：允许执行（操作者承诺让客户端重新拉取），
+    摘要里带 force_regen_after_fetch 标记供审计。"""
+    pipeline, sf, store, yaml_path = setup
+    _write_yaml(yaml_path, {
+        "account_groups": [{
+            "group_id": "real_A",
+            "qmt_account_id": "X",
+            "strategies": [{"strategy_id": "always_buy", "virtual_initial_cash": 100000}],
+        }],
+    })
+
+    pipeline.run(20260430)
+    with sf() as s:
+        order_a = s.query(Order).all()[0].order_id
+        s.get(Order, order_a).fetched_at = _now()
+        s.commit()
+
+    summary2 = pipeline.run(20260430, force=True)
+    assert summary2.get("skipped") is None
+    assert summary2["orders"] == 1
+    assert summary2.get("force_regen_after_fetch") == 1
+
+    with sf() as s:
+        orders = s.query(Order).all()
+        assert len(orders) == 1
+        assert orders[0].order_id != order_a  # 确实重生成了
+
+
+def test_pipeline_settled_guard_not_bypassed_by_force(setup):
+    """force 只放行 fetched 护栏；已结算护栏绝对不可绕过（删已结算单会孤儿化 trades）。"""
+    from app.models import Trade
+
+    pipeline, sf, store, yaml_path = setup
+    _write_yaml(yaml_path, {
+        "account_groups": [{
+            "group_id": "real_A",
+            "qmt_account_id": "X",
+            "strategies": [{"strategy_id": "always_buy", "virtual_initial_cash": 100000}],
+        }],
+    })
+
+    pipeline.run(20260430)
+    with sf() as s:
+        order_a = s.query(Order).all()[0].order_id
+        s.add(Trade(order_id=order_a, filled_quantity=100, filled_price=10.0,
+                    filled_time="2026-04-30T09:15:00", status="FILLED",
+                    received_at=_now()))
+        s.get(Order, order_a).status = "FILLED"
+        s.commit()
+
+    summary2 = pipeline.run(20260430, force=True)
+    assert summary2.get("skipped") == "already_settled"
+    with sf() as s:
+        assert s.get(Order, order_a) is not None

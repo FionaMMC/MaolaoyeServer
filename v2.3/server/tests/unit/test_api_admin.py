@@ -66,7 +66,6 @@ class TestUploadPlugin(Strategy):
 
 
 def test_upload_data_unknown_strategy(client, settings_for_test):
-    import io
     r = client.post(
         "/admin/upload-data?strategy=ghost&filename=x.parquet",
         headers=_AUTH,
@@ -78,7 +77,6 @@ def test_upload_data_unknown_strategy(client, settings_for_test):
 
 
 def test_upload_data_no_auth(client):
-    import io
     r = client.post(
         "/admin/upload-data?strategy=any&filename=x.parquet",
         files={"file": ("x.parquet", b"data", "application/octet-stream")},
@@ -113,3 +111,26 @@ class StatusPlugin(Strategy):
     files = body["data"]["files"]
     assert {f["filename"] for f in files} == {"a.parquet", "b.parquet"}
     assert all(f["exists"] is False for f in files)   # 啥都没上传过
+
+
+def test_admin_run_pipeline_force_passthrough(client):
+    """force=true 必须透传到 pipeline.run(force=True)（2026-07-02 事故：
+    重算已拉取批次需要显式 force）。"""
+    from app.dependencies import get_strategy_pipeline
+
+    calls = {}
+
+    class _SpyPipeline:
+        def run(self, trade_date, force=False):
+            calls["trade_date"] = trade_date
+            calls["force"] = force
+            return {"orders": 0}
+
+    client.app.dependency_overrides[get_strategy_pipeline] = lambda: _SpyPipeline()
+    try:
+        r = client.post(
+            "/admin/run-pipeline?trade_date=20260430&force=true", headers=_AUTH)
+        assert r.status_code == 200
+        assert calls == {"trade_date": 20260430, "force": True}
+    finally:
+        client.app.dependency_overrides.pop(get_strategy_pipeline, None)

@@ -9,6 +9,7 @@ import sqlite3
 from collections import defaultdict
 from datetime import datetime
 
+import requests
 from xtquant import xtconstant, xtdata
 from xtquant.xttrader import XtQuantTrader, XtQuantTraderCallback
 from xtquant.xttype import StockAccount
@@ -69,6 +70,61 @@ def _load_today_orders(trade_date: str) -> list[dict]:
             "SELECT * FROM server_orders WHERE valid_date = ?", (trade_date,)
         )
         return [dict(row) for row in cur.fetchall()]
+
+
+def _refresh_server_orders(trade_date: str) -> None:
+    """下单前强制与服务器核对当日订单批次（2026-07-02 成交未匹配事故护栏）。
+
+    服务器若在信号被拉取后重算过管线，order_id 会整批换新；按旧 ID 下单会导致
+    收盘成交回报全量 unmatched、成交无法入账。下单前重新 GET /orders：
+    - 批次一致 → 不动
+    - 批次不一致 → 用服务器最新批次整体替换本地 server_orders 当日记录（微信报警提示）
+    - 请求失败 → 报警后沿用本地快照（宁可下单不冻结；服务器端另有重算护栏兜底）
+    """
+    url     = config.SERVER_BASE_URL.rstrip("/") + "/orders"
+    headers = {"Authorization": f"Bearer {config.API_KEY}"}
+    try:
+        resp = requests.get(url, params={"date": trade_date}, headers=headers, timeout=30)
+        body = resp.json()
+    except Exception as e:
+        _wechat_alert(f"order_submit：下单前核对订单批次失败（{e}），沿用本地快照下单")
+        return
+    if body.get("code") != 0:
+        _wechat_alert(
+            f"order_submit：下单前核对返回 code={body.get('code')}，沿用本地快照下单")
+        return
+
+    fresh     = (body.get("data") or {}).get("orders") or []
+    fresh_ids = {o["order_id"] for o in fresh}
+    with sqlite3.connect(config.DB_PATH) as conn:
+        local_ids = {r[0] for r in conn.execute(
+            "SELECT order_id FROM server_orders WHERE valid_date = ?", (trade_date,))}
+
+    if fresh_ids == local_ids:
+        log.info(f"下单前核对：{trade_date} 订单批次与服务器一致（{len(local_ids)} 条）")
+        return
+
+    # 批次不一致：服务器是唯一事实源，整体替换本地当日记录
+    received_at = datetime.now().isoformat()
+    with sqlite3.connect(config.DB_PATH) as conn:
+        conn.execute("DELETE FROM server_orders WHERE valid_date = ?", (trade_date,))
+        for o in fresh:
+            conn.execute("""
+                INSERT OR IGNORE INTO server_orders (
+                    order_id, account_group, symbol, direction,
+                    quantity, limit_price, valid_date, received_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                o["order_id"], o.get("account_group"), o.get("symbol"),
+                o.get("direction"), o.get("quantity"), o.get("limit_price"),
+                o["valid_date"], received_at,
+            ))
+        conn.commit()
+    _wechat_alert(
+        f"order_submit：{trade_date} 本地订单批次已过期（本地 {len(local_ids)} 条 vs "
+        f"服务器 {len(fresh_ids)} 条，order_id 不一致），已用服务器最新批次替换后下单。"
+        f"原因通常是服务器昨晚重算过管线。"
+    )
 
 
 def _get_already_submitted_order_ids(trade_date: str) -> set[str]:
@@ -284,6 +340,11 @@ def main():
         config.MOCK_TRADE_DATE if config.PUSH_MODE == "mock_qmt"
         else datetime.now().strftime("%Y%m%d")
     )
+
+    # 下单前强制核对批次：本地快照可能已被服务器重算作废（2026-07-02 事故）
+    if config.PUSH_MODE == "server":
+        _refresh_server_orders(trade_date)
+
     orders = _load_today_orders(trade_date)
     if not orders:
         log.info(f"{trade_date} 无 server_orders 记录，退出")

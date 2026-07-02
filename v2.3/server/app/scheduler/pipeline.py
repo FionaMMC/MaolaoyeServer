@@ -15,9 +15,8 @@ from app.services.aggregate import AggregateService, TaggedSignal
 from app.services.blacklist import BlacklistService
 from app.services.orders_queue import OrdersQueueService
 from app.services.perf import PerfService
-from app.services.precheck import PrecheckResult, PrecheckService
+from app.services.precheck import PrecheckService
 from app.storage.parquet import ParquetStore
-from app.strategy.base import RawSignal as RawSignalModel
 from app.strategy.base import Strategy
 from app.strategy.runner import StrategyRunner
 
@@ -79,11 +78,14 @@ class StrategyPipeline:
             return None
         return (_to_date(trade_date) - _to_date(latest)).days
 
-    def run(self, trade_date: int) -> dict:
+    def run(self, trade_date: int, force: bool = False) -> dict:
         """完整管线。返回执行摘要。
 
         幂等：本日（trade_date）已有 raw_signals/orders/order_signal_map 一律先清掉，
         再写新一批。重复触发不会造 dupe。
+
+        force：仅放行『已拉取』护栏（00c），操作者必须保证客户端会重新拉取信号。
+        『已结算』护栏（00b）任何情况下不可绕过。
         """
         valid_date_str = str(trade_date)
         logger.info("pipeline_start trade_date=%s", trade_date)
@@ -121,6 +123,29 @@ class StrategyPipeline:
                 "skipped": "already_settled", "valid_date": valid_date_str,
                 "settled_orders": len(settled),
             }
+
+        # 00c. 已拉取护栏（2026-07-02 成交未匹配事故根因）：客户端已 GET /orders
+        #      拉走该日订单 → 默认拒绝重算。重算会换掉 order_id，客户端不会在下单前
+        #      重新拉取 → 次日成交回报全量 unmatched，成交静默不入账。
+        #      确需重算：force=true，且操作者必须让客户端在下单前重新拉取信号。
+        fetched = self._fetched_order_ids(valid_date_str)
+        if fetched and not force:
+            logger.error(
+                "pipeline_skipped already_fetched valid_date=%s fetched_orders=%d "
+                "— 客户端已拉取该日订单，重算会换掉 order_id 导致次日成交回报全量 "
+                "unmatched。确需重算请 force=true，并务必让客户端重新拉取信号",
+                valid_date_str, len(fetched))
+            return {
+                "signals": 0, "passed": 0, "orders": 0, "instances": 0,
+                "skipped": "already_fetched", "valid_date": valid_date_str,
+                "fetched_orders": len(fetched),
+            }
+        if fetched and force:
+            logger.error(
+                "pipeline_force_regen_after_fetch valid_date=%s fetched_orders=%d "
+                "— 强制重算已拉取批次；客户端必须在下单前重新拉取信号，"
+                "否则次日成交回报无法匹配",
+                valid_date_str, len(fetched))
 
         # 0a. 自动晋升：把最近 REJECTED 的 symbol 持久化到 risk_blacklist 表
         #     这样即使后面 clear-state 清了 orders，黑名单不丢
@@ -272,6 +297,9 @@ class StrategyPipeline:
             "passed": passed_total,
             "orders": len(agg.orders),
         }
+        if fetched and force:
+            # 审计标记：这次重算换掉了已被客户端拉走的批次
+            summary["force_regen_after_fetch"] = len(fetched)
         logger.info("pipeline_done %s", summary)
         return summary
 
@@ -350,6 +378,22 @@ class StrategyPipeline:
                     select(Order.order_id)
                     .where(Order.valid_date == valid_date)
                     .where(Order.order_id.in_(select(Trade.order_id)))
+                ).all()
+            }
+
+    def _fetched_order_ids(self, valid_date: str) -> set[str]:
+        """该 valid_date 下客户端已拉取（fetched_at 非空）的 order_id 集合。
+
+        "已拉取" = 客户端可能已按这些 order_id 下了真实委托。换掉它们的 ID
+        会让次日成交回报全量 unmatched，所以是 run() 重算护栏（00c）的判据。
+        """
+        with self.session_factory() as session:
+            return {
+                r[0]
+                for r in session.execute(
+                    select(Order.order_id)
+                    .where(Order.valid_date == valid_date)
+                    .where(Order.fetched_at.is_not(None))
                 ).all()
             }
 

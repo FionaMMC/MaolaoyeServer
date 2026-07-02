@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Iterable
 
 from sqlalchemy import select
 
@@ -88,12 +87,23 @@ class SettlementService:
         matched = 0
         duplicate = 0
         unmatched: list[str] = []
+        unmatched_candidates: dict[str, list[str]] = {}
 
         with self.session_factory() as session:
             for result in results:
                 order = session.get(Order, result.order_id)
                 if order is None:
                     unmatched.append(result.order_id)
+                    candidates = self._find_candidates(session, trade_date, result)
+                    if candidates:
+                        unmatched_candidates[result.order_id] = candidates
+                        logger.error(
+                            "settle unmatched order_id=%s — 当日存在疑似同单候选 %s "
+                            "(symbol=%s direction=%s qty=%s)。典型成因：客户端拉取后"
+                            "管线被重算换掉了 order_id。请核对后人工重推或结算。",
+                            result.order_id, candidates,
+                            result.symbol, result.direction, result.filled_quantity,
+                        )
                     continue
 
                 # ── 幂等守卫（P0-1 / 5/12 重复结算事故）──────────────────────
@@ -152,9 +162,29 @@ class SettlementService:
             trade_date=trade_date,
             matched_count=matched,
             unmatched_order_ids=unmatched,
+            unmatched_candidates=unmatched_candidates,
         )
 
     # ── 内部 ────────────────────────────────────────────────────────────
+    @staticmethod
+    def _find_candidates(session, trade_date: str, result: TradeResult) -> list[str]:
+        """unmatched 回报的候选订单：当日同 symbol/direction/quantity 的未结算单。
+
+        老客户端 payload 不带 symbol/direction → 退化为仅按 quantity 匹配
+        （弱信号，仅供人工核对，不自动结算）。
+        """
+        stmt = (
+            select(Order.order_id)
+            .where(Order.valid_date == trade_date)
+            .where(Order.status == "PENDING")
+            .where(Order.quantity == result.filled_quantity)
+        )
+        if result.symbol:
+            stmt = stmt.where(Order.symbol == result.symbol)
+        if result.direction:
+            stmt = stmt.where(Order.direction == result.direction)
+        return [r[0] for r in session.execute(stmt).all()]
+
     def _split_and_update_state(
         self,
         session,

@@ -25,3 +25,8 @@ class Order(Base):
     bookkeeping_divergence: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="0",
     )
+
+    # 客户端首次通过 GET /orders 拉取本单的时间（2026-07-02 事故护栏）。
+    # 非空 = 客户端可能已按本 order_id 下单；重算该日会换 ID → 成交回报 unmatched，
+    # 所以 pipeline 对含已拉取订单的日期默认拒绝重算（需显式 force）。
+    fetched_at: Mapped[str | None] = mapped_column(String, nullable=True)

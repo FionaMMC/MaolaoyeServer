@@ -24,10 +24,15 @@ router = APIRouter(prefix="/admin")
 )
 async def run_pipeline_now(
     trade_date: int = Query(ge=20000101, le=99991231),
+    force: bool = Query(
+        False,
+        description="放行『已拉取』护栏强制重算。重算后必须让客户端重新拉取信号，"
+                    "否则次日成交回报无法匹配（2026-07-02 事故）。",
+    ),
     pipeline: StrategyPipeline = Depends(get_strategy_pipeline),
 ):
     """同步触发整条策略管线，返回摘要。供联测/灾备使用。"""
-    summary = pipeline.run(trade_date)
+    summary = pipeline.run(trade_date, force=force)
     return APIResponse[dict](code=0, message="ok", data=summary)
 
 
