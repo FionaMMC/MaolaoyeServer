@@ -1,8 +1,6 @@
 """持仓对账 schemas：把 Windows client 拉的 QMT 真实持仓推给 server 做 diff。"""
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from pydantic import BaseModel, Field
 
 
@@ -58,15 +56,15 @@ class ReconcileResult(BaseModel):
     diffs: list[PositionDiff] = Field(default_factory=list)
 
 
-@dataclass
-class TotalReconcileResult:
+class TotalReconcileResult(BaseModel):
     """Portfolio 级总量对账结果：Σ_instances virtual_positions[X] vs QMT[X]。"""
 
     snapshot_time: str
     n_symbols: int
     n_matched: int
     n_mismatched: int
-    mismatches: list[dict]        # [{symbol, qmt, ledger_sum, diff, per_instance:{iid:qty}}]
+    # [{symbol, qmt, ledger_sum, diff, per_instance:{iid:qty}}]
+    mismatches: list[dict] = Field(default_factory=list)
     cash_ok: bool
     ledger_cash_total: float
     qmt_cash: float
