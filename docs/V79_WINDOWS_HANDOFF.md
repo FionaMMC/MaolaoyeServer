@@ -137,10 +137,12 @@ def main():
 
     if not a.skip_upload:
         with open(latest, "rb") as f:
+            # 注意：param 是 strategy(=v79_relay，即 adapter.name，不是 v79) + filename；
+            #       multipart 字段名是 file（单数）。
             r = requests.post(f"{BASE}/admin/upload-data",
-                              params={"strategy_name":"v79","filename":"v79_target_latest.parquet"},
+                              params={"strategy":"v79_relay","filename":"v79_target_latest.parquet"},
                               headers={"Authorization":f"Bearer {KEY}"},
-                              files={"files":("v79_target_latest.parquet", f)})
+                              files={"file":("v79_target_latest.parquet", f)})
         print("upload:", r.status_code, r.text[:200])
 
 def _blend(*dicts):
@@ -153,7 +155,7 @@ if __name__ == "__main__":
     main()
 ```
 
-> **注意**：上传的 `filename` / `strategy_name=v79` 决定文件落到 server 的 `plugins/v79/data/v79_target_latest.parquet`（在 relay 的 `data_files` 白名单内）。【CONFIRM】首次上传前，先跟 server 端确认 v79 已注册（`GET /admin/...` 或问服务器侧）。
+> **注意**：上传参数 **`strategy=v79_relay`**（= adapter 的 `name`，**不是** `v79`）+ `filename` + multipart 字段 **`file`**（单数）。文件落到 server 的 `plugins/v79/data/v79_target_latest.parquet`（在 relay 的 `data_files` 白名单内）。若报 `strategy 'xxx' 未注册`，说明 server 端 v79 relay 插件还没部署——找 server 侧部署即可（`v79_relay` 注册后就通）。
 
 ## 4. 一键运行 `run_v79.bat`
 
