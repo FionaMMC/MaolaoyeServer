@@ -274,3 +274,47 @@ class ReconcileService:
                 )
                 return False
             return True
+
+    def reconcile_total(self, qmt_positions: dict[str, int], qmt_cash: float,
+                        snapshot_time: str, cash_tolerance: float = 0.05):
+        """Portfolio 级总量对账：对每个 symbol 断言 Σ_i virtual_positions[X] == QMT[X]。
+        只报警、绝不改账（归属由 settlement 血缘维护）。多个 instance 可共同持有同一
+        symbol（如 v53 + v79 都持 511260.SH），本方法只校验其和。"""
+        from app.schemas.reconcile import TotalReconcileResult
+        with self.session_factory() as session:
+            instances = session.execute(select(InstanceState)).scalars().all()
+            ledger_sum: dict[str, int] = {}
+            per_instance: dict[str, dict[str, int]] = {}
+            cash_total = 0.0
+            for inst in instances:
+                cash_total += float(inst.virtual_cash)
+                for s, q in (inst.virtual_positions or {}).items():
+                    qi = int(q)
+                    if qi <= 0:
+                        continue
+                    ledger_sum[s] = ledger_sum.get(s, 0) + qi
+                    per_instance.setdefault(s, {})[inst.instance_id] = qi
+        qmt = {s: int(q) for s, q in qmt_positions.items()
+               if int(q) > 0 and int(q) <= MAX_REASONABLE_QTY_PER_STOCK}
+        all_syms = set(ledger_sum) | set(qmt)
+        matched = 0
+        mismatches: list[dict] = []
+        for s in sorted(all_syms):
+            lg = ledger_sum.get(s, 0); qq = qmt.get(s, 0)
+            if lg == qq:
+                matched += 1
+            else:
+                mismatches.append({"symbol": s, "qmt": qq, "ledger_sum": lg,
+                                   "diff": qq - lg, "per_instance": per_instance.get(s, {})})
+        cash_ok = True
+        if cash_total > 0:
+            cash_ok = abs(qmt_cash - cash_total) / cash_total <= cash_tolerance
+        result = TotalReconcileResult(snapshot_time=snapshot_time, n_symbols=len(all_syms),
+            n_matched=matched, n_mismatched=len(mismatches), mismatches=mismatches,
+            cash_ok=cash_ok, ledger_cash_total=cash_total, qmt_cash=float(qmt_cash))
+        if mismatches or not cash_ok:
+            logger.error("reconcile_total MISMATCH: %d/%d symbols off, cash_ok=%s. mismatches=%s",
+                         len(mismatches), len(all_syms), cash_ok, mismatches[:10])
+        else:
+            logger.info("reconcile_total OK: %d symbols, ledger==QMT, cash within tol", len(all_syms))
+        return result

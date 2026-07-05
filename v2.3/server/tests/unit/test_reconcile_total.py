@@ -4,6 +4,7 @@ from pathlib import Path
 
 from app.db import init_db, make_engine, make_session_factory
 from app.models import InstanceState
+from app.services.reconcile import ReconcileService
 
 
 def _factory(tmp_path: Path):
@@ -26,3 +27,28 @@ def test_total_reconcile_result_fields():
         mismatches=[{"symbol":"511260.SH","qmt":13000,"ledger_sum":10000,"diff":3000,"per_instance":{"paper_v53_v53":10000}}],
         cash_ok=True, ledger_cash_total=2e7, qmt_cash=2e7)
     assert r.n_mismatched == 1 and r.mismatches[0]["diff"] == 3000
+
+
+def test_total_reconcile_overlap_sum_matches(tmp_path: Path):
+    sf = _factory(tmp_path)
+    _seed_instance(sf, "paper_v53_v53", 1e7, {"511260.SH": 10000}, owned=["511260.SH"])
+    _seed_instance(sf, "paper_v79_v79_relay", 1e7, {"511260.SH": 3000}, owned=["511260.SH"])
+
+    result = ReconcileService(sf).reconcile_total({"511260.SH": 13000}, 2e7, "t")
+
+    assert result.n_mismatched == 0
+    assert result.n_matched == 1
+
+
+def test_total_reconcile_mismatch_alerts_no_write(tmp_path: Path):
+    sf = _factory(tmp_path)
+    _seed_instance(sf, "paper_v53_v53", 1e7, {"511260.SH": 10000}, owned=["511260.SH"])
+
+    result = ReconcileService(sf).reconcile_total({"511260.SH": 12000}, 1e7, "t")
+
+    assert result.n_mismatched == 1
+    assert result.mismatches[0]["diff"] == 2000
+
+    with sf() as s:
+        inst = s.get(InstanceState, "paper_v53_v53")
+        assert inst.virtual_positions == {"511260.SH": 10000}
