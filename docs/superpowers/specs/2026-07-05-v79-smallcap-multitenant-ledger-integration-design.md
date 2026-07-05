@@ -39,7 +39,8 @@
 | 4 | 归属方式 | **下单血缘**（order_id → instance，via `OrderSignalMap`） | 归属在下单时定死，不做事后"认领"；成交按 order_id 精确回到下单的那个子账户 |
 | 5 | v20h legacy 模式 | **退掉**，改成普通台账实例 | legacy "claim everything else" 会吞掉别的策略持仓，是多策略下最大的雷 |
 | 6 | 资金纪律 | 每个台账固定虚拟预算，`Σ 预算 ≤ 真实可用资金` | 不引入跨策略拆 cash 的循环依赖 |
-| 7 | v7.9 启动预算 | **¥10,000,000**（与 v20h/v53 同量级），**待真实账户可用资金确认** | 若真实账户不够 3×¥10M，v7.9 降额（见 §9 O2）；spec 按 cash-agnostic 写 |
+| 7 | v7.9 启动预算 | **¥10,000,000**（与 v20h/v53 同量级）✅ 已定 | 用户确认（2026-07-05）；真实账户须注资到 3×¥10M=¥30M，go-live 前核对（O2）|
+| 8 | 防御 sleeve 标的 | **Hydra v49**（当代 Hydra，9-10 ETF 全天候）✅ 已定 | 用户确认（2026-07-05）；从同事 master vendor v49，与 v53 同 ETF 族（见 §3.5）|
 | 8 | 上线节奏 | 先在 v20h+v53 上验证新对账（应与旧结果一致），v7.9 全程 `dry_run` 到对账证明可靠；退 v20h legacy 单独设验证门 | 对账/结算层有历史伤疤（孤儿 SELL / order_id 重生成 / `_clear_for_date`），必须分阶段 |
 
 ---
@@ -109,6 +110,19 @@
 
 加第 4、5 个策略 = 加一个 plugin + 一行 instance config。无论它与既有策略 universe 是否重叠，总量对账都成立，无需任何 per-pair 工程。这是本 spec 的核心地基。
 
+### 3.5 v7.9 双重重叠 → 地基被双重印证
+
+v7.9 与既有两个策略**都**可能持有同一 symbol，取决于它处于哪个 sleeve：
+
+| v7.9 状态 | 持有 | 与谁重叠 | 重叠 symbol |
+|---|---|---|---|
+| risk-on | 全市场最小 50 只个股 | **v20h**（CSI1000 个股） | 边界微盘股（罕见但非零） |
+| **defensive** | **Hydra v49 全天候 ETF** | **v53**（同全天候 ETF 族） | `511260.SH`/`518880.SH`/`510300.SH` … **9 只重合** |
+
+第二行是硬事实：Hydra v49 与 v53 是**同一 ETF 族**（v49 9 资产 ⊂ v53 10 资产，仅差 `512890.SH` 红利）。所以 v7.9 一进防御，账户里 `511260.SH` = v53 的份额 **+** v79 的防御份额，聚合成一个 QMT 持仓。
+
+**白名单模型此处彻底不可用**（`511260.SH` 不可能同时是 v53 和 v79 的 owner）；**只有总量对账**能表达"两个台账共同持有同一 ETF、各记各的、加起来 = QMT 聚合持仓"。→ O1 选 v49 不是复杂化，而是把 Part A 的必要性从"防未来"变成"当下即需"。
+
 ---
 
 ## 4. Part B 前置 — v7.9 策略画像与审计状态（诚实标注）
@@ -117,7 +131,7 @@
 
 `round4/v7.9/baseline.py`：
 - **核心持仓**：全市场市值最小 ~50 只 A 股（TOP50，ROE>0 且同比改善 + ST/停牌过滤），**月度轮换**。
-- **周度 overlay**：T1/Aux 风控 gate，风险周把部分/全部仓位切到防御性 "Hydra" sleeve（v48 全天候的债券腿）。
+- **周度 overlay**：T1/Aux 风控 gate，风险周把部分/全部仓位切到防御性 **Hydra v49** sleeve（9-10 ETF 全天候，见 §3.5）。
 - **回测**：31.14% 年化 / 1.41 Sharpe / -22.72% maxDD（gross）；30.51% / 1.38（net，含成本）。
 
 对 relay 的含义：server 每周收到的是**已混合的最终目标**——`{50 只股票 × 各自权重 × 股票仓位比例}` + `{防御 ETF × 防御比例}`，拍平成一个 `{code: weight}`（≈1.0 减 cash buffer）。relay 不需要理解内部 gate 逻辑，只执行 diff。
@@ -309,20 +323,21 @@ account_groups:
 | 真实账户资金不够 3×¥10M 建仓 | M1 首次 v79 建仓 | 上线前确认可用资金 ≥ Σ预算；不够则 v79 降额（O2）|
 | 微盘流动性/一字板买不进 | 目标含停牌/涨停微盘 | 流动性 + 涨跌停风控；买不进的当周顺延，relay 下周 diff 自然补 |
 | 持有期个股退市 | 冻结信号选入后基本面恶化 | ST/退市 risk_blacklist 识别 + 报警；接受前向验证期暴露（审计已量化偏差小）|
-| 防御 sleeve 无可执行标的 | Hydra gate 首次触发 | **O1 上线前必须解**：把 v48 债券腿映射到真实 ETF（见 §9）|
+| 防御 sleeve 与 v53 抢账/串账 | v79 进防御，持仓与 v53 ETF 重合 | 总量对账（§3.1）+ 血缘归属；白名单模型此处不可用（§3.5）|
+| Hydra v49 权重 vs 冻结信号(v48-fwd-rate) 漂移 | 实盘防御收益偏离回测 | M1 前单独量化 v49 vs v48-fwd-rate 差异并写入 handbook（O1 残留研究债）|
 | SELL 加 offset 被 QMT 废单 | 微盘 SELL | 沿用 SELL offset 0（memory `qmt_sell_offset_zero`）|
 
 ---
 
 ## 9. 开放问题（上线前澄清）
 
-**O1 · 防御 sleeve → 可执行 ETF 映射（阻塞 M1 的 Hydra gate）**
-回测里防御腿是 v48 `output_forward_rate_bond/daily_returns.parquet`——一个**合成收益序列**，不是单只可买 ETF。实盘执行必须映射到真实 ETF（如复用 v53 的 10Y 国债 `511260.SH`，或 Hydra 实际成分）。且 Meican 审计 §四已指出这次"换源"未单独验证。
-→ **行动**：M0b 前定义防御篮子的真实 ETF 构成；本地 forward-step 输出的 `defensive` 行直接给出可买 code+weight，relay 无脑执行。Hydra gate 首次触发前必须闭环。
+**O1 · 防御 sleeve → 可执行 ETF 映射 ✅ 已定（2026-07-05）**
+定为 **Hydra v49**（`magicboom1/permenant_portfolio master v49`，9-10 ETF 全天候 inv_vol + dynamic vol-target）。注意：回测冻结信号实际引用的是 v48 `output_forward_rate_bond/daily_returns`（合成收益序列，本机没有、审计标记未验证）；实盘统一改用 **v49 当代 Hydra 真实权重**执行。
+→ **行动**：从同事 master vendor v49（`weight_methods.py`+`config.py`，仿 v53 vendor 做法，冻结不自动 sync）；Mac forward-step 每周跑 v49 算出防御 sub-weights，拍进 flat 篮子的 `defensive` 行（真实 ETF code+weight），relay 无脑执行。**残留研究债**：v49 权重 vs 冻结信号所用 v48-forward-rate 的差异，M1 前单独量化一次并写入 handbook。
 
-**O2 · 真实账户可用资金（阻塞 M1 建仓额）**
-`301300148788` 当前买力未知。三预算之和 = ¥30M。
-→ **行动**：go-live 前拉账户可用资金；≥¥30M 则 v79 ¥10M；否则按剩余买力给 v79 定额（spec 按 cash-agnostic 写）。
+**O2 · 真实账户可用资金 ✅ 预算已定 ¥10M（2026-07-05），账户注资待核**
+三预算之和 = **¥30M**。v79 定 ¥10M。
+→ **行动**：go-live 前拉 `301300148788` 可用资金，确认 ≥¥30M（v20h ¥10M 持仓 + v53 ¥10M 持仓 + v79 ¥10M 建仓）；不足则先注资，不降 v79 额。`reconcile_cash_total` 做 tripwire。
 
 **O3 · v7.9 研究侧 open items 对 go-live 的影响**
 `common.py:137` 日期 bug 使退市股在**审计**里隐形——但对**实时选股**影响是：当前 listed 股不受影响，故 forward-step 选出的当周篮子可信；bug 主要污染的是历史幸存者认证，不是前向信号。
