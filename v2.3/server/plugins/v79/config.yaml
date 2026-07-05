@@ -1,0 +1,10 @@
+# plugins/v79/config.yaml — V79 relay（外部 basket → 差分下单，thin relay）
+# 无策略计算、无月末/日历逻辑：basket 出现新 decision_date 就处理，否则空转。
+# dry_run: true → adapter run() 只 log 目标 + diff，return []，不落 last_consumed_decision_date
+# dry_run: false → 输出真实 RawSignal[]，并把 decision_date 标记为已消费（幂等）
+strategy_id: v79_relay
+cash_buffer: 0.01          # 留 1% 现金不投：防满仓 100 股舍入+手续费溢出导致最后一笔被切
+dry_run: true
+
+risk_filters:
+  liquidity_multiplier: 100
