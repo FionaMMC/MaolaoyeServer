@@ -318,3 +318,14 @@ class ReconcileService:
         else:
             logger.info("reconcile_total OK: %d symbols, ledger==QMT, cash within tol", len(all_syms))
         return result
+
+    def shadow_compare(self, qmt_positions: dict[str, int], qmt_cash: float,
+                       snapshot_time: str) -> dict:
+        """影子对比：跑 reconcile_total，返回 {consistent: bool, total: TotalReconcileResult}。
+        consistent = 台账之和逐 symbol == QMT 且 cash 在容差内。切权前每日 log，
+        连续 N 天 True 才允许把 total 变权威。"""
+        total = self.reconcile_total(qmt_positions, qmt_cash, snapshot_time)
+        consistent = (total.n_mismatched == 0 and total.cash_ok)
+        logger.info("shadow_compare: consistent=%s (mismatched=%d cash_ok=%s)",
+                    consistent, total.n_mismatched, total.cash_ok)
+        return {"consistent": consistent, "total": total}
