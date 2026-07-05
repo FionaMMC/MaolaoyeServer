@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -39,6 +40,8 @@ from app.services.reconcile import (
 from app.settings import Settings
 
 router = APIRouter(prefix="/admin")
+
+logger = logging.getLogger(__name__)
 
 
 # ── 1. /admin/orders : 完整 orders 查询 ───────────────────────────────
@@ -608,6 +611,18 @@ async def reconcile_positions(
     except ReconcileSanityCheckFailed as e:
         # 返回 422 而非 500，告诉 client 是数据校验问题而非系统故障
         raise HTTPException(status_code=422, detail=str(e))
+
+    # 影子总量对账（Plan 2 Task 4）：切权前观察窗，log-only，绝不改任何 state。
+    # 独立 try/except —— shadow 的任何异常都不得影响权威 reconcile 结果。
+    # snapshot.qmt_positions 是全账户持仓（client 每个 instance 都推同一份），
+    # 故此处即可做 portfolio 级 Σ台账 vs QMT 校验。
+    try:
+        service.shadow_compare(
+            snapshot.qmt_positions, snapshot.qmt_cash, snapshot.snapshot_time,
+        )
+    except Exception:
+        logger.exception("shadow_compare failed (non-fatal, ignored)")
+
     return APIResponse[ReconcileResult](code=0, message="ok", data=result)
 
 
