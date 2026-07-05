@@ -28,3 +28,10 @@ account_groups:
           - 513500.SH                     # sp500
           - 513100.SH                     # nasdaq
           - 512890.SH                     # dividend (红利低波100)
+
+  - group_id: paper_v79
+    qmt_account_id: "301300148788"
+    strategies:
+      - strategy_id: v79_relay
+        virtual_initial_cash: 10000000
+        owned_symbols: []     # empty: dry-run phase, claims nothing → cannot disturb v20h/v53 reconcile
