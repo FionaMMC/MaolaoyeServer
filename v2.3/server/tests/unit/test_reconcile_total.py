@@ -52,3 +52,27 @@ def test_total_reconcile_mismatch_alerts_no_write(tmp_path: Path):
     with sf() as s:
         inst = s.get(InstanceState, "paper_v53_v53")
         assert inst.virtual_positions == {"511260.SH": 10000}
+
+
+def test_cash_ok_when_account_has_far_more_cash(tmp_path: Path):
+    # 真实场景：QMT 账户现金(2e8)远超各策略台账现金之和(2e7) —— 大量未分配现金。
+    # 充足性检查应通过（cash_ok=True），positions 匹配 → shadow consistent=True。
+    sf = _factory(tmp_path)
+    _seed_instance(sf, "paper_v20h_v20h_v1_3", 1e7, {"600000.SH": 100}, owned=None)
+    _seed_instance(sf, "paper_v53_v53", 1e7, {"511260.SH": 10000}, owned=["511260.SH"])
+    svc = ReconcileService(sf)
+    r = svc.reconcile_total({"600000.SH": 100, "511260.SH": 10000}, 2e8, "t")
+    assert r.n_mismatched == 0
+    assert r.cash_ok is True
+    report = svc.shadow_compare({"600000.SH": 100, "511260.SH": 10000}, 2e8, "t")
+    assert report["consistent"] is True
+
+
+def test_cash_not_ok_when_account_cash_below_ledger(tmp_path: Path):
+    # 透支风险：Σ台账现金(2e7) 明显 > QMT 账户现金(1e6) → cash_ok=False。
+    sf = _factory(tmp_path)
+    _seed_instance(sf, "paper_v20h_v20h_v1_3", 1e7, {"600000.SH": 100}, owned=None)
+    _seed_instance(sf, "paper_v53_v53", 1e7, {"511260.SH": 10000}, owned=["511260.SH"])
+    r = ReconcileService(sf).reconcile_total({"600000.SH": 100, "511260.SH": 10000}, 1e6, "t")
+    assert r.n_mismatched == 0
+    assert r.cash_ok is False

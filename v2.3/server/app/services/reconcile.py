@@ -306,17 +306,24 @@ class ReconcileService:
             else:
                 mismatches.append({"symbol": s, "qmt": qq, "ledger_sum": lg,
                                    "diff": qq - lg, "per_instance": per_instance.get(s, {})})
+        # 现金充足性（不是相等）：QMT 账户现金通常远超各策略预算之和（存在大量未分配
+        # 现金），故校验"账户现金能否覆盖各台账占用的现金"，而非要求相等。只有当
+        # Σ台账现金 > QMT 现金（策略以为的钱比账户实有还多 → 透支风险）才判 not ok。
         cash_ok = True
         if cash_total > 0:
-            cash_ok = abs(qmt_cash - cash_total) / cash_total <= cash_tolerance
+            shortfall = cash_total - qmt_cash
+            cash_ok = shortfall <= cash_total * cash_tolerance
         result = TotalReconcileResult(snapshot_time=snapshot_time, n_symbols=len(all_syms),
             n_matched=matched, n_mismatched=len(mismatches), mismatches=mismatches,
             cash_ok=cash_ok, ledger_cash_total=cash_total, qmt_cash=float(qmt_cash))
         if mismatches or not cash_ok:
-            logger.error("reconcile_total MISMATCH: %d/%d symbols off, cash_ok=%s. mismatches=%s",
-                         len(mismatches), len(all_syms), cash_ok, mismatches[:10])
+            logger.error("reconcile_total MISMATCH: %d/%d symbols off, cash_ok=%s "
+                         "(ledger_cash=%.0f qmt_cash=%.0f). mismatches=%s",
+                         len(mismatches), len(all_syms), cash_ok,
+                         cash_total, qmt_cash, mismatches[:10])
         else:
-            logger.info("reconcile_total OK: %d symbols, ledger==QMT, cash within tol", len(all_syms))
+            logger.info("reconcile_total OK: %d symbols ledger==QMT, cash sufficient "
+                        "(ledger_cash=%.0f <= qmt_cash=%.0f)", len(all_syms), cash_total, qmt_cash)
         return result
 
     def shadow_compare(self, qmt_positions: dict[str, int], qmt_cash: float,
