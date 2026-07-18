@@ -16,6 +16,7 @@ from app.dependencies import (
     get_blacklist_service,
     get_data_upload_service,
     get_metrics_service,
+    get_parquet_store,
     get_reconcile_service,
     get_session_factory,
     get_settings,
@@ -38,6 +39,7 @@ from app.services.reconcile import (
     ReconcileService,
 )
 from app.settings import Settings
+from app.storage.parquet import ParquetStore
 
 router = APIRouter(prefix="/admin")
 
@@ -223,6 +225,118 @@ async def instance_state(
                 item["virtual_positions"] = positions
             items.append(item)
     return APIResponse[dict](code=0, message="ok", data={"count": len(items), "items": items})
+
+
+@router.get(
+    "/portfolio-overview",
+    response_model=APIResponse[dict],
+    dependencies=[Depends(verify_api_key)],
+)
+async def portfolio_overview(sf=Depends(get_session_factory)):
+    """Return every virtual strategy ledger without treating their NAV sum as account equity."""
+    with sf() as session:
+        states = session.execute(select(InstanceState)).scalars().all()
+        items = []
+        for state in states:
+            latest = session.execute(
+                select(PerfSnapshot)
+                .where(PerfSnapshot.instance_id == state.instance_id)
+                .order_by(desc(PerfSnapshot.date))
+                .limit(1)
+            ).scalar_one_or_none()
+            items.append({
+                "instance_id": state.instance_id,
+                "virtual_cash": state.virtual_cash,
+                "holdings_count": len(state.virtual_positions or {}),
+                "latest_nav": latest.nav if latest else None,
+                "latest_nav_date": latest.date if latest else None,
+                "latest_daily_return": latest.daily_return if latest else None,
+                "last_update": state.last_update,
+                "is_shadow": state.owned_symbols == [],
+            })
+
+    return APIResponse[dict](
+        code=0,
+        message="ok",
+        data={
+            "items": items,
+            "reported_virtual_nav_sum": sum(item["latest_nav"] or 0.0 for item in items),
+            "reported_virtual_nav_sum_is_account_nav": False,
+            "note": "Instances are independent virtual ledgers and must not be summed as live account NAV.",
+        },
+    )
+
+
+@router.get(
+    "/etf-performance",
+    response_model=APIResponse[dict],
+    dependencies=[Depends(verify_api_key)],
+)
+async def etf_performance(
+    instance_id: str,
+    sf=Depends(get_session_factory),
+    store: ParquetStore = Depends(get_parquet_store),
+):
+    """Current ETF exposure plus price return and portfolio contribution for one instance."""
+    with sf() as session:
+        state = session.get(InstanceState, instance_id)
+        if state is None:
+            raise HTTPException(status_code=404, detail=f"instance not found: {instance_id}")
+        latest = session.execute(
+            select(PerfSnapshot)
+            .where(PerfSnapshot.instance_id == instance_id)
+            .order_by(desc(PerfSnapshot.date))
+            .limit(1)
+        ).scalar_one_or_none()
+
+    positions = state.virtual_positions or {}
+    # V53 stores its complete ETF universe in owned_symbols. Falling back to the
+    # held symbols keeps the endpoint useful for legacy ETF instances as well.
+    symbols = state.owned_symbols if state.owned_symbols is not None else list(positions)
+    nav = latest.nav if latest else None
+    items = []
+    for symbol in symbols:
+        prices = store.read("etfs", symbol)
+        if prices.empty or "close" not in prices.columns:
+            current_price = previous_price = daily_return = None
+        else:
+            closes = prices["close"].dropna()
+            current_price = float(closes.iloc[-1]) if len(closes) else None
+            previous_price = float(closes.iloc[-2]) if len(closes) >= 2 else None
+            daily_return = (
+                round(current_price / previous_price - 1.0, 6)
+                if current_price is not None and previous_price not in (None, 0.0)
+                else None
+            )
+        quantity = int(positions.get(symbol, 0))
+        market_value = quantity * current_price if current_price is not None else None
+        weight = market_value / nav if market_value is not None and nav else None
+        contribution = (
+            round(weight * daily_return, 6)
+            if weight is not None and daily_return is not None else None
+        )
+        items.append({
+            "symbol": symbol,
+            "quantity": quantity,
+            "current_price": current_price,
+            "previous_price": previous_price,
+            "daily_return": daily_return,
+            "market_value": market_value,
+            "weight": weight,
+            "daily_contribution": contribution,
+        })
+
+    return APIResponse[dict](
+        code=0,
+        message="ok",
+        data={
+            "instance_id": instance_id,
+            "latest_nav": nav,
+            "latest_nav_date": latest.date if latest else None,
+            "items": items,
+            "note": "Contribution is current weight times the latest one-day ETF return; cost-basis returns are not available per instance.",
+        },
+    )
 
 
 # ── 5. /admin/trades ──────────────────────────────────────────────────────

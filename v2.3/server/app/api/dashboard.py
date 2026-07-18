@@ -241,6 +241,10 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         <h2>实例状态</h2>
         <div id="instance-state"><div class="loading">Loading...</div></div>
       </div>
+      <div class="card wide">
+        <h2>全部策略账本 <span class="hint">并行虚拟账本，不相加为真实账户资金</span></h2>
+        <div id="portfolio-overview"><div class="loading">Loading...</div></div>
+      </div>
     </div>
   </div>
 
@@ -294,6 +298,10 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       <div class="card wide">
         <h2>当前实例策略状态</h2>
         <div id="strategy-state"><div class="loading">Loading...</div></div>
+      </div>
+      <div class="card wide">
+        <h2>ETF 持仓与单日收益归因 <span class="hint">仅 V53 ETF 实例；归因 = 当前权重 × ETF 单日涨跌</span></h2>
+        <div id="etf-performance"><div class="loading">选择 V53 实例后加载</div></div>
       </div>
       <div class="card">
         <h2>黑名单 (合计 <span id="bl-total">-</span>)</h2>
@@ -501,10 +509,11 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     async function renderOverview() {
       const period = getPeriod();
       try {
-        const [health, summary, navData] = await Promise.all([
+        const [health, summary, navData, portfolio] = await Promise.all([
           api('/admin/health'),
           api('/admin/metrics/summary?' + selectedQuery({period})),
           api(navQuery(period)),
+          api('/admin/portfolio-overview'),
         ]);
 
         // KPIs
@@ -551,6 +560,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
             ${instHtml}
           </table>
         `;
+        renderPortfolioOverview(portfolio);
       } catch (e) {
         document.getElementById('kpis-overview').innerHTML = `<div class="error">${e.message}</div>`;
       }
@@ -786,10 +796,11 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     // ── 策略内部 ────────────────────────────────────────────────
     async function renderStrategy() {
       try {
-        const [state, bl, bk] = await Promise.all([
+        const [state, bl, bk, etfs] = await Promise.all([
           api('/admin/strategy-state?' + selectedQuery()),
           api('/admin/blacklist?lookback_days=30'),
           api('/admin/bookkeeping-divergence'),
+          api('/admin/etf-performance?' + selectedQuery()),
         ]);
 
         const stHtml = state.items.map(i => {
@@ -815,6 +826,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
             ℹ️ 仅展示当前选中实例的状态字段；字段定义由该策略版本决定。
           </p>
         `;
+        renderEtfPerformance(etfs);
 
         // 黑名单
         document.getElementById('bl-total').textContent = bl.merged_total;
@@ -862,7 +874,25 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         }
       } catch (e) {
         document.getElementById('strategy-state').innerHTML = `<div class="error">${e.message}</div>`;
+        document.getElementById('etf-performance').innerHTML = `<div class="error">${e.message}</div>`;
       }
+    }
+
+    function renderEtfPerformance(data) {
+      const rows = data.items.map(i => `<tr>
+        <td>${i.symbol}</td>
+        <td class="num">${i.quantity.toLocaleString()}</td>
+        <td class="num">${fmt(i.current_price, {dec:3})}</td>
+        <td class="num ${colorOf(i.daily_return)}">${fmt(i.daily_return, {pct:true, sign:true})}</td>
+        <td class="num">${fmt(i.market_value, {cur:true})}</td>
+        <td class="num">${fmt(i.weight, {pct:true})}</td>
+        <td class="num ${colorOf(i.daily_contribution)}">${fmt(i.daily_contribution, {pct:true, sign:true})}</td>
+      </tr>`).join('');
+      document.getElementById('etf-performance').innerHTML = `<table>
+        <tr><th>ETF</th><th class="num">持仓</th><th class="num">最新价</th><th class="num">ETF 日涨跌</th>
+            <th class="num">市值</th><th class="num">权重</th><th class="num">策略日贡献</th></tr>
+        ${rows || '<tr><td colspan="7" class="loading">此实例没有可展示的 ETF 标的</td></tr>'}
+      </table><div class="hint" style="margin-top:8px">${data.note}</div>`;
     }
 
     // ── 交易分析 ────────────────────────────────────────────────
@@ -990,6 +1020,21 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       metaPoll();
       setInterval(metaPoll, 15000);
       setInterval(refreshAll, 120000);
+    }
+
+    function renderPortfolioOverview(data) {
+      const rows = data.items.map(i => `<tr>
+        <td>${i.instance_id}${i.is_shadow ? ' <span class="badge badge-warn">shadow</span>' : ''}</td>
+        <td class="num">${fmt(i.virtual_cash, {cur:true})}</td>
+        <td class="num">${i.holdings_count}</td>
+        <td class="num">${fmt(i.latest_nav, {cur:true})}</td>
+        <td class="num ${colorOf(i.latest_daily_return)}">${fmt(i.latest_daily_return, {pct:true, sign:true})}</td>
+        <td>${i.latest_nav_date || '—'}</td>
+      </tr>`).join('');
+      document.getElementById('portfolio-overview').innerHTML = `<table>
+        <tr><th>Instance</th><th class="num">Cash</th><th class="num">持仓</th><th class="num">虚拟 NAV</th><th class="num">日收益</th><th>快照日</th></tr>
+        ${rows || '<tr><td colspan="6" class="loading">暂无实例账本</td></tr>'}
+      </table>`;
     }
 
     if (!checkAuth()) {

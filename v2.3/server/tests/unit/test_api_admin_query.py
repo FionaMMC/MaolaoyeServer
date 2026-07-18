@@ -206,6 +206,67 @@ def test_admin_instance_state_with_positions(client, settings_for_test):
     assert body["data"]["items"][0]["virtual_positions"] == {"a": 1}
 
 
+def test_portfolio_overview_does_not_present_virtual_sum_as_account_nav(client, settings_for_test):
+    from app.db import init_db, make_engine, make_session_factory
+    from app.models import InstanceState, PerfSnapshot
+
+    engine = make_engine(settings_for_test.db_url)
+    init_db(engine)
+    sf = make_session_factory(engine)
+    with sf() as s:
+        s.add(InstanceState(instance_id="live", virtual_cash=100.0,
+                            virtual_positions={}, last_update=_now()))
+        s.add(InstanceState(instance_id="shadow", virtual_cash=100.0,
+                            virtual_positions={}, owned_symbols=[], last_update=_now()))
+        s.add(PerfSnapshot(instance_id="live", date="20260717", nav=110.0,
+                           daily_return=0.1, positions_snapshot={}))
+        s.add(PerfSnapshot(instance_id="shadow", date="20260717", nav=120.0,
+                           daily_return=0.2, positions_snapshot={}))
+        s.commit()
+
+    body = client.get("/admin/portfolio-overview", headers=_AUTH).json()["data"]
+    assert body["reported_virtual_nav_sum"] == 230.0
+    assert body["reported_virtual_nav_sum_is_account_nav"] is False
+    assert next(i for i in body["items"] if i["instance_id"] == "shadow")["is_shadow"] is True
+
+
+def test_etf_performance_reports_price_return_and_portfolio_contribution(client, settings_for_test):
+    import pandas as pd
+
+    from app.db import init_db, make_engine, make_session_factory
+    from app.models import InstanceState, PerfSnapshot
+
+    engine = make_engine(settings_for_test.db_url)
+    init_db(engine)
+    sf = make_session_factory(engine)
+    with sf() as s:
+        s.add(InstanceState(instance_id="paper_v53_v53", virtual_cash=100.0,
+                            virtual_positions={"510300.SH": 10},
+                            owned_symbols=["510300.SH", "511260.SH"], last_update=_now()))
+        s.add(PerfSnapshot(instance_id="paper_v53_v53", date="20260717", nav=210.0,
+                           daily_return=0.01, positions_snapshot={"510300.SH": 10}))
+        s.commit()
+
+    etf_dir = settings_for_test.parquet_root / "market" / "daily" / "etfs"
+    etf_dir.mkdir(parents=True)
+    pd.DataFrame({"trade_date": [20260716, 20260717], "close": [10.0, 11.0]}).to_parquet(
+        etf_dir / "510300.SH.parquet", index=False
+    )
+
+    body = client.get(
+        "/admin/etf-performance?instance_id=paper_v53_v53", headers=_AUTH,
+    ).json()["data"]
+    held, unheld = body["items"]
+    assert held["symbol"] == "510300.SH"
+    assert held["daily_return"] == 0.1
+    assert held["market_value"] == 110.0
+    assert round(held["weight"], 6) == round(110.0 / 210.0, 6)
+    assert round(held["daily_contribution"], 6) == round(11.0 / 210.0, 6)
+    assert unheld["symbol"] == "511260.SH"
+    assert unheld["quantity"] == 0
+    assert unheld["daily_return"] is None
+
+
 # ── /admin/trades ──────────────────────────────────────────────
 def test_admin_trades(client, settings_for_test):
     _seed_orders(client, settings_for_test)
