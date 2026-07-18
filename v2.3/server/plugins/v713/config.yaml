@@ -1,0 +1,5 @@
+strategy_id: v713_relay
+cash_buffer: 0.01
+dry_run: true
+risk_filters:
+  liquidity_multiplier: 100
