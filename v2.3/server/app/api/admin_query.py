@@ -159,16 +159,19 @@ async def orders_summary(
 )
 async def nav_history(
     instance_id: str | None = None,
+    period: str | None = Query(None, pattern=r"^(7d|30d|90d|180d|1y|ytd|all)$"),
     limit: int = Query(60, ge=1, le=1000),
     sf=Depends(get_session_factory),
 ):
-    """返回 perf_snapshots 最近 N 个交易日的 NAV。可指定 instance_id。"""
+    """返回某实例指定时间窗内最近 N 条 NAV。"""
     with sf() as session:
         stmt = select(PerfSnapshot).order_by(
             desc(PerfSnapshot.date), PerfSnapshot.instance_id,
         )
         if instance_id:
             stmt = stmt.where(PerfSnapshot.instance_id == instance_id)
+        if period:
+            stmt = stmt.where(PerfSnapshot.date >= date_range_for_period(period))
         stmt = stmt.limit(limit)
         rows = session.execute(stmt).scalars().all()
         items = [
@@ -185,7 +188,7 @@ async def nav_history(
         ]
     return APIResponse[dict](
         code=0, message="ok",
-        data={"count": len(items), "items": items},
+        data={"instance_id": instance_id, "period": period, "count": len(items), "items": items},
     )
 
 
@@ -330,8 +333,6 @@ async def admin_health(
     upload: DataUploadService = Depends(get_data_upload_service),
 ):
     """一站式健康度：pred 新鲜度、黑名单大小、PENDING 数量、各 instance NAV。"""
-    today = datetime.now().strftime("%Y%m%d")
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
     week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d")
 
     # pred 文件新鲜度

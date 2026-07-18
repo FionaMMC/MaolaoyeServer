@@ -5,8 +5,12 @@ from app.db import make_engine, make_session_factory, init_db
 
 
 def _seed(settings):
-    eng = make_engine(settings.db_url); init_db(eng); sf = make_session_factory(eng)
+    eng = make_engine(settings.db_url)
+    init_db(eng)
+    sf = make_session_factory(eng)
     with sf() as s:
+        s.add(PerfSnapshot(instance_id="paper_v20h_v20h_v1_3", date="20260609", nav=10_500_000,
+                           daily_return=0.01, positions_snapshot=json.dumps({"510300.SH": 100})))
         s.add(PerfSnapshot(instance_id="paper_v53_v53", date="20260608", nav=9_888_426,
                            daily_return=-0.0036, positions_snapshot=json.dumps({"511260.SH": 49500})))
         s.add(PerfSnapshot(instance_id="paper_v53_v53", date="20260609", nav=16_608_072,
@@ -17,9 +21,12 @@ def _seed(settings):
 def test_dashboard_meta_and_alerts(client, settings_for_test):
     _seed(settings_for_test)
     h = {"Authorization": "Bearer TEST_KEY"}
-    meta = client.get("/admin/dashboard-meta", headers=h).json()
+    meta = client.get("/admin/dashboard-meta?instance_id=paper_v53_v53", headers=h).json()
     assert meta["code"] == 0
     assert "version" in meta["data"] and "alerts" in meta["data"]
+    assert meta["data"]["selected_instance_id"] == "paper_v53_v53"
+    assert meta["data"]["selected_instance_nav"] == {"date": "20260609", "nav": 16_608_072}
+    assert "account_nav" not in meta["data"]
     al = client.get("/admin/alerts", headers=h).json()
     cats = [a["category"] for a in al["data"]["alerts"]]
     assert "position_anomaly" in cats

@@ -44,7 +44,8 @@ async def alerts(eng: AlertEngine = Depends(get_alert_engine)):
 
 
 @router.get("/dashboard-meta", response_model=APIResponse[dict], dependencies=[Depends(verify_api_key)])
-async def dashboard_meta(ops: OpsMonitorService = Depends(get_ops_monitor),
+async def dashboard_meta(instance_id: str | None = None,
+                         ops: OpsMonitorService = Depends(get_ops_monitor),
                          eng: AlertEngine = Depends(get_alert_engine),
                          sf=Depends(get_session_factory)):
     al = eng.run_checks()
@@ -63,7 +64,11 @@ async def dashboard_meta(ops: OpsMonitorService = Depends(get_ops_monitor),
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "freshness": fr,
         "last_pipeline_run": last_run,
-        "account_nav": sum(v[1] for v in navs.values()) if navs else None,
+        "selected_instance_id": instance_id,
+        "selected_instance_nav": (
+            {"date": navs[instance_id][0], "nav": navs[instance_id][1]}
+            if instance_id in navs else None
+        ),
         "instance_navs": {k: {"date": v[0], "nav": v[1]} for k, v in navs.items()},
         "alerts": {"critical": sum(a.severity == "critical" for a in al),
                    "warn": sum(a.severity == "warn" for a in al)},

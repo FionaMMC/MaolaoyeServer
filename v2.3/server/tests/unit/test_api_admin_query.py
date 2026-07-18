@@ -122,6 +122,47 @@ def test_admin_nav_history(client, settings_for_test):
     assert items[0]["positions_count"] == 2
 
 
+def test_admin_nav_history_includes_selected_scope(client, settings_for_test):
+    from app.db import init_db, make_engine, make_session_factory
+    from app.models import PerfSnapshot
+
+    engine = make_engine(settings_for_test.db_url)
+    init_db(engine)
+    sf = make_session_factory(engine)
+    with sf() as s:
+        s.add(PerfSnapshot(instance_id="one", date="20260508", nav=100.0,
+                           daily_return=0.0, positions_snapshot={}))
+        s.add(PerfSnapshot(instance_id="two", date="20260508", nav=200.0,
+                           daily_return=0.0, positions_snapshot={}))
+        s.commit()
+
+    r = client.get("/admin/nav-history?instance_id=two", headers=_AUTH)
+    body = r.json()
+    assert body["data"]["instance_id"] == "two"
+    assert body["data"]["period"] is None
+    assert [item["instance_id"] for item in body["data"]["items"]] == ["two"]
+
+
+def test_admin_nav_history_applies_period(client, settings_for_test):
+    from app.db import init_db, make_engine, make_session_factory
+    from app.models import PerfSnapshot
+
+    engine = make_engine(settings_for_test.db_url)
+    init_db(engine)
+    sf = make_session_factory(engine)
+    with sf() as s:
+        s.add(PerfSnapshot(instance_id="scoped", date="20260102", nav=100.0,
+                           daily_return=0.0, positions_snapshot={}))
+        s.add(PerfSnapshot(instance_id="scoped", date="20260717", nav=110.0,
+                           daily_return=0.1, positions_snapshot={}))
+        s.commit()
+
+    r = client.get("/admin/nav-history?instance_id=scoped&period=7d", headers=_AUTH)
+    body = r.json()
+    assert body["data"]["period"] == "7d"
+    assert [item["date"] for item in body["data"]["items"]] == ["20260717"]
+
+
 # ── /admin/instance-state ─────────────────────────────────────
 def test_admin_instance_state(client, settings_for_test):
     from app.db import init_db, make_engine, make_session_factory

@@ -20,7 +20,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>V20H Quant Dashboard</title>
+  <title>Quant Strategy Dashboard</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -166,7 +166,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 <body>
   <div id="login-modal">
     <div class="modal-box">
-      <h3>🔐 V20H Quant Dashboard</h3>
+      <h3>🔐 Quant Strategy Dashboard</h3>
       <p style="color:#8a93a0; font-size:0.9em; margin-bottom:12px;">
         请输入 API Key（仅存浏览器 localStorage）:
       </p>
@@ -179,14 +179,13 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 
   <div class="header">
     <div>
-      <h1>📊 V20H Quant Dashboard</h1>
+      <h1>📊 Quant Strategy Dashboard</h1>
       <div class="meta" id="meta">Loading...</div>
     </div>
     <div class="toolbar">
       <label style="font-size:0.85em;color:#8a93a0;">实例:</label>
-      <select id="instSel" onchange="onInstanceChange()">
-        <option value="paper_v20h_v20h_v1_3" selected>V20H 多头</option>
-        <option value="paper_v53_v53">V53 全天候</option>
+      <select id="instSel" onchange="onInstanceChange()" disabled>
+        <option value="">加载实例...</option>
       </select>
       <label style="font-size:0.85em;color:#8a93a0;margin-left:8px;">期间:</label>
       <select id="period-select" onchange="onPeriodChange()">
@@ -293,7 +292,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
   <div class="view" id="view-strategy">
     <div class="grid">
       <div class="card wide">
-        <h2>V20H 策略状态</h2>
+        <h2>当前实例策略状态</h2>
         <div id="strategy-state"><div class="loading">Loading...</div></div>
       </div>
       <div class="card">
@@ -355,13 +354,13 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     let currentTab = 'overview';
     let charts = {};
 
-    function saveKey() {
+    async function saveKey() {
       const k = document.getElementById('api-key-input').value.trim();
       if (!k) return;
       localStorage.setItem('qmt_api_key', k);
       API_KEY = k;
       document.getElementById('login-modal').style.display = 'none';
-      refreshAll();
+      await initializeDashboard();
     }
 
     function checkAuth() {
@@ -394,9 +393,27 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 
     let META = null, LAST_VERSION = null;
 
+    function query(params) {
+      return new URLSearchParams(params).toString();
+    }
+
+    async function loadInstanceOptions() {
+      const health = await api('/admin/health');
+      const select = document.getElementById('instSel');
+      const previous = localStorage.getItem('qmt_dashboard_instance') || select.value;
+      const instances = health.instances || [];
+      if (!instances.length) throw new Error('服务器尚无可展示的实例');
+      select.innerHTML = instances.map(i =>
+        `<option value="${i.instance_id}">${i.instance_id}</option>`
+      ).join('');
+      select.value = instances.some(i => i.instance_id === previous)
+        ? previous : instances[0].instance_id;
+      select.disabled = false;
+    }
+
     async function metaPoll(){
       try{
-        const r = await api('/admin/dashboard-meta');
+        const r = await api('/admin/dashboard-meta?' + query({instance_id: getInstanceId()}));
         META = r;
         renderHealthStrip(META);
         const v = JSON.stringify(META.version);
@@ -415,7 +432,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       const el = document.getElementById('health-strip');
       if(!el) return;
       el.innerHTML =
-        '<span>账户 NAV <b>' + fmtNum(m.account_nav) + '</b></span>' +
+        '<span>实例 NAV <b>' + fmtNum(m.selected_instance_nav && m.selected_instance_nav.nav) + '</b></span>' +
         '<span>行情 <span class="' + staleClass(lag) + '">' + (fr.market_latest||'—') + (lag!=null?' ('+lag+'d)':'') + '</span></span>' +
         '<span>管线 <span class="dot ' + (lastRun&&lastRun.status==='ok'?'ok':'bad') + '"></span>' + (lastRun?lastRun.valid_date:'—') + '</span>' +
         '<span class="' + (a.critical?'crit':'') + '">告警 ' + (a.critical||0) + '🔴 / ' + (a.warn||0) + '🟡</span>' +
@@ -455,11 +472,21 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       return document.getElementById('instSel').value;
     }
 
+    function selectedQuery(extra = {}) {
+      return query({instance_id: getInstanceId(), ...extra});
+    }
+
+    function navQuery(period) {
+      return '/admin/nav-history?' + selectedQuery({period, limit: 1000});
+    }
+
     function onPeriodChange() {
       refreshAll();
     }
 
     function onInstanceChange() {
+      localStorage.setItem('qmt_dashboard_instance', getInstanceId());
+      metaPoll();
       refreshAll();
     }
 
@@ -476,8 +503,8 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       try {
         const [health, summary, navData] = await Promise.all([
           api('/admin/health'),
-          api('/admin/metrics/summary?period=' + period),
-          api('/admin/nav-history?instance_id=' + getInstanceId() + '&limit=300'),
+          api('/admin/metrics/summary?' + selectedQuery({period})),
+          api(navQuery(period)),
         ]);
 
         // KPIs
@@ -504,7 +531,8 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         renderRetChart('ret-chart', navData);
 
         // 实例状态
-        const instHtml = health.instances.map(i => {
+        const selectedInstances = health.instances.filter(i => i.instance_id === getInstanceId());
+        const instHtml = selectedInstances.map(i => {
           const ret = i.latest_daily_return;
           const retCls = colorOf(ret);
           return `<tr>
@@ -598,11 +626,11 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       const period = getPeriod();
       try {
         const [summary, navData, weekly, monthly, yearly] = await Promise.all([
-          api('/admin/metrics/summary?period=' + period),
-          api('/admin/nav-history?instance_id=' + getInstanceId() + '&limit=300'),
-          api('/admin/metrics/periodic?period=' + period + '&freq=weekly'),
-          api('/admin/metrics/periodic?period=' + period + '&freq=monthly'),
-          api('/admin/metrics/periodic?period=all&freq=yearly'),
+          api('/admin/metrics/summary?' + selectedQuery({period})),
+          api(navQuery(period)),
+          api('/admin/metrics/periodic?' + selectedQuery({period, freq: 'weekly'})),
+          api('/admin/metrics/periodic?' + selectedQuery({period, freq: 'monthly'})),
+          api('/admin/metrics/periodic?' + selectedQuery({period: 'all', freq: 'yearly'})),
         ]);
 
         document.getElementById('kpis-returns').innerHTML = `
@@ -655,9 +683,9 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       const period = getPeriod();
       try {
         const [summary, dd, navData] = await Promise.all([
-          api('/admin/metrics/summary?period=' + period),
-          api('/admin/metrics/drawdown?period=' + period),
-          api('/admin/nav-history?instance_id=' + getInstanceId() + '&limit=300'),
+          api('/admin/metrics/summary?' + selectedQuery({period})),
+          api('/admin/metrics/drawdown?' + selectedQuery({period})),
+          api(navQuery(period)),
         ]);
 
         document.getElementById('kpis-risk').innerHTML = `
@@ -759,39 +787,32 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     async function renderStrategy() {
       try {
         const [state, bl, bk] = await Promise.all([
-          api('/admin/strategy-state'),
+          api('/admin/strategy-state?' + selectedQuery()),
           api('/admin/blacklist?lookback_days=30'),
           api('/admin/bookkeeping-divergence'),
         ]);
 
         const stHtml = state.items.map(i => {
           const ss = i.strategy_state || {};
-          const lastRb = ss.last_rb_idx;
-          const nextRbDi = lastRb !== undefined && lastRb !== null ? lastRb + 42 : '—';
-          const prev_hedge = ss.prev_hedge;
-          const hist_n = (ss.daily_rets || []).length;
+          const statePreview = Object.entries(ss).slice(0, 6).map(([k, v]) =>
+            `${k}=${typeof v === 'object' ? JSON.stringify(v) : v}`
+          ).join('<br>') || '—';
           return `<tr>
             <td>${i.instance_id}</td>
             <td class="num">${fmt(i.virtual_cash, {cur:true})}</td>
             <td class="num">${i.holdings_count}</td>
-            <td class="num">${lastRb !== undefined && lastRb !== null ? lastRb : '—'}</td>
-            <td class="num">${nextRbDi}</td>
-            <td class="num">${prev_hedge !== undefined && prev_hedge !== null ? fmt(prev_hedge, {pct:true}) : '—'}</td>
-            <td class="num">${hist_n}</td>
+            <td style="font-size:0.78em;color:#8a93a0">${statePreview}</td>
             <td><span style="font-size:0.78em;color:#8a93a0">${i.last_update || ''}</span></td>
           </tr>`;
         }).join('');
         document.getElementById('strategy-state').innerHTML = `
           <table>
             <tr><th>Instance</th><th class="num">Cash</th><th class="num">持仓</th>
-                <th class="num">last_rb_idx</th><th class="num">next_rb_di</th>
-                <th class="num">prev_hedge</th><th class="num">history len</th>
-                <th>Last update</th></tr>
+                <th>Strategy state</th><th>Last update</th></tr>
             ${stHtml}
           </table>
           <p style="font-size:0.8em;color:#8a93a0;margin-top:8px">
-            ℹ️ 每 42 个交易日主调仓一次。<b>next_rb_di</b> = last_rb_idx + 42。
-            <b>prev_hedge</b> = V20H IM 期货空头比例（Phase 14c 实盘 skip）。
+            ℹ️ 仅展示当前选中实例的状态字段；字段定义由该策略版本决定。
           </p>
         `;
 
@@ -856,6 +877,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         const fillBadge = trade.fill_rate === null ? 'muted' :
                          (trade.fill_rate > 0.9 ? 'pos' : (trade.fill_rate > 0.7 ? 'warn' : 'neg'));
         document.getElementById('kpis-trades').innerHTML = `
+          <p class="loading">全局订单统计：当前订单模型尚未保存 instance_id，不能按实例过滤。</p>
           ${kpiCard('订单总数', trade.n_orders, 'muted', `期间 ${period}`)}
           ${kpiCard('Fill Rate', fmt(trade.fill_rate, {pct:true}), fillBadge,
                    'FILLED+PARTIAL / 总')}
@@ -919,7 +941,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
           <td><span class="${r.status==='missing'?'crit':(r.status==='ok'?'':'')}">${r.status}</span></td>
           <td>${r.signal_time||'—'}</td><td class="num">${r.orders}</td></tr>`).join('')+'</table>';
       // Freshness (from META if present)
-      const fr=(window.META&&window.META.freshness)||{};
+      const fr=(META&&META.freshness)||{};
       document.getElementById('ops-freshness').innerHTML =
         `行情 latest: <span class="${staleClass(fr.market_lag_days)}">${fr.market_latest||'—'}`+
         `${fr.market_lag_days!=null?` (${fr.market_lag_days}d)`:''}</span> · probe ${fr.probe||'—'}`;
@@ -957,15 +979,23 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       }
     }
 
-    if (!checkAuth()) {
-      document.getElementById('api-key-input').focus();
-    } else {
-      refreshAll();
-      // Primary refresh driver: meta poll every 15s; version change triggers analytics refresh.
-      // Safety fallback: analytics also refresh every 120s in case meta polling stalls.
+    async function initializeDashboard() {
+      try {
+        await loadInstanceOptions();
+      } catch (e) {
+        document.getElementById('meta').textContent = `instance load error: ${e.message}`;
+        return;
+      }
+      await refreshAll();
       metaPoll();
       setInterval(metaPoll, 15000);
       setInterval(refreshAll, 120000);
+    }
+
+    if (!checkAuth()) {
+      document.getElementById('api-key-input').focus();
+    } else {
+      initializeDashboard();
     }
   </script>
 </body>
