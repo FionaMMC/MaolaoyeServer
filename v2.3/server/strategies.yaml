@@ -35,3 +35,12 @@ account_groups:
       - strategy_id: v79_relay
         virtual_initial_cash: 10000000
         owned_symbols: []     # empty: dry-run phase, claims nothing → cannot disturb v20h/v53 reconcile
+
+  # V7.13 is an external, content-verified basket.  It starts in dry-run and
+  # deliberately claims no symbols while it shares the existing QMT account.
+  - group_id: paper_v713
+    qmt_account_id: "301300148788"
+    strategies:
+      - strategy_id: v713_relay
+        virtual_initial_cash: 10000000
+        owned_symbols: []
