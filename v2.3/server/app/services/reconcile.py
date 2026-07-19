@@ -189,6 +189,23 @@ class ReconcileService:
                 diffs=diffs if snapshot.dry_run else [],
             )
 
+            # Strict-rebalance adapters (V7.13) mark a basket as pending until a
+            # post-trade QMT snapshot agrees with both positions and cash.  Keep
+            # this status in strategy_state so the next rebalance fails closed.
+            strategy_state = dict(inst.strategy_state or {})
+            if "reconciliation_status" in strategy_state:
+                cash_tolerance = max(1.0, abs(server_cash) * 0.001)
+                consistent = not diffs and abs(cash_diff) <= cash_tolerance
+                strategy_state["reconciliation_status"] = (
+                    "reconciled" if consistent else "failed"
+                )
+                strategy_state["last_reconciliation_snapshot_time"] = snapshot.snapshot_time
+                strategy_state["last_reconciliation_cash_diff"] = cash_diff
+                strategy_state["last_reconciliation_diff_count"] = len(diffs)
+                inst.strategy_state = strategy_state
+                inst.last_update = _now_iso()
+                session.commit()
+
             if snapshot.dry_run:
                 logger.info(
                     "reconcile DRY-RUN: instance=%s cash_diff=%.2f "
@@ -300,7 +317,8 @@ class ReconcileService:
         matched = 0
         mismatches: list[dict] = []
         for s in sorted(all_syms):
-            lg = ledger_sum.get(s, 0); qq = qmt.get(s, 0)
+            lg = ledger_sum.get(s, 0)
+            qq = qmt.get(s, 0)
             if lg == qq:
                 matched += 1
             else:

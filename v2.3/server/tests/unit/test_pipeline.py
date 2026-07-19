@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 from app.db import init_db, make_engine, make_session_factory
-from app.models import InstanceState, Order, RawSignal as RawSignalRow
+from app.models import InstanceState, Order, OrderSignalMap, RawSignal as RawSignalRow
 from app.scheduler.pipeline import StrategyPipeline
 from app.services.aggregate import AggregateService
 from app.services.orders_queue import OrdersQueueService
@@ -649,6 +649,124 @@ def test_pipeline_reset_instance_states(setup):
         inst = s.get(InstanceState, "real_A_always_buy")
         assert inst.virtual_cash == 100000.0
         assert inst.virtual_positions == {}
+
+
+def test_strict_rebalance_guard_blocks_unresolved_and_unreconciled(setup):
+    pipeline, sf, store, yaml_path = setup
+    _write_yaml(yaml_path, {
+        "account_groups": [{
+            "group_id": "paper_v713", "qmt_account_id": "DEDICATED",
+            "strategies": [{
+                "strategy_id": "noop", "virtual_initial_cash": 1_000_000,
+                "orders_enabled": True, "account_isolation": "dedicated",
+                "requires_reconciled_rebalance": True,
+            }],
+        }],
+    })
+    instances = pipeline._load_instances()
+    pipeline._ensure_instance_states(instances)
+    with sf() as s:
+        inst = s.get(InstanceState, "paper_v713_noop")
+        inst.strategy_state = {"reconciliation_status": "pending"}
+        s.add(RawSignalRow(
+            signal_id="strict-s1", instance_id=inst.instance_id,
+            symbol="600519.SH", direction="BUY", quantity=100,
+            reference_price=10.0, price_offset=0.0, limit_price=10.0,
+            valid_date="20260720", signal_time=_now(), precheck_status="PASS",
+        ))
+        s.add(Order(
+            order_id="strict-o1", account_group="paper_v713", symbol="600519.SH",
+            direction="BUY", quantity=100, limit_price=10.0,
+            valid_date="20260720", status="PARTIAL", created_at=_now(),
+        ))
+        s.add(OrderSignalMap(
+            order_id="strict-o1", signal_id="strict-s1", signal_quantity=100,
+        ))
+        s.commit()
+
+    guard = pipeline._execution_guards(instances)["paper_v713_noop"]
+    assert not guard["allowed"]
+    assert "unresolved_order" in guard["blockers"]
+    assert "previous_rebalance_not_reconciled" in guard["blockers"]
+
+
+def test_strict_rebalance_guard_requires_safe_account_boundary(setup):
+    pipeline, sf, store, yaml_path = setup
+    _write_yaml(yaml_path, {
+        "account_groups": [{
+            "group_id": "paper_v713", "qmt_account_id": None,
+            "strategies": [{
+                "strategy_id": "noop", "virtual_initial_cash": 1_000_000,
+                "orders_enabled": False, "owned_symbols": [],
+                "account_isolation": "none", "requires_reconciled_rebalance": True,
+            }],
+        }],
+    })
+    instances = pipeline._load_instances()
+    pipeline._ensure_instance_states(instances)
+    guard = pipeline._execution_guards(instances)["paper_v713_noop"]
+    assert set(guard["blockers"]) >= {
+        "orders_disabled", "ambiguous_position_ownership", "missing_qmt_account",
+    }
+
+
+def test_dedicated_label_is_rejected_when_qmt_account_is_shared(setup):
+    pipeline, sf, store, yaml_path = setup
+    _write_yaml(yaml_path, {
+        "account_groups": [
+            {"group_id": "other", "qmt_account_id": "SAME", "strategies": [
+                {"strategy_id": "noop", "virtual_initial_cash": 1_000_000},
+            ]},
+            {"group_id": "paper_v713", "qmt_account_id": "SAME", "strategies": [{
+                "strategy_id": "always_buy", "virtual_initial_cash": 1_000_000,
+                "orders_enabled": True, "account_isolation": "dedicated",
+                "requires_reconciled_rebalance": True,
+            }]},
+        ],
+    })
+    instances = pipeline._load_instances()
+    guard = pipeline._execution_guards(instances)["paper_v713_always_buy"]
+    assert "qmt_account_not_dedicated" in guard["blockers"]
+
+
+def test_strict_preflight_preserves_unfetched_pending_order(setup):
+    pipeline, sf, store, yaml_path = setup
+    _write_yaml(yaml_path, {
+        "account_groups": [{
+            "group_id": "paper_v713", "qmt_account_id": "DEDICATED",
+            "strategies": [{
+                "strategy_id": "noop", "virtual_initial_cash": 1_000_000,
+                "orders_enabled": True, "account_isolation": "dedicated",
+                "requires_reconciled_rebalance": True,
+            }],
+        }],
+    })
+    with sf() as s:
+        s.add(InstanceState(
+            instance_id="paper_v713_noop", virtual_cash=1_000_000,
+            virtual_positions={}, last_update=_now(),
+        ))
+        s.add(RawSignalRow(
+            signal_id="preserve-s1", instance_id="paper_v713_noop",
+            symbol="600519.SH", direction="BUY", quantity=100,
+            reference_price=10.0, price_offset=0.0, limit_price=10.0,
+            valid_date="20260720", signal_time=_now(), precheck_status="PASS",
+        ))
+        s.add(Order(
+            order_id="preserve-o1", account_group="paper_v713", symbol="600519.SH",
+            direction="BUY", quantity=100, limit_price=10.0,
+            valid_date="20260720", status="PENDING", created_at=_now(),
+        ))
+        s.add(OrderSignalMap(
+            order_id="preserve-o1", signal_id="preserve-s1", signal_quantity=100,
+        ))
+        s.commit()
+
+    summary = pipeline.run(20260720)
+    assert summary["skipped"] == "strict_rebalance_blocked"
+    with sf() as s:
+        assert s.get(Order, "preserve-o1") is not None
+        assert s.get(RawSignalRow, "preserve-s1") is not None
 
 
 def test_pipeline_rerun_refuses_after_client_fetch(setup):

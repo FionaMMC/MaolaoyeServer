@@ -130,6 +130,42 @@ class SettlementService:
                     )
                     continue
 
+                # Contract semantics: filled_quantity/filled_price are the order's
+                # cumulative EOD quantity and VWAP, not an incremental fill.  Convert
+                # progressive PARTIAL -> FILLED reports to an incremental ledger delta.
+                previous = session.execute(
+                    select(Trade)
+                    .where(Trade.order_id == result.order_id)
+                    .order_by(Trade.filled_quantity.desc(), Trade.id.desc())
+                    .limit(1)
+                ).scalar_one_or_none()
+                previous_qty = int(previous.filled_quantity) if previous else 0
+                if result.filled_quantity < previous_qty:
+                    duplicate += 1
+                    logger.error(
+                        "settle stale cumulative report ignored: order=%s qty=%s < prior=%s",
+                        result.order_id, result.filled_quantity, previous_qty,
+                    )
+                    continue
+                delta_qty = int(result.filled_quantity) - previous_qty
+                previous_notional = (
+                    previous_qty * float(previous.filled_price) if previous else 0.0
+                )
+                cumulative_notional = result.filled_quantity * result.filled_price
+                delta_notional = cumulative_notional - previous_notional
+                delta_price = (
+                    delta_notional / delta_qty if delta_qty > 0 else result.filled_price
+                )
+                previous_fees = (
+                    self._calc_fees(previous_notional, order.direction)
+                    if previous_qty > 0 else 0.0
+                )
+                cumulative_fees = (
+                    self._calc_fees(cumulative_notional, order.direction)
+                    if result.filled_quantity > 0 else 0.0
+                )
+                delta_fees = max(0.0, cumulative_fees - previous_fees)
+
                 # 写 trades 表
                 session.add(Trade(
                     order_id=result.order_id,
@@ -141,9 +177,9 @@ class SettlementService:
                 ))
 
                 # 拆单 + 更新虚拟账本（仅在有成交时）
-                if result.filled_quantity > 0:
+                if delta_qty > 0:
                     self._split_and_update_state(
-                        session, order, result.filled_quantity, result.filled_price,
+                        session, order, delta_qty, delta_price, delta_fees,
                     )
 
                 # 标记订单状态
@@ -191,6 +227,7 @@ class SettlementService:
         order: Order,
         filled_qty: int,
         filled_price: float,
+        total_fees: float,
     ) -> None:
         # 取该 order 的所有 (signal_id, signal_quantity)
         mappings = session.execute(
@@ -239,7 +276,7 @@ class SettlementService:
             positions = dict(inst.virtual_positions or {})
             sym = order.symbol
             gross = filled_price * split_qty
-            fees = self._calc_fees(gross, order.direction)
+            fees = total_fees * split_qty / filled_qty
             if order.direction == "BUY":
                 # BUY 总现金消耗 = 成交金额 + 佣金
                 total_cost = gross + fees

@@ -20,7 +20,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>V20H Quant Dashboard</title>
+  <title>QMT Multi-Strategy Dashboard</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -179,7 +179,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 
   <div class="header">
     <div>
-      <h1>📊 V20H Quant Dashboard</h1>
+      <h1>📊 QMT Multi-Strategy Dashboard</h1>
       <div class="meta" id="meta">Loading...</div>
     </div>
     <div class="toolbar">
@@ -187,6 +187,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       <select id="instSel" onchange="onInstanceChange()">
         <option value="paper_v20h_v20h_v1_3" selected>V20H 多头</option>
         <option value="paper_v53_v53">V53 全天候</option>
+        <option value="paper_v713_v713_relay">V7.13 主策略（模拟盘下单）</option>
       </select>
       <label style="font-size:0.85em;color:#8a93a0;margin-left:8px;">期间:</label>
       <select id="period-select" onchange="onPeriodChange()">
@@ -241,6 +242,10 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       <div class="card wide">
         <h2>实例状态</h2>
         <div id="instance-state"><div class="loading">Loading...</div></div>
+      </div>
+      <div class="card wide">
+        <h2>V7.13 影子策略对比 <span class="hint">仅虚拟账本、无订单</span></h2>
+        <div id="shadow-comparison"><div class="loading">Loading...</div></div>
       </div>
     </div>
   </div>
@@ -474,10 +479,11 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     async function renderOverview() {
       const period = getPeriod();
       try {
-        const [health, summary, navData] = await Promise.all([
+        const [health, summary, navData, shadowData] = await Promise.all([
           api('/admin/health'),
           api('/admin/metrics/summary?period=' + period),
           api('/admin/nav-history?instance_id=' + getInstanceId() + '&limit=300'),
+          api('/admin/shadow/summary'),
         ]);
 
         // KPIs
@@ -523,6 +529,20 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
             ${instHtml}
           </table>
         `;
+        const shadowRows = shadowData.items.map(i => `<tr>
+          <td>${i.shadow_id}</td>
+          <td>${badge('仅虚拟账本、无订单', 'info')}</td>
+          <td>${i.status === 'active' ? badge(i.status, 'success') : badge(i.status, 'warn')}</td>
+          <td class="num">${i.nav === null ? '—' : fmt(i.nav, {cur:true})}</td>
+          <td class="num ${colorOf(i.daily_return)}">${i.daily_return === null ? '—' : fmt(i.daily_return, {pct:true, sign:true})}</td>
+          <td class="num">${i.turnover === null ? '—' : fmt(i.turnover, {pct:true})}</td>
+          <td>${i.as_of_date || '—'}</td><td>${i.state_reason || '—'}</td>
+        </tr>`).join('');
+        document.getElementById('shadow-comparison').innerHTML = `<table>
+          <tr><th>Shadow</th><th>性质</th><th>状态</th><th class="num">NAV</th>
+          <th class="num">日收益</th><th class="num">换手</th><th>As-of</th><th>原因</th></tr>
+          ${shadowRows || '<tr><td colspan="8">尚无影子快照</td></tr>'}
+        </table>`;
       } catch (e) {
         document.getElementById('kpis-overview').innerHTML = `<div class="error">${e.message}</div>`;
       }

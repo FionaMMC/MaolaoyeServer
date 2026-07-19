@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from datetime import date, datetime, timedelta
 from sqlalchemy import select, desc
-from app.models import PerfSnapshot, RawSignal, Order, InstanceState, Trade
+from app.models import (
+    Order, PerfSnapshot, RawSignal, ShadowInstanceState, Trade,
+)
 
 
 def _d(yyyymmdd: str) -> date:
@@ -148,3 +150,26 @@ class OpsMonitorService:
         return [{"order_id": oid, "filled_quantity": q, "filled_price": px,
                  "received_at": ra}
                 for oid, q, px, ra in rows if oid not in order_ids]
+
+    def bookkeeping_divergences(self) -> list[dict]:
+        with self.sf() as s:
+            rows = s.execute(
+                select(Order.order_id, Order.account_group, Order.symbol, Order.valid_date)
+                .where(Order.bookkeeping_divergence.is_(True))
+                .order_by(Order.valid_date.desc())
+            ).all()
+        return [{"order_id": oid, "account_group": group, "symbol": symbol,
+                 "valid_date": valid_date}
+                for oid, group, symbol, valid_date in rows]
+
+    def blocked_shadows(self) -> list[dict]:
+        with self.sf() as s:
+            rows = s.execute(
+                select(
+                    ShadowInstanceState.shadow_id,
+                    ShadowInstanceState.state_reason,
+                    ShadowInstanceState.last_update,
+                ).where(ShadowInstanceState.status == "blocked")
+            ).all()
+        return [{"shadow_id": shadow_id, "reason": reason, "last_update": last_update}
+                for shadow_id, reason, last_update in rows]

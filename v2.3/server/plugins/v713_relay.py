@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
+import re
 from pathlib import Path
 from typing import ClassVar
 
 import pandas as pd
 import yaml
 
-from app.strategy.base import RawSignal, Strategy
+from app.strategy.base import RawSignal
 from app.strategy.context import Context
 from plugins.v79_relay import V79RelayAdapter
 
@@ -26,6 +28,8 @@ _REQUIRED_COLUMNS = {
     "code", "weight", "strategy_version", "sleeve", "decision_date",
     "as_of_date", "basket_sha256",
 }
+_ALLOWED_SLEEVES = {"TOP50", "T1_5050", "AUX_HYDRA"}
+_CODE_PATTERN = re.compile(r"^\d{6}\.(SH|SZ)$")
 
 
 def basket_hash(frame: pd.DataFrame) -> str:
@@ -67,8 +71,15 @@ class V713RelayAdapter(V79RelayAdapter):
         if frame["code"].isna().any() or (frame["code"].astype(str).str.strip() == "").any():
             raise ValueError("V7.13 target contains an empty code")
         frame = frame.copy()
+        frame["code"] = frame["code"].astype(str).str.strip()
+        if frame["code"].duplicated().any():
+            raise ValueError("V7.13 target contains duplicate codes")
+        if not frame["code"].map(lambda value: bool(_CODE_PATTERN.fullmatch(value))).all():
+            raise ValueError("V7.13 target contains a non-tradeable code")
         frame["weight"] = pd.to_numeric(frame["weight"], errors="coerce")
-        if frame["weight"].isna().any() or (frame["weight"] <= 0).any():
+        if (frame["weight"].isna().any()
+                or not frame["weight"].map(math.isfinite).all()
+                or (frame["weight"] <= 0).any()):
             raise ValueError("V7.13 target weights must be finite and positive")
         if abs(float(frame["weight"].sum()) - 1.0) > 1e-6:
             raise ValueError("V7.13 target weights must sum to 1")
@@ -79,6 +90,17 @@ class V713RelayAdapter(V79RelayAdapter):
         for column in ("decision_date", "as_of_date", "sleeve", "basket_sha256"):
             if frame[column].nunique(dropna=False) != 1:
                 raise ValueError(f"V7.13 target must have one {column}")
+        sleeve = str(frame["sleeve"].iloc[0])
+        if sleeve not in _ALLOWED_SLEEVES:
+            raise ValueError(f"V7.13 target has forbidden sleeve: {sleeve}")
+        decision_date = pd.to_datetime(
+            str(frame["decision_date"].iloc[0]), format="%Y%m%d", errors="raise"
+        )
+        as_of_date = pd.to_datetime(
+            str(frame["as_of_date"].iloc[0]), format="%Y%m%d", errors="raise"
+        )
+        if as_of_date > decision_date:
+            raise ValueError("V7.13 target as_of_date is after decision_date")
         expected_hash = str(frame["basket_sha256"].iloc[0])
         if basket_hash(frame) != expected_hash:
             raise ValueError("V7.13 target basket_sha256 mismatch")
@@ -99,9 +121,37 @@ class V713RelayAdapter(V79RelayAdapter):
             return []
         basket_id = str(basket["basket_sha256"].iloc[0])
         state = ctx.strategy_state()
+        guard = ctx.execution_guard()
+        if not cfg.get("dry_run", True) and not guard.get("allowed", False):
+            blockers = list(guard.get("blockers") or ["missing_execution_guard"])
+            next_state = dict(state)
+            next_state.update({
+                "last_blocked_basket_sha256": basket_id,
+                "last_execution_blockers": blockers,
+            })
+            ctx.set_strategy_state(next_state)
+            logger.error(
+                "V7.13[%s] execution blocked basket=%s blockers=%s",
+                ctx.instance_id, basket_id[:12], blockers,
+            )
+            return []
         if state.get("last_consumed_basket_sha256") == basket_id:
             logger.info("V7.13[%s] basket=%s already consumed; skip", ctx.instance_id, basket_id[:12])
             return []
+        if cfg.get("dry_run", True) and state.get("last_replayed_basket_sha256") == basket_id:
+            logger.info(
+                "V7.13[%s] basket=%s already replayed in dry-run; skip",
+                ctx.instance_id, basket_id[:12],
+            )
+            return []
+
+        max_age_days = int(cfg.get("max_target_age_days", 7))
+        decision_ts = pd.to_datetime(decision_date, format="%Y%m%d")
+        if (target - decision_ts).days > max_age_days:
+            raise ValueError(
+                f"V7.13 target is stale by {(target - decision_ts).days} days "
+                f"(max {max_age_days})"
+            )
 
         weights = dict(zip(basket["code"].astype(str), basket["weight"].astype(float)))
         nav = self._compute_nav(ctx, target)
@@ -110,6 +160,14 @@ class V713RelayAdapter(V79RelayAdapter):
         signals = self._diff_and_emit(ctx, ctx.positions(), target_qty, target)
 
         if cfg.get("dry_run", True):
+            next_state = dict(state)
+            next_state.update({
+                "last_replayed_basket_sha256": basket_id,
+                "last_replayed_decision_date": decision_date,
+                "last_replayed_sleeve": str(basket["sleeve"].iloc[0]),
+                "last_target_quantities": target_qty,
+            })
+            ctx.set_strategy_state(next_state)
             logger.info(
                 "V7.13[%s] DRY-RUN decision=%s sleeve=%s basket=%s target=%d signals=%d",
                 ctx.instance_id, decision_date, basket["sleeve"].iloc[0], basket_id[:12],
@@ -122,6 +180,10 @@ class V713RelayAdapter(V79RelayAdapter):
             "last_consumed_basket_sha256": basket_id,
             "last_consumed_decision_date": decision_date,
             "last_consumed_sleeve": str(basket["sleeve"].iloc[0]),
+            "last_target_weights": weights,
+            "last_target_quantities": target_qty,
+            "last_target_as_of_date": str(basket["as_of_date"].iloc[0]),
+            "reconciliation_status": "pending",
         })
         ctx.set_strategy_state(next_state)
         logger.info("V7.13[%s] emitted %d signals for basket=%s", ctx.instance_id, len(signals), basket_id[:12])

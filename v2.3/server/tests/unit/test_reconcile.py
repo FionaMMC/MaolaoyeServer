@@ -76,6 +76,41 @@ def test_reconcile_dryrun_perfect_match(tmp_path: Path):
         assert inst.virtual_cash == 1_000_000.0
 
 
+def test_strict_rebalance_state_becomes_reconciled_only_on_exact_snapshot(tmp_path: Path):
+    sf = _factory(tmp_path)
+    _seed_instance(sf, "paper_v713_v713_relay", 1_000_000.0, {"600519.SH": 100})
+    with sf() as s:
+        inst = s.get(InstanceState, "paper_v713_v713_relay")
+        inst.strategy_state = {"reconciliation_status": "pending"}
+        s.commit()
+
+    svc = ReconcileService(sf)
+    svc.reconcile(_snapshot(
+        "paper_v713_v713_relay", 1_000_000.0, {"600519.SH": 100}
+    ))
+    with sf() as s:
+        state = s.get(InstanceState, "paper_v713_v713_relay").strategy_state
+        assert state["reconciliation_status"] == "reconciled"
+        assert state["last_reconciliation_diff_count"] == 0
+
+
+def test_strict_rebalance_state_marks_mismatch_failed(tmp_path: Path):
+    sf = _factory(tmp_path)
+    _seed_instance(sf, "paper_v713_v713_relay", 1_000_000.0, {"600519.SH": 100})
+    with sf() as s:
+        inst = s.get(InstanceState, "paper_v713_v713_relay")
+        inst.strategy_state = {"reconciliation_status": "pending"}
+        s.commit()
+
+    ReconcileService(sf).reconcile(_snapshot(
+        "paper_v713_v713_relay", 900_000.0, {"600519.SH": 200}
+    ))
+    with sf() as s:
+        state = s.get(InstanceState, "paper_v713_v713_relay").strategy_state
+        assert state["reconciliation_status"] == "failed"
+        assert state["last_reconciliation_diff_count"] == 1
+
+
 def test_reconcile_dryrun_server_has_extra(tmp_path: Path):
     """server 有 ghost 持仓 (QMT 已经没了) → server_only > 0。"""
     sf = _factory(tmp_path)

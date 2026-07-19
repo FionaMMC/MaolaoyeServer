@@ -147,6 +147,32 @@ class StrategyPipeline:
                 "否则次日成交回报无法匹配",
                 valid_date_str, len(fetched))
 
+        # Strict instances must be checked before _clear_for_date.  Otherwise a
+        # same-day rerun could delete their unfetched PENDING order and only then
+        # discover that a rebalance was still unresolved.
+        instances = self._load_instances()
+        preflight_guards = self._execution_guards(instances)
+        operational_blockers = {
+            "unresolved_order", "bookkeeping_divergence",
+            "previous_rebalance_not_reconciled",
+        }
+        strict_blocked = {
+            instance_id: sorted(operational_blockers & set(guard["blockers"]))
+            for instance_id, guard in preflight_guards.items()
+            if operational_blockers & set(guard["blockers"])
+        }
+        if strict_blocked:
+            logger.error(
+                "pipeline_skipped strict_rebalance_blocked blockers=%s",
+                strict_blocked,
+            )
+            return {
+                "signals": 0, "passed": 0, "orders": 0,
+                "instances": len(instances),
+                "skipped": "strict_rebalance_blocked",
+                "blockers": strict_blocked,
+            }
+
         # 0a. 自动晋升：把最近 REJECTED 的 symbol 持久化到 risk_blacklist 表
         #     这样即使后面 clear-state 清了 orders，黑名单不丢
         promoted = self.blacklist.auto_promote()
@@ -159,7 +185,6 @@ class StrategyPipeline:
             logger.info("pipeline cleared stale data for %s: %s", trade_date, cleared)
 
         # 1. 加载 strategies.yaml
-        instances = self._load_instances()
         if not instances:
             logger.warning("strategies.yaml 无 instance 定义，pipeline 退出")
             return {"signals": 0, "passed": 0, "orders": 0, "instances": 0}
@@ -185,6 +210,7 @@ class StrategyPipeline:
                 for inst in instances
             ],
             risk_blacklist=risk_bl,
+            execution_guards=preflight_guards,
         )
 
         # 3.5. 写回 strategy_state（仅在策略 set_strategy_state 时）
@@ -322,8 +348,87 @@ class StrategyPipeline:
                     "strategy_id": strat["strategy_id"],
                     "virtual_initial_cash": float(strat.get("virtual_initial_cash", 0)),
                     "owned_symbols": strat.get("owned_symbols"),  # list[str] or None
+                    "qmt_account_id": ag.get("qmt_account_id"),
+                    "orders_enabled": bool(strat.get("orders_enabled", True)),
+                    "account_isolation": strat.get("account_isolation", "legacy"),
+                    "dynamic_ownership": bool(strat.get("dynamic_ownership", False)),
+                    "requires_reconciled_rebalance": bool(
+                        strat.get("requires_reconciled_rebalance", False)
+                    ),
                 })
         return instances
+
+    def _execution_guards(self, instances: list[dict]) -> dict[str, dict]:
+        """Build fail-closed per-instance execution guards before strategies run.
+
+        The strategy adapter cannot query order/trade tables.  The pipeline therefore
+        supplies the authoritative blockers through Context.  Existing strategies keep
+        their legacy behaviour; only instances opting into the reconciled-rebalance
+        contract are subject to all checks.
+        """
+        guards: dict[str, dict] = {}
+        account_groups_by_qmt: dict[str, set[str]] = {}
+        for item in instances:
+            account = item.get("qmt_account_id")
+            if account:
+                account_groups_by_qmt.setdefault(str(account), set()).add(
+                    item["account_group"]
+                )
+        with self.session_factory() as session:
+            for inst in instances:
+                blockers: list[str] = []
+                if not inst.get("orders_enabled", True):
+                    blockers.append("orders_disabled")
+
+                strict = inst.get("requires_reconciled_rebalance", False)
+                if strict:
+                    isolated = inst.get("account_isolation") == "dedicated"
+                    dynamic = inst.get("dynamic_ownership", False)
+                    if not isolated:
+                        blockers.append("ambiguous_position_ownership")
+                    if dynamic:
+                        blockers.append("dynamic_ownership_not_implemented")
+                    if not inst.get("qmt_account_id"):
+                        blockers.append("missing_qmt_account")
+                    elif isolated and len(account_groups_by_qmt.get(
+                        str(inst["qmt_account_id"]), set()
+                    )) != 1:
+                        blockers.append("qmt_account_not_dedicated")
+
+                    unresolved = session.execute(
+                        select(Order.order_id)
+                        .join(OrderSignalMap, OrderSignalMap.order_id == Order.order_id)
+                        .join(RawSignal, RawSignal.signal_id == OrderSignalMap.signal_id)
+                        .where(RawSignal.instance_id == inst["instance_id"])
+                        .where(Order.status.in_(("PENDING", "PARTIAL")))
+                        .limit(1)
+                    ).first()
+                    if unresolved is not None:
+                        blockers.append("unresolved_order")
+
+                    divergence = session.execute(
+                        select(Order.order_id)
+                        .join(OrderSignalMap, OrderSignalMap.order_id == Order.order_id)
+                        .join(RawSignal, RawSignal.signal_id == OrderSignalMap.signal_id)
+                        .where(RawSignal.instance_id == inst["instance_id"])
+                        .where(Order.bookkeeping_divergence.is_(True))
+                        .limit(1)
+                    ).first()
+                    if divergence is not None:
+                        blockers.append("bookkeeping_divergence")
+
+                    state = session.get(InstanceState, inst["instance_id"])
+                    strategy_state = dict(state.strategy_state or {}) if state else {}
+                    if strategy_state.get("reconciliation_status") in {"pending", "failed"}:
+                        blockers.append("previous_rebalance_not_reconciled")
+
+                guards[inst["instance_id"]] = {
+                    "allowed": not blockers,
+                    "blockers": blockers,
+                    "orders_enabled": inst.get("orders_enabled", True),
+                    "account_isolation": inst.get("account_isolation", "legacy"),
+                }
+        return guards
 
     def _ensure_instance_states(
         self, instances: list[dict],

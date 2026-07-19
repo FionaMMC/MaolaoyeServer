@@ -25,6 +25,7 @@ class StrategyRunner:
         trade_date: int,
         instances: list[dict],
         risk_blacklist: set[str] | None = None,
+        execution_guards: dict[str, dict] | None = None,
     ) -> tuple[dict[str, list[RawSignal]], dict[str, dict | None]]:
         """返回 (signals_by_instance, next_strategy_state_by_instance)。
 
@@ -34,6 +35,7 @@ class StrategyRunner:
         results: dict[str, list[RawSignal]] = {}
         next_states: dict[str, dict | None] = {}
         bl = set(risk_blacklist or ())
+        guards = execution_guards or {}
 
         for inst in instances:
             instance_id = inst["instance_id"]
@@ -57,6 +59,7 @@ class StrategyRunner:
                 parquet_store=self.store,
                 risk_blacklist=bl,
                 strategy_state=inst.get("strategy_state"),
+                execution_guard=guards.get(instance_id),
             )
 
             try:
