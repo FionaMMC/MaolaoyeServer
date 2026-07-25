@@ -1,0 +1,24 @@
+[Unit]
+Description=QMT no-order shadow ledger daily mark
+After=network.target qmt-server.service
+
+[Service]
+Type=oneshot
+User=qmtserver
+Group=qmtserver
+WorkingDirectory=/opt/qmt-server/v2.3/server
+EnvironmentFile=/opt/qmt-server/v2.3/server/.env
+ExecStart=/opt/qmt-server/venv/bin/python -m scripts.run_shadow_ledger
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/qmt-server/v2.3/server /var/log/qmt-server
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native

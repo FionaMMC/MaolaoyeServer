@@ -1,0 +1,10 @@
+[Unit]
+Description=Run QMT no-order shadow ledgers on weekdays
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 16:10:00
+Persistent=true
+Unit=qmt-shadow-ledger.service
+
+[Install]
+WantedBy=timers.target
