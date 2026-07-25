@@ -28,11 +28,14 @@ def make_scheduler(
         try:
             summary = pipeline_run(today)
             logger.info("scheduler_pipeline_done %s", summary)
-            if shadow_run is not None:
-                shadow_summary = shadow_run(today)
-                logger.info("scheduler_shadow_done %s", shadow_summary)
         except Exception as e:
             logger.exception("scheduler_pipeline_error: %s", e)
+        if shadow_run is not None:
+            try:
+                shadow_summary = shadow_run(today)
+                logger.info("scheduler_shadow_done %s", shadow_summary)
+            except Exception as e:
+                logger.exception("scheduler_shadow_error: %s", e)
 
     scheduler.add_job(
         _job,

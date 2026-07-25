@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.dependencies import _engine_for_url
 from app.main import create_app
+from app.scheduler.runtime import make_scheduler
 from app.settings import Settings, get_settings
 
 
@@ -45,3 +46,20 @@ def test_scheduler_starts_when_enabled(tmp_path):
         job = sched.get_job("strategy_pipeline_daily")
         assert job is not None
     # 退出 context 后应已 shutdown（不抛异常即可）
+
+
+def test_shadow_job_runs_even_when_order_pipeline_fails():
+    calls = []
+
+    def failed_pipeline(trade_date):
+        calls.append(("pipeline", trade_date))
+        raise RuntimeError("order pipeline failed")
+
+    def shadow_run(trade_date):
+        calls.append(("shadow", trade_date))
+        return {"instances": []}
+
+    scheduler = make_scheduler(failed_pipeline, shadow_run=shadow_run)
+    scheduler.get_job("strategy_pipeline_daily").func()
+
+    assert [name for name, _ in calls] == ["pipeline", "shadow"]
