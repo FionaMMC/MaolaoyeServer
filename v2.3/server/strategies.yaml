@@ -73,7 +73,7 @@ shadow_instances:
     require_sidecar: true
     max_target_age_days: 40
     allowed_source_versions:
-      - v7.9-hard-logistic-aux-top2-r1@2a2e2dbee8dc723c9b81f4e1cfa99e8120f2a51b
+      - v7.9-hard-logistic-aux-top2-r1@88c2cb1050c7391ce84a9d524a9884dfefaf3ef4
     allowed_symbols:
       - 159915.SZ
       - 159930.SZ
@@ -96,7 +96,7 @@ shadow_instances:
     require_sidecar: true
     max_target_age_days: 40
     allowed_source_versions:
-      - v7.9-hard-logistic-aux-top2-short-credit-r1@2a2e2dbee8dc723c9b81f4e1cfa99e8120f2a51b
+      - v7.9-hard-logistic-aux-top2-short-credit-r1@88c2cb1050c7391ce84a9d524a9884dfefaf3ef4
     allowed_symbols:
       - 159915.SZ
       - 159930.SZ
@@ -127,7 +127,7 @@ shadow_instances:
     allowed_source_versions:
       - v48.1-RB@49c16dadc298d6a51470bd5c2f931ecc36f65460
     allowed_publisher_source_commits:
-      - 906738a76136fb430c56aa3d2cf75b76bb76d97a
+      - 66985a19621e9dc8b5f2525e57ba1696fa7a9236
     require_sidecar: true
     allowed_symbols:
       - 510300.SH

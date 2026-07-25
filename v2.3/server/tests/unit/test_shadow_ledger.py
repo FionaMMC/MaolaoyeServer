@@ -222,10 +222,10 @@ def test_hydra_shadow_config_pins_source_symbols_and_target_age():
     assert cash_aux["enabled"] is True
     assert short_credit_aux["enabled"] is True
     assert cash_aux["allowed_source_versions"] == [
-        "v7.9-hard-logistic-aux-top2-r1@2a2e2dbee8dc723c9b81f4e1cfa99e8120f2a51b"
+        "v7.9-hard-logistic-aux-top2-r1@88c2cb1050c7391ce84a9d524a9884dfefaf3ef4"
     ]
     assert short_credit_aux["allowed_source_versions"] == [
-        "v7.9-hard-logistic-aux-top2-short-credit-r1@2a2e2dbee8dc723c9b81f4e1cfa99e8120f2a51b"
+        "v7.9-hard-logistic-aux-top2-short-credit-r1@88c2cb1050c7391ce84a9d524a9884dfefaf3ef4"
     ]
     assert "511880.SH" in cash_aux["allowed_symbols"]
     assert "511360.SH" in short_credit_aux["allowed_symbols"]
@@ -234,7 +234,7 @@ def test_hydra_shadow_config_pins_source_symbols_and_target_age():
         "v48.1-RB@49c16dadc298d6a51470bd5c2f931ecc36f65460"
     ]
     assert hydra["allowed_publisher_source_commits"] == [
-        "906738a76136fb430c56aa3d2cf75b76bb76d97a"
+        "66985a19621e9dc8b5f2525e57ba1696fa7a9236"
     ]
     assert set(hydra["allowed_symbols"]) == {
         "510300.SH", "159915.SZ", "511260.SH", "518880.SH", "159981.SZ",
