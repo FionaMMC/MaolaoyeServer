@@ -66,14 +66,51 @@ shadow_instances:
   - shadow_id: Shadow_Aux_Hard_TOP2
     mode: shadow
     orders_enabled: false
-    # Frozen logistic and legacy TOP2 risk-off rules disagree for 2026-07-25.
-    # Keep this instance disabled until the strategy owner defines a faithful
-    # cash allocation or revises the frozen rule.
-    enabled: false
+    # Active logistic plus the retained legacy TOP2 stop maps explicitly to
+    # 511880.SH; this is a virtual ledger target, never a QMT order.
+    enabled: true
     initial_cash: 10000000
     require_sidecar: true
     max_target_age_days: 40
+    allowed_source_versions:
+      - v7.9-hard-logistic-aux-top2-r1@2a2e2dbee8dc723c9b81f4e1cfa99e8120f2a51b
+    allowed_symbols:
+      - 159915.SZ
+      - 159930.SZ
+      - 159981.SZ
+      - 159985.SZ
+      - 510300.SH
+      - 511160.SH
+      - 513100.SH
+      - 513500.SH
+      - 518880.SH
+      - 511880.SH
+      - 512400.SH
+      - 512480.SH
     target_file: plugins/v713/shadow_targets/Shadow_Aux_Hard_TOP2_latest.parquet
+  - shadow_id: Shadow_Aux_Hard_TOP2_ShortCredit
+    mode: shadow
+    orders_enabled: false
+    enabled: true
+    initial_cash: 10000000
+    require_sidecar: true
+    max_target_age_days: 40
+    allowed_source_versions:
+      - v7.9-hard-logistic-aux-top2-short-credit-r1@2a2e2dbee8dc723c9b81f4e1cfa99e8120f2a51b
+    allowed_symbols:
+      - 159915.SZ
+      - 159930.SZ
+      - 159981.SZ
+      - 159985.SZ
+      - 510300.SH
+      - 511160.SH
+      - 513100.SH
+      - 513500.SH
+      - 518880.SH
+      - 511360.SH
+      - 512400.SH
+      - 512480.SH
+    target_file: plugins/v713/shadow_targets/Shadow_Aux_Hard_TOP2_ShortCredit_latest.parquet
   - shadow_id: Shadow_ML_TOP2
     mode: shadow
     orders_enabled: false
