@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from app.db import init_db, make_engine, make_session_factory
-from app.models import InstanceState, Order, PerfSnapshot, Trade
+from app.models import InstanceState, Order, PerfSnapshot, ShadowNavSnapshot, Trade
 from app.services.metrics import (
     MetricsService,
     compute_benchmark_comparison,
@@ -173,6 +173,30 @@ def test_service_summary_e2e(tmp_path: Path):
     assert out.start_nav == 1_000_000.0
     assert out.end_nav == 1_015_050.0
     assert out.cumulative_return == pytest.approx(0.015050, abs=1e-5)
+
+
+def test_service_metrics_reads_shadow_nav_without_copying_into_live_perf(tmp_path: Path):
+    sf = _factory(tmp_path)
+    now = datetime.now().isoformat()
+    with sf() as s:
+        for date, nav, ret in [
+            ("20260724", 10_000_000.0, None),
+            ("20260725", 10_100_000.0, 0.01),
+        ]:
+            s.add(ShadowNavSnapshot(
+                shadow_id="Shadow_Base", date=date, nav=nav,
+                daily_return=ret, virtual_cash=100_000.0,
+                positions_snapshot={"510300.SH": 100},
+                transaction_cost=0.0, turnover=0.0,
+                created_at=now,
+            ))
+        s.commit()
+
+    svc = MetricsService(sf)
+    summary = svc.summary("Shadow_Base", period="all")
+    assert summary.n_days == 2
+    assert summary.cumulative_return == pytest.approx(0.01)
+    assert svc.drawdown_series("Shadow_Base")["nav"] == [10_000_000.0, 10_100_000.0]
 
 
 def test_service_drawdown_series(tmp_path: Path):

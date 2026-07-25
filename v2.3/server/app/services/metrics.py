@@ -20,7 +20,7 @@ from typing import Iterable, Sequence
 
 from sqlalchemy import desc, func, select
 
-from app.models import Order, PerfSnapshot, Trade
+from app.models import Order, PerfSnapshot, ShadowNavSnapshot, Trade
 
 TRADING_DAYS = 252
 RISK_FREE_RATE = 0.035  # 年化无风险，和 V20H bond_yield 一致
@@ -294,7 +294,7 @@ def date_range_for_period(period: str, today: datetime | None = None) -> str:
 
 # ── DB 数据读取 ────────────────────────────────────────────────────────
 class MetricsService:
-    """从 SQLite 读 perf_snapshots / orders / trades，组装成指标。"""
+    """从 SQLite 读正式或影子 NAV 快照及订单成交，组装成指标。"""
 
     def __init__(self, session_factory):
         self.session_factory = session_factory
@@ -306,12 +306,24 @@ class MetricsService:
     ) -> list[tuple[str, float, float | None]]:
         """返回 [(date, nav, daily_return)] 按时间升序。"""
         with self.session_factory() as session:
-            stmt = (
-                select(PerfSnapshot.date, PerfSnapshot.nav, PerfSnapshot.daily_return)
-                .where(PerfSnapshot.instance_id == instance_id)
-                .where(PerfSnapshot.date >= cutoff)
-                .order_by(PerfSnapshot.date)
-            )
+            if instance_id.startswith("Shadow_"):
+                stmt = (
+                    select(
+                        ShadowNavSnapshot.date,
+                        ShadowNavSnapshot.nav,
+                        ShadowNavSnapshot.daily_return,
+                    )
+                    .where(ShadowNavSnapshot.shadow_id == instance_id)
+                    .where(ShadowNavSnapshot.date >= cutoff)
+                    .order_by(ShadowNavSnapshot.date)
+                )
+            else:
+                stmt = (
+                    select(PerfSnapshot.date, PerfSnapshot.nav, PerfSnapshot.daily_return)
+                    .where(PerfSnapshot.instance_id == instance_id)
+                    .where(PerfSnapshot.date >= cutoff)
+                    .order_by(PerfSnapshot.date)
+                )
             return [(r[0], float(r[1]), float(r[2]) if r[2] is not None else None)
                     for r in session.execute(stmt).all()]
 

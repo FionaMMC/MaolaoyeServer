@@ -184,10 +184,8 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     </div>
     <div class="toolbar">
       <label style="font-size:0.85em;color:#8a93a0;">实例:</label>
-      <select id="instSel" onchange="onInstanceChange()">
-        <option value="paper_v20h_v20h_v1_3" selected>V20H 多头</option>
-        <option value="paper_v53_v53">V53 全天候</option>
-        <option value="paper_v713_v713_relay">V7.13 主策略（模拟盘下单）</option>
+      <select id="instSel" onchange="onInstanceChange()" disabled>
+        <option value="">加载实例...</option>
       </select>
       <label style="font-size:0.85em;color:#8a93a0;margin-left:8px;">期间:</label>
       <select id="period-select" onchange="onPeriodChange()">
@@ -244,8 +242,8 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         <div id="instance-state"><div class="loading">Loading...</div></div>
       </div>
       <div class="card wide">
-        <h2>V7.13 影子策略对比 <span class="hint">仅虚拟账本、无订单</span></h2>
-        <div id="shadow-comparison"><div class="loading">Loading...</div></div>
+        <h2>全部策略账本 <span class="hint">shadow 为仅虚拟记账、无订单</span></h2>
+        <div id="portfolio-overview"><div class="loading">Loading...</div></div>
       </div>
     </div>
   </div>
@@ -360,13 +358,13 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     let currentTab = 'overview';
     let charts = {};
 
-    function saveKey() {
+    async function saveKey() {
       const k = document.getElementById('api-key-input').value.trim();
       if (!k) return;
       localStorage.setItem('qmt_api_key', k);
       API_KEY = k;
       document.getElementById('login-modal').style.display = 'none';
-      refreshAll();
+      await initializeDashboard();
     }
 
     function checkAuth() {
@@ -399,9 +397,30 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 
     let META = null, LAST_VERSION = null;
 
+    function query(params) {
+      return new URLSearchParams(params).toString();
+    }
+
+    let INSTANCE_META = {};
+
+    async function loadInstanceOptions() {
+      const health = await api('/admin/health');
+      const select = document.getElementById('instSel');
+      const previous = localStorage.getItem('qmt_dashboard_instance') || select.value;
+      const instances = health.instances || [];
+      if (!instances.length) throw new Error('服务器尚无可展示的实例');
+      INSTANCE_META = Object.fromEntries(instances.map(i => [i.instance_id, i]));
+      select.innerHTML = instances.map(i =>
+        `<option value="${i.instance_id}">${i.instance_id}${i.is_shadow ? ' [shadow]' : ''}</option>`
+      ).join('');
+      select.value = instances.some(i => i.instance_id === previous)
+        ? previous : instances[0].instance_id;
+      select.disabled = false;
+    }
+
     async function metaPoll(){
       try{
-        const r = await api('/admin/dashboard-meta');
+        const r = await api('/admin/dashboard-meta?' + query({instance_id: getInstanceId()}));
         META = r;
         renderHealthStrip(META);
         const v = JSON.stringify(META.version);
@@ -460,11 +479,25 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       return document.getElementById('instSel').value;
     }
 
+    function selectedQuery(extra = {}) {
+      return query({instance_id: getInstanceId(), ...extra});
+    }
+
+    function navQuery(period) {
+      return '/admin/nav-history?' + selectedQuery({period, limit: 1000});
+    }
+
+    function isShadowSelected() {
+      return Boolean(INSTANCE_META[getInstanceId()]?.is_shadow);
+    }
+
     function onPeriodChange() {
       refreshAll();
     }
 
     function onInstanceChange() {
+      localStorage.setItem('qmt_dashboard_instance', getInstanceId());
+      metaPoll();
       refreshAll();
     }
 
@@ -479,11 +512,11 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     async function renderOverview() {
       const period = getPeriod();
       try {
-        const [health, summary, navData, shadowData] = await Promise.all([
+        const [health, summary, navData, portfolio] = await Promise.all([
           api('/admin/health'),
-          api('/admin/metrics/summary?period=' + period),
-          api('/admin/nav-history?instance_id=' + getInstanceId() + '&limit=300'),
-          api('/admin/shadow/summary'),
+          api('/admin/metrics/summary?' + selectedQuery({period})),
+          api(navQuery(period)),
+          api('/admin/portfolio-overview'),
         ]);
 
         // KPIs
@@ -510,11 +543,13 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         renderRetChart('ret-chart', navData);
 
         // 实例状态
-        const instHtml = health.instances.map(i => {
+        const instHtml = health.instances.filter(
+          i => i.instance_id === getInstanceId()
+        ).map(i => {
           const ret = i.latest_daily_return;
           const retCls = colorOf(ret);
           return `<tr>
-            <td>${i.instance_id}</td>
+            <td>${i.instance_id}${i.is_shadow ? ' ' + badge('shadow', 'warn') : ''}</td>
             <td class="num">${fmt(i.virtual_cash, {cur:true})}</td>
             <td class="num">${i.holdings_count}</td>
             <td class="num">${i.latest_nav ? fmt(i.latest_nav, {cur:true}) : '—'}</td>
@@ -529,20 +564,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
             ${instHtml}
           </table>
         `;
-        const shadowRows = shadowData.items.map(i => `<tr>
-          <td>${i.shadow_id}</td>
-          <td>${badge('仅虚拟账本、无订单', 'info')}</td>
-          <td>${i.status === 'active' ? badge(i.status, 'success') : badge(i.status, 'warn')}</td>
-          <td class="num">${i.nav === null ? '—' : fmt(i.nav, {cur:true})}</td>
-          <td class="num ${colorOf(i.daily_return)}">${i.daily_return === null ? '—' : fmt(i.daily_return, {pct:true, sign:true})}</td>
-          <td class="num">${i.turnover === null ? '—' : fmt(i.turnover, {pct:true})}</td>
-          <td>${i.as_of_date || '—'}</td><td>${i.state_reason || '—'}</td>
-        </tr>`).join('');
-        document.getElementById('shadow-comparison').innerHTML = `<table>
-          <tr><th>Shadow</th><th>性质</th><th>状态</th><th class="num">NAV</th>
-          <th class="num">日收益</th><th class="num">换手</th><th>As-of</th><th>原因</th></tr>
-          ${shadowRows || '<tr><td colspan="8">尚无影子快照</td></tr>'}
-        </table>`;
+        renderPortfolioOverview(portfolio);
       } catch (e) {
         document.getElementById('kpis-overview').innerHTML = `<div class="error">${e.message}</div>`;
       }
@@ -618,11 +640,11 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       const period = getPeriod();
       try {
         const [summary, navData, weekly, monthly, yearly] = await Promise.all([
-          api('/admin/metrics/summary?period=' + period),
-          api('/admin/nav-history?instance_id=' + getInstanceId() + '&limit=300'),
-          api('/admin/metrics/periodic?period=' + period + '&freq=weekly'),
-          api('/admin/metrics/periodic?period=' + period + '&freq=monthly'),
-          api('/admin/metrics/periodic?period=all&freq=yearly'),
+          api('/admin/metrics/summary?' + selectedQuery({period})),
+          api(navQuery(period)),
+          api('/admin/metrics/periodic?' + selectedQuery({period, freq: 'weekly'})),
+          api('/admin/metrics/periodic?' + selectedQuery({period, freq: 'monthly'})),
+          api('/admin/metrics/periodic?' + selectedQuery({period: 'all', freq: 'yearly'})),
         ]);
 
         document.getElementById('kpis-returns').innerHTML = `
@@ -675,9 +697,9 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       const period = getPeriod();
       try {
         const [summary, dd, navData] = await Promise.all([
-          api('/admin/metrics/summary?period=' + period),
-          api('/admin/metrics/drawdown?period=' + period),
-          api('/admin/nav-history?instance_id=' + getInstanceId() + '&limit=300'),
+          api('/admin/metrics/summary?' + selectedQuery({period})),
+          api('/admin/metrics/drawdown?' + selectedQuery({period})),
+          api(navQuery(period)),
         ]);
 
         document.getElementById('kpis-risk').innerHTML = `
@@ -778,8 +800,30 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     // ── 策略内部 ────────────────────────────────────────────────
     async function renderStrategy() {
       try {
+        if (isShadowSelected()) {
+          const summary = await api('/admin/shadow/summary');
+          const item = summary.items.find(i => i.shadow_id === getInstanceId());
+          if (!item) throw new Error(`shadow instance not found: ${getInstanceId()}`);
+          document.getElementById('strategy-state').innerHTML = `
+            <table>
+              <tr><th>Instance</th><th>状态</th><th>性质</th><th>Decision</th>
+                  <th>As-of</th><th>Source version</th></tr>
+              <tr><td>${item.shadow_id} ${badge('shadow', 'warn')}</td>
+                  <td>${item.status}</td><td>仅虚拟账本、无订单</td>
+                  <td>${item.decision_date || '—'}</td><td>${item.as_of_date || '—'}</td>
+                  <td style="font-size:0.78em">${item.source_version || '—'}</td></tr>
+            </table>`;
+          document.getElementById('bl-total').textContent = '—';
+          document.getElementById('blacklist').innerHTML =
+            '<p class="loading">shadow 实例不进入实盘下单黑名单流程</p>';
+          document.getElementById('recent-rejected').innerHTML =
+            '<p class="loading">shadow 实例不会产生预检拒绝订单</p>';
+          document.getElementById('bk-divergence').innerHTML =
+            '<p style="color:#4ade80">✓ shadow 与订单/成交表物理隔离</p>';
+          return;
+        }
         const [state, bl, bk] = await Promise.all([
-          api('/admin/strategy-state'),
+          api('/admin/strategy-state?' + selectedQuery()),
           api('/admin/blacklist?lookback_days=30'),
           api('/admin/bookkeeping-divergence'),
         ]);
@@ -868,6 +912,15 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     async function renderTrades() {
       const period = getPeriod();
       try {
+        if (isShadowSelected()) {
+          document.getElementById('kpis-trades').innerHTML =
+            `<div class="card wide"><p style="color:#93c5fd">
+              ${getInstanceId()} 是仅虚拟记账的 shadow 实例，不产生任何订单或成交。
+            </p></div>`;
+          document.getElementById('orders-matrix').innerHTML =
+            '<p class="loading">无订单：shadow 边界已启用</p>';
+          return;
+        }
         const [trade, ordSummary] = await Promise.all([
           api('/admin/metrics/trade-analytics?period=' + period),
           api('/admin/orders-summary?days=' + ({7:7, '7d':7, '30d':30, '90d':90, '180d':180, ytd:365, '1y':365, all:365}[period] || 30)),
@@ -977,15 +1030,39 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       }
     }
 
-    if (!checkAuth()) {
-      document.getElementById('api-key-input').focus();
-    } else {
-      refreshAll();
-      // Primary refresh driver: meta poll every 15s; version change triggers analytics refresh.
-      // Safety fallback: analytics also refresh every 120s in case meta polling stalls.
+    async function initializeDashboard() {
+      try {
+        await loadInstanceOptions();
+      } catch (e) {
+        document.getElementById('meta').textContent = `instance load error: ${e.message}`;
+        return;
+      }
+      await refreshAll();
       metaPoll();
       setInterval(metaPoll, 15000);
       setInterval(refreshAll, 120000);
+    }
+
+    function renderPortfolioOverview(data) {
+      const rows = data.items.map(i => `<tr>
+        <td>${i.instance_id}${i.is_shadow ? ' ' + badge('shadow', 'warn') : ''}</td>
+        <td class="num">${fmt(i.virtual_cash, {cur:true})}</td>
+        <td class="num">${i.holdings_count}</td>
+        <td class="num">${fmt(i.latest_nav, {cur:true})}</td>
+        <td class="num ${colorOf(i.latest_daily_return)}">${fmt(i.latest_daily_return, {pct:true, sign:true})}</td>
+        <td>${i.latest_nav_date || '—'}</td>
+      </tr>`).join('');
+      document.getElementById('portfolio-overview').innerHTML = `<table>
+        <tr><th>Instance</th><th class="num">Cash</th><th class="num">持仓</th>
+            <th class="num">虚拟 NAV</th><th class="num">日收益</th><th>快照日</th></tr>
+        ${rows || '<tr><td colspan="6" class="loading">暂无实例账本</td></tr>'}
+      </table>`;
+    }
+
+    if (!checkAuth()) {
+      document.getElementById('api-key-input').focus();
+    } else {
+      initializeDashboard();
     }
   </script>
 </body>

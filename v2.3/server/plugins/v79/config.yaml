@@ -4,7 +4,7 @@
 # dry_run: false → 输出真实 RawSignal[]，并把 decision_date 标记为已消费（幂等）
 strategy_id: v79_relay
 cash_buffer: 0.01          # 留 1% 现金不投：防满仓 100 股舍入+手续费溢出导致最后一笔被切
-dry_run: true
+dry_run: false
 
 risk_filters:
   liquidity_multiplier: 100

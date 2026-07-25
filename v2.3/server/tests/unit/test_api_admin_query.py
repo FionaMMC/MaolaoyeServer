@@ -132,6 +132,67 @@ def test_shadow_summary_is_read_only_and_marks_no_order_boundary(client, setting
     assert history[0]["input_hash"] == "a" * 64
 
 
+def test_shadow_ledgers_join_portfolio_selector_and_v79_is_not_shadow(
+    client, settings_for_test,
+):
+    from app.db import init_db, make_engine, make_session_factory
+    from app.models import (
+        InstanceState,
+        PerfSnapshot,
+        ShadowInstanceState,
+        ShadowNavSnapshot,
+    )
+
+    engine = make_engine(settings_for_test.db_url)
+    init_db(engine)
+    sf = make_session_factory(engine)
+    now = _now()
+    with sf() as s:
+        s.add(InstanceState(
+            instance_id="paper_v79_v79_relay", virtual_cash=10_000_000,
+            virtual_positions={}, owned_symbols=[], last_update=now,
+        ))
+        s.add(PerfSnapshot(
+            instance_id="paper_v79_v79_relay", date="20260724",
+            nav=10_000_000, daily_return=0.0, positions_snapshot={},
+        ))
+        s.add(ShadowInstanceState(
+            shadow_id="Shadow_Hydra_V481_RB", initial_cash=10_000_000,
+            virtual_cash=100_000, virtual_positions={"510300.SH": 100},
+            status="active", cumulative_cost=10.0, last_turnover=0.5,
+            last_update=now,
+        ))
+        s.add(ShadowNavSnapshot(
+            shadow_id="Shadow_Hydra_V481_RB", date="20260725",
+            nav=9_999_000, daily_return=-0.0001, virtual_cash=100_000,
+            positions_snapshot={"510300.SH": 100},
+            transaction_cost=10.0, turnover=0.5, created_at=now,
+        ))
+        s.commit()
+
+    portfolio = client.get("/admin/portfolio-overview", headers=_AUTH).json()["data"]
+    by_id = {item["instance_id"]: item for item in portfolio["items"]}
+    assert by_id["paper_v79_v79_relay"]["is_shadow"] is False
+    assert by_id["Shadow_Hydra_V481_RB"]["is_shadow"] is True
+    assert by_id["Shadow_Hydra_V481_RB"]["orders_enabled"] is False
+
+    health = client.get("/admin/health", headers=_AUTH).json()["data"]
+    health_by_id = {item["instance_id"]: item for item in health["instances"]}
+    assert health_by_id["Shadow_Hydra_V481_RB"]["is_shadow"] is True
+
+    history = client.get(
+        "/admin/nav-history?instance_id=Shadow_Hydra_V481_RB&period=all",
+        headers=_AUTH,
+    ).json()["data"]
+    assert history["items"][0]["nav"] == 9_999_000
+
+    summary = client.get(
+        "/admin/metrics/summary?instance_id=Shadow_Hydra_V481_RB&period=all",
+        headers=_AUTH,
+    ).json()["data"]
+    assert summary["n_days"] == 1
+
+
 # ── /admin/nav-history ────────────────────────────────────────
 def test_admin_nav_history(client, settings_for_test):
     from app.db import init_db, make_engine, make_session_factory

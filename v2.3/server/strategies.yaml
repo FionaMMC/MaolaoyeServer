@@ -34,7 +34,9 @@ account_groups:
     strategies:
       - strategy_id: v79_relay
         virtual_initial_cash: 10000000
-        owned_symbols: []     # empty: dry-run phase, claims nothing → cannot disturb v20h/v53 reconcile
+        # V79 已转正；成交回报维护独立虚拟账本。共享账户下暂不按标的自动 reconcile，
+        # 因此不声明 owned_symbols，避免误认领 V20H/V53 的真实持仓。
+        owned_symbols: []
 
   # V7.13 is an external, content-verified basket.  It starts in dry-run and
   # deliberately claims no symbols while it shares the existing QMT account.

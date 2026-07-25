@@ -231,21 +231,25 @@ async def orders_summary(
 )
 async def nav_history(
     instance_id: str | None = None,
+    period: str | None = Query(None, pattern=r"^(7d|30d|90d|180d|1y|ytd|all)$"),
     limit: int = Query(60, ge=1, le=1000),
     sf=Depends(get_session_factory),
 ):
-    """返回 perf_snapshots 最近 N 个交易日的 NAV。可指定 instance_id。"""
+    """返回正式或影子实例指定时间窗内最近 N 条 NAV。"""
     with sf() as session:
-        stmt = select(PerfSnapshot).order_by(
-            desc(PerfSnapshot.date), PerfSnapshot.instance_id,
-        )
+        is_shadow = bool(instance_id and instance_id.startswith("Shadow_"))
+        model = ShadowNavSnapshot if is_shadow else PerfSnapshot
+        id_column = model.shadow_id if is_shadow else model.instance_id
+        stmt = select(model).order_by(desc(model.date), id_column)
         if instance_id:
-            stmt = stmt.where(PerfSnapshot.instance_id == instance_id)
+            stmt = stmt.where(id_column == instance_id)
+        if period:
+            stmt = stmt.where(model.date >= date_range_for_period(period))
         stmt = stmt.limit(limit)
         rows = session.execute(stmt).scalars().all()
         items = [
             {
-                "instance_id": r.instance_id,
+                "instance_id": r.shadow_id if is_shadow else r.instance_id,
                 "date": r.date,
                 "nav": r.nav,
                 "daily_return": r.daily_return,
@@ -257,7 +261,7 @@ async def nav_history(
         ]
     return APIResponse[dict](
         code=0, message="ok",
-        data={"count": len(items), "items": items},
+        data={"instance_id": instance_id, "period": period, "count": len(items), "items": items},
     )
 
 
@@ -292,6 +296,65 @@ async def instance_state(
                 item["virtual_positions"] = positions
             items.append(item)
     return APIResponse[dict](code=0, message="ok", data={"count": len(items), "items": items})
+
+
+@router.get(
+    "/portfolio-overview",
+    response_model=APIResponse[dict],
+    dependencies=[Depends(verify_api_key)],
+)
+async def portfolio_overview(sf=Depends(get_session_factory)):
+    """Return regular and no-order shadow ledgers in one selectable catalogue."""
+    with sf() as session:
+        items = []
+        for state in session.execute(select(InstanceState)).scalars().all():
+            latest = session.execute(
+                select(PerfSnapshot)
+                .where(PerfSnapshot.instance_id == state.instance_id)
+                .order_by(desc(PerfSnapshot.date))
+                .limit(1)
+            ).scalar_one_or_none()
+            items.append({
+                "instance_id": state.instance_id,
+                "virtual_cash": state.virtual_cash,
+                "holdings_count": len(state.virtual_positions or {}),
+                "latest_nav": latest.nav if latest else None,
+                "latest_nav_date": latest.date if latest else None,
+                "latest_daily_return": latest.daily_return if latest else None,
+                "last_update": state.last_update,
+                "is_shadow": False,
+                "orders_enabled": True,
+            })
+
+        for state in session.execute(select(ShadowInstanceState)).scalars().all():
+            latest = session.execute(
+                select(ShadowNavSnapshot)
+                .where(ShadowNavSnapshot.shadow_id == state.shadow_id)
+                .order_by(desc(ShadowNavSnapshot.date))
+                .limit(1)
+            ).scalar_one_or_none()
+            items.append({
+                "instance_id": state.shadow_id,
+                "virtual_cash": state.virtual_cash,
+                "holdings_count": len(state.virtual_positions or {}),
+                "latest_nav": latest.nav if latest else None,
+                "latest_nav_date": latest.date if latest else None,
+                "latest_daily_return": latest.daily_return if latest else None,
+                "last_update": state.last_update,
+                "is_shadow": True,
+                "orders_enabled": False,
+            })
+
+    return APIResponse[dict](
+        code=0,
+        message="ok",
+        data={
+            "items": items,
+            "reported_virtual_nav_sum": sum(item["latest_nav"] or 0.0 for item in items),
+            "reported_virtual_nav_sum_is_account_nav": False,
+            "note": "Each row is an independent virtual ledger; shadow rows can never create orders.",
+        },
+    )
 
 
 # ── 5. /admin/trades ──────────────────────────────────────────────────────
@@ -470,6 +533,27 @@ async def admin_health(
                 "latest_nav": latest_perf.nav if latest_perf else None,
                 "latest_nav_date": latest_perf.date if latest_perf else None,
                 "latest_daily_return": latest_perf.daily_return if latest_perf else None,
+                "is_shadow": False,
+                "orders_enabled": True,
+            })
+
+        for st_row in session.execute(select(ShadowInstanceState)).scalars().all():
+            latest_perf = session.execute(
+                select(ShadowNavSnapshot)
+                .where(ShadowNavSnapshot.shadow_id == st_row.shadow_id)
+                .order_by(desc(ShadowNavSnapshot.date))
+                .limit(1)
+            ).scalar_one_or_none()
+            instance_navs.append({
+                "instance_id": st_row.shadow_id,
+                "virtual_cash": st_row.virtual_cash,
+                "holdings_count": len(st_row.virtual_positions or {}),
+                "last_update": st_row.last_update,
+                "latest_nav": latest_perf.nav if latest_perf else None,
+                "latest_nav_date": latest_perf.date if latest_perf else None,
+                "latest_daily_return": latest_perf.daily_return if latest_perf else None,
+                "is_shadow": True,
+                "orders_enabled": False,
             })
 
     return APIResponse[dict](
