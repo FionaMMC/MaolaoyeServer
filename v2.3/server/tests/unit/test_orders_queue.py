@@ -122,3 +122,13 @@ def test_list_pending_other_date_not_stamped(tmp_path: Path):
     with f() as s:
         assert s.get(Order, "o1").fetched_at is not None
         assert s.get(Order, "o2").fetched_at is None
+
+
+def test_list_pending_returns_sells_before_buys(tmp_path: Path):
+    f = _factory(tmp_path)
+    svc = OrdersQueueService(session_factory=f)
+    svc.write_aggregated([
+        _ord(order_id="buy", direction="BUY"),
+        _ord(order_id="sell", direction="SELL"),
+    ], [])
+    assert [item.direction for item in svc.list_pending("20260430")] == ["SELL", "BUY"]

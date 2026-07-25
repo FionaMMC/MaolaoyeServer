@@ -94,6 +94,44 @@ def test_admin_orders_summary(client, settings_for_test):
     assert by_date["20260508"]["real_A"]["BUY"]["REJECTED"] == 1
 
 
+def test_shadow_summary_is_read_only_and_marks_no_order_boundary(client, settings_for_test):
+    from app.db import init_db, make_engine, make_session_factory
+    from app.models import ShadowInstanceState, ShadowNavSnapshot
+
+    engine = make_engine(settings_for_test.db_url)
+    init_db(engine)
+    sf = make_session_factory(engine)
+    now = _now()
+    with sf() as s:
+        s.add(ShadowInstanceState(
+            shadow_id="Shadow_Base", initial_cash=1_000_000,
+            virtual_cash=100_000, virtual_positions={"000001.SZ": 90_000},
+            status="active", decision_date="20260701", as_of_date="20260630",
+            state_reason="base", source_version="v7.13-base@2538554",
+            input_hash="a" * 64, target_hash="b" * 64,
+            cumulative_cost=10.0, last_turnover=0.45, last_update=now,
+        ))
+        s.add(ShadowNavSnapshot(
+            shadow_id="Shadow_Base", date="20260701", nav=999_990,
+            daily_return=None, virtual_cash=100_000,
+            positions_snapshot={"000001.SZ": 90_000}, transaction_cost=10,
+            turnover=0.45, decision_date="20260701", as_of_date="20260630",
+            state_reason="base", source_version="v7.13-base@2538554",
+            input_hash="a" * 64, target_hash="b" * 64, created_at=now,
+        ))
+        s.commit()
+
+    body = client.get("/admin/shadow/summary", headers=_AUTH).json()["data"]
+    assert body["items"][0]["instance_type"] == "shadow_no_order"
+    assert body["items"][0]["orders_enabled"] is False
+    assert body["items"][0]["nav"] == 999_990
+
+    history = client.get(
+        "/admin/shadow/nav-history?shadow_id=Shadow_Base", headers=_AUTH
+    ).json()["data"]["items"]
+    assert history[0]["input_hash"] == "a" * 64
+
+
 # ── /admin/nav-history ────────────────────────────────────────
 def test_admin_nav_history(client, settings_for_test):
     from app.db import init_db, make_engine, make_session_factory

@@ -94,6 +94,25 @@ class AlertEngine:
                 message=f"近 {self.orphan_lookback_days} 天 {len(orphans)} 笔成交 order_id 对不上任何订单（孤儿成交，client↔server 闭环断裂）",
                 as_of=last_orph["received_at"],
                 detail={"count": len(orphans), "sample": orphans[:20]}))
+        if hasattr(self.ops, "bookkeeping_divergences"):
+            divergences = self.ops.bookkeeping_divergences()
+            if divergences:
+                latest = divergences[0]
+                alerts.append(Alert(
+                    id=f"bookkeeping_divergence:{latest['order_id']}",
+                    severity="critical", category="bookkeeping_divergence",
+                    message=f"{len(divergences)} 笔真实成交未能写回虚拟账本",
+                    as_of=latest["valid_date"],
+                    detail={"count": len(divergences), "orders": divergences[:20]},
+                ))
+        if hasattr(self.ops, "blocked_shadows"):
+            for item in self.ops.blocked_shadows():
+                alerts.append(Alert(
+                    id=f"shadow_blocked:{item['shadow_id']}", severity="warn",
+                    category="shadow_scheduler",
+                    message=f"{item['shadow_id']} 影子账本阻塞：{item['reason']}",
+                    as_of=item["last_update"], detail=item,
+                ))
         for s in self.sinks:
             s.emit(alerts)
         return alerts

@@ -143,6 +143,21 @@ def get_data_upload_service(
     return DataUploadService(registry=registry)
 
 
+from app.services.shadow_ledger import ShadowLedgerService
+
+
+def get_shadow_ledger_service(
+    settings: Settings = Depends(get_settings),
+    sf: sessionmaker = Depends(get_session_factory),
+    store: ParquetStore = Depends(get_parquet_store),
+) -> ShadowLedgerService:
+    return ShadowLedgerService(
+        session_factory=sf,
+        parquet_store=store,
+        config_path=Path(settings.strategies_file),
+    )
+
+
 from app.services.ops_monitor import OpsMonitorService
 from app.services.alerts import AlertEngine
 

@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 def make_scheduler(
     pipeline_run: Callable[[int], dict],
+    shadow_run: Callable[[int], dict] | None = None,
     cron_hour: int = 16,
     cron_minute: int = 0,
 ) -> BackgroundScheduler:
@@ -27,6 +28,9 @@ def make_scheduler(
         try:
             summary = pipeline_run(today)
             logger.info("scheduler_pipeline_done %s", summary)
+            if shadow_run is not None:
+                shadow_summary = shadow_run(today)
+                logger.info("scheduler_shadow_done %s", shadow_summary)
         except Exception as e:
             logger.exception("scheduler_pipeline_error: %s", e)
 

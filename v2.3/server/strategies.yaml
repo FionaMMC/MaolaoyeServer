@@ -35,3 +35,86 @@ account_groups:
       - strategy_id: v79_relay
         virtual_initial_cash: 10000000
         owned_symbols: []     # empty: dry-run phase, claims nothing → cannot disturb v20h/v53 reconcile
+
+  # V7.13 is an external, content-verified basket.  It starts in dry-run and
+  # deliberately claims no symbols while it shares the existing QMT account.
+  - group_id: paper_v713
+    # Fail-closed staging value.  Replace with the dedicated V7.13 paper account
+    # and set the three flags below only after offline replay + reconciliation.
+    qmt_account_id: null
+    strategies:
+      - strategy_id: v713_relay
+        virtual_initial_cash: 10000000
+        owned_symbols: []
+        orders_enabled: false
+        account_isolation: none
+        dynamic_ownership: false
+        requires_reconciled_rebalance: true
+
+# Shadow instances are intentionally outside account_groups.  They have no QMT
+# identity and are processed only by ShadowLedgerService into shadow_* tables.
+shadow_instances:
+  - shadow_id: Shadow_Base
+    mode: shadow
+    orders_enabled: false
+    initial_cash: 10000000
+    require_sidecar: true
+    max_target_age_days: 40
+    target_file: plugins/v713/shadow_targets/Shadow_Base_latest.parquet
+  - shadow_id: Shadow_Aux_Hard_TOP2
+    mode: shadow
+    orders_enabled: false
+    # Frozen logistic and legacy TOP2 risk-off rules disagree for 2026-07-25.
+    # Keep this instance disabled until the strategy owner defines a faithful
+    # cash allocation or revises the frozen rule.
+    enabled: false
+    initial_cash: 10000000
+    require_sidecar: true
+    max_target_age_days: 40
+    target_file: plugins/v713/shadow_targets/Shadow_Aux_Hard_TOP2_latest.parquet
+  - shadow_id: Shadow_ML_TOP2
+    mode: shadow
+    orders_enabled: false
+    initial_cash: 10000000
+    require_sidecar: true
+    max_target_age_days: 40
+    target_file: plugins/v713/shadow_targets/Shadow_ML_TOP2_latest.parquet
+  - shadow_id: Shadow_Hydra_V481_RB
+    mode: shadow
+    orders_enabled: false
+    initial_cash: 10000000
+    # Upstream publisher: permenant_portfolio v48/publish_hydra_shadow_target.py.
+    # Keep the exact audited producer commit pinned until a later revision is reviewed.
+    allowed_source_versions:
+      - v48.1-RB@49c16dadc298d6a51470bd5c2f931ecc36f65460
+    allowed_publisher_source_commits:
+      - 906738a76136fb430c56aa3d2cf75b76bb76d97a
+    require_sidecar: true
+    allowed_symbols:
+      - 510300.SH
+      - 159915.SZ
+      - 511260.SH
+      - 518880.SH
+      - 159981.SZ
+      - 159985.SZ
+      - 159930.SZ
+      - 513500.SH
+      - 513100.SH
+    required_symbols:
+      - 510300.SH
+      - 159915.SZ
+      - 511260.SH
+      - 518880.SH
+      - 159981.SZ
+      - 159985.SZ
+      - 159930.SZ
+      - 513500.SH
+      - 513100.SH
+    max_target_age_days: 40
+    max_price_staleness_days: 7
+    # ETF 免印花税；佣金按单边万一、每笔最低 5 元做影子估算。
+    commission_rate: 0.0001
+    min_commission: 5.0
+    stamp_duty_sell: 0.0
+    lot_size: 100
+    target_file: plugins/v713/shadow_targets/Shadow_Hydra_V481_RB_latest.parquet

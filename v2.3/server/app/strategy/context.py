@@ -16,6 +16,7 @@ class Context:
         parquet_store: ParquetStore,
         risk_blacklist: set[str] | None = None,
         strategy_state: dict | None = None,
+        execution_guard: dict | None = None,
     ):
         self.instance_id = instance_id
         self.trade_date = trade_date
@@ -28,6 +29,7 @@ class Context:
         # 落库到 InstanceState.strategy_state。
         self._strategy_state = dict(strategy_state) if strategy_state else {}
         self._next_strategy_state: dict | None = None
+        self._execution_guard = dict(execution_guard or {})
 
     def cash(self) -> float:
         return self._cash
@@ -59,6 +61,10 @@ class Context:
     def pop_next_strategy_state(self) -> dict | None:
         """pipeline 内部：取本次 run 写下的状态，None 表示策略没调 set。"""
         return self._next_strategy_state
+
+    def execution_guard(self) -> dict:
+        """Return server-computed order/reconciliation blockers for this run."""
+        return dict(self._execution_guard)
 
     def market(
         self,

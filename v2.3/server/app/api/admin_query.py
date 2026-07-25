@@ -25,6 +25,8 @@ from app.models import (
     Order,
     PerfSnapshot,
     RawSignal,
+    ShadowInstanceState,
+    ShadowNavSnapshot,
     Trade,
 )
 from app.schemas.common import APIResponse
@@ -42,6 +44,76 @@ from app.settings import Settings
 router = APIRouter(prefix="/admin")
 
 logger = logging.getLogger(__name__)
+
+
+@router.get(
+    "/shadow/summary",
+    response_model=APIResponse[dict],
+    dependencies=[Depends(verify_api_key)],
+)
+async def shadow_summary(sf=Depends(get_session_factory)):
+    """Read-only shadow health/NAV comparison; never exposes order actions."""
+    with sf() as session:
+        states = session.execute(
+            select(ShadowInstanceState).order_by(ShadowInstanceState.shadow_id)
+        ).scalars().all()
+        items = []
+        for state in states:
+            latest = session.execute(
+                select(ShadowNavSnapshot)
+                .where(ShadowNavSnapshot.shadow_id == state.shadow_id)
+                .order_by(ShadowNavSnapshot.date.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            items.append({
+                "shadow_id": state.shadow_id,
+                "instance_type": "shadow_no_order",
+                "status": state.status,
+                "nav": latest.nav if latest else None,
+                "daily_return": latest.daily_return if latest else None,
+                "date": latest.date if latest else None,
+                "cash": state.virtual_cash,
+                "holdings_count": len(state.virtual_positions or {}),
+                "turnover": latest.turnover if latest else state.last_turnover,
+                "cumulative_cost": state.cumulative_cost,
+                "decision_date": state.decision_date,
+                "as_of_date": state.as_of_date,
+                "state_reason": state.state_reason,
+                "source_version": state.source_version,
+                "input_hash": state.input_hash,
+                "target_hash": state.target_hash,
+                "orders_enabled": False,
+            })
+    return APIResponse[dict](code=0, message="ok", data={"items": items})
+
+
+@router.get(
+    "/shadow/nav-history",
+    response_model=APIResponse[dict],
+    dependencies=[Depends(verify_api_key)],
+)
+async def shadow_nav_history(
+    shadow_id: str,
+    limit: int = Query(300, ge=1, le=2000),
+    sf=Depends(get_session_factory),
+):
+    with sf() as session:
+        rows = session.execute(
+            select(ShadowNavSnapshot)
+            .where(ShadowNavSnapshot.shadow_id == shadow_id)
+            .order_by(ShadowNavSnapshot.date.desc())
+            .limit(limit)
+        ).scalars().all()
+        items = [{
+            "shadow_id": row.shadow_id, "date": row.date, "nav": row.nav,
+            "daily_return": row.daily_return, "cash": row.virtual_cash,
+            "positions": row.positions_snapshot, "transaction_cost": row.transaction_cost,
+            "turnover": row.turnover, "decision_date": row.decision_date,
+            "as_of_date": row.as_of_date, "state_reason": row.state_reason,
+            "source_version": row.source_version, "input_hash": row.input_hash,
+            "target_hash": row.target_hash,
+        } for row in rows]
+    return APIResponse[dict](code=0, message="ok", data={"items": items})
 
 
 # ── 1. /admin/orders : 完整 orders 查询 ───────────────────────────────

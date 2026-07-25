@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Iterable
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 
 from app.models import Order, OrderSignalMap
 from app.schemas.orders import OrderItem
@@ -58,7 +58,11 @@ class OrdersQueueService:
                 select(Order)
                 .where(Order.valid_date == valid_date)
                 .where(Order.status == "PENDING")
-                .order_by(Order.created_at)
+                .order_by(
+                    case((Order.direction == "SELL", 0), else_=1),
+                    Order.created_at,
+                    Order.order_id,
+                )
             )
             rows = session.execute(stmt).scalars().all()
             # 拉取即盖章（只记首次）：fetched_at 非空的日期不允许默认重算，

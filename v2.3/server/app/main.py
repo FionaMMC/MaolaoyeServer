@@ -47,7 +47,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             from app.db import make_engine, make_session_factory
             from app.dependencies import (
                 get_blacklist_service, get_orders_queue_service,
-                get_parquet_store, get_perf_service, get_strategy_pipeline,
+                get_parquet_store, get_perf_service, get_shadow_ledger_service,
+                get_strategy_pipeline,
             )
             from app.scheduler.runtime import make_scheduler
 
@@ -60,12 +61,19 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 perf=get_perf_service(_sf2, store),
                 blacklist=get_blacklist_service(_sf2),
             )
+            shadow = get_shadow_ledger_service(
+                settings=settings, sf=_sf2, store=store,
+            )
 
             def _pipeline_run(trade_date: int) -> dict:
                 return pipeline.run(trade_date)
 
+            def _shadow_run(trade_date: int) -> dict:
+                return shadow.run_all(trade_date)
+
             scheduler = make_scheduler(
                 _pipeline_run,
+                shadow_run=_shadow_run,
                 cron_hour=settings.scheduler_cron_hour,
                 cron_minute=settings.scheduler_cron_minute,
             )

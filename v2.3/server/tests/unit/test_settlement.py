@@ -294,10 +294,9 @@ def test_settle_buy_deducts_commission(tmp_path: Path):
     with sf() as s:
         m = s.get(InstanceState, "real_A_m")
         r = s.get(InstanceState, "real_A_r")
-        # m: 100 股 × 10 = 1000 gross, 佣金 max(5, 1000×0.0003=0.3) = 5
-        assert m.virtual_cash == 1_000_000.0 - 1000.0 - 5.0
-        # r: 200 股 × 10 = 2000 gross, 佣金 max(5, 2000×0.0003=0.6) = 5
-        assert r.virtual_cash == 2_000_000.0 - 2000.0 - 5.0
+        # QMT 聚合单总佣金 max(5, 3000×0.0003)=5，再按成交量 1:2 分摊。
+        assert m.virtual_cash == 1_000_000.0 - 1000.0 - 5.0 / 3.0
+        assert r.virtual_cash == 2_000_000.0 - 2000.0 - 10.0 / 3.0
 
 
 def test_settle_buy_large_amount_uses_rate_commission(tmp_path: Path):
@@ -444,11 +443,8 @@ def test_settle_duplicate_fill_is_idempotent(tmp_path: Path):
         assert len(s.query(Trade).filter_by(order_id="oid1").all()) == 1
 
 
-def test_settle_distinct_partial_fills_both_apply(tmp_path: Path):
-    """同一 order 的两笔【不同】部分成交（filled_time/数量不同）都必须入账。
-
-    保证幂等去重不会误杀合法的分笔成交（防过度去重）。
-    """
+def test_settle_progressive_cumulative_partial_reports_apply_only_delta(tmp_path: Path):
+    """API 上报累计数量：100 PARTIAL -> 300 FILLED 只新增后 200 股。"""
     sf = _factory(tmp_path)
     _seed(sf)
     svc = _make_svc(sf)
@@ -457,9 +453,9 @@ def test_settle_distinct_partial_fills_both_apply(tmp_path: Path):
         TradeResult(order_id="oid1", filled_quantity=100, filled_price=10.0,
                     filled_time="2026-04-30T09:30:00+08:00", status="PARTIAL"),
     ])
-    # 午盘成交剩余 200 股（不同 filled_time + 不同数量）
+    # 收盘累计成交 300 股；ledger 只能补记 delta=200，不能再记 300。
     svc.settle("20260430", [
-        TradeResult(order_id="oid1", filled_quantity=200, filled_price=10.0,
+        TradeResult(order_id="oid1", filled_quantity=300, filled_price=10.0,
                     filled_time="2026-04-30T13:00:00+08:00", status="FILLED"),
     ])
     with sf() as s:
@@ -470,6 +466,27 @@ def test_settle_distinct_partial_fills_both_apply(tmp_path: Path):
         assert r.virtual_positions.get("600519.SH", 0) == 200
         # trades 表有两条不同记录
         assert len(s.query(Trade).filter_by(order_id="oid1").all()) == 2
+
+
+def test_settle_cumulative_vwap_uses_incremental_notional(tmp_path: Path):
+    """100@10 then cumulative 300@12 means remaining 200 booked at 13."""
+    sf = _factory(tmp_path)
+    _seed(sf)
+    svc = _make_svc(sf)
+    svc.settle("20260430", [TradeResult(
+        order_id="oid1", filled_quantity=100, filled_price=10.0,
+        filled_time="2026-04-30T09:30:00+08:00", status="PARTIAL",
+    )])
+    svc.settle("20260430", [TradeResult(
+        order_id="oid1", filled_quantity=300, filled_price=12.0,
+        filled_time="2026-04-30T15:00:00+08:00", status="FILLED",
+    )])
+    with sf() as s:
+        m = s.get(InstanceState, "real_A_m")
+        r = s.get(InstanceState, "real_A_r")
+        assert m.virtual_positions.get("600519.SH", 0) == 100
+        assert r.virtual_positions.get("600519.SH", 0) == 200
+        assert (m.virtual_cash + r.virtual_cash) == 3_000_000.0 - 3_600.0
 
 
 def test_settle_unmatched_returns_candidates_by_symbol(tmp_path: Path):

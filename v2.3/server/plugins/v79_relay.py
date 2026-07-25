@@ -36,7 +36,7 @@ class V79RelayAdapter(Strategy):
 
     def _load_config(self) -> None:
         if type(self)._cfg is None:
-            with (_V79_DIR / "config.yaml").open() as f:
+            with (_V79_DIR / "config.yaml").open(encoding="utf-8") as f:
                 type(self)._cfg = yaml.safe_load(f)
 
     def _read_latest_basket(self) -> pd.DataFrame | None:
