@@ -208,15 +208,27 @@ def test_hydra_shadow_config_pins_source_symbols_and_target_age():
         shadow_id for shadow_id, item in instances.items()
         if item["require_sidecar"]
     } == {
-        "Shadow_Base", "Shadow_Aux_Hard_TOP2", "Shadow_ML_TOP2",
+        "Shadow_Base", "Shadow_Aux_Hard_TOP2", "Shadow_Aux_Hard_TOP2_ShortCredit", "Shadow_ML_TOP2",
         "Shadow_Hydra_V481_RB",
     }
     assert {
         instances[shadow_id]["max_target_age_days"]
         for shadow_id in (
-            "Shadow_Base", "Shadow_Aux_Hard_TOP2", "Shadow_ML_TOP2"
+            "Shadow_Base", "Shadow_Aux_Hard_TOP2", "Shadow_Aux_Hard_TOP2_ShortCredit", "Shadow_ML_TOP2"
         )
     } == {40}
+    cash_aux = instances["Shadow_Aux_Hard_TOP2"]
+    short_credit_aux = instances["Shadow_Aux_Hard_TOP2_ShortCredit"]
+    assert cash_aux["enabled"] is True
+    assert short_credit_aux["enabled"] is True
+    assert cash_aux["allowed_source_versions"] == [
+        "v7.9-hard-logistic-aux-top2-r1@2a2e2dbee8dc723c9b81f4e1cfa99e8120f2a51b"
+    ]
+    assert short_credit_aux["allowed_source_versions"] == [
+        "v7.9-hard-logistic-aux-top2-short-credit-r1@2a2e2dbee8dc723c9b81f4e1cfa99e8120f2a51b"
+    ]
+    assert "511880.SH" in cash_aux["allowed_symbols"]
+    assert "511360.SH" in short_credit_aux["allowed_symbols"]
     assert hydra["require_sidecar"] is True
     assert hydra["allowed_source_versions"] == [
         "v48.1-RB@49c16dadc298d6a51470bd5c2f931ecc36f65460"
