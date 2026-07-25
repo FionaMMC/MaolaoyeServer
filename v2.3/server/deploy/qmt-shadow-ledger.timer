@@ -2,7 +2,7 @@
 Description=Run QMT no-order shadow ledgers on weekdays
 
 [Timer]
-OnCalendar=Mon..Fri *-*-* 16:10:00
+OnCalendar=Mon..Fri *-*-* 18:00:00
 Persistent=true
 Unit=qmt-shadow-ledger.service
 
