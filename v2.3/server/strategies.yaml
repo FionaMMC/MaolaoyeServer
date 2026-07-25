@@ -58,14 +58,59 @@ shadow_instances:
     mode: shadow
     orders_enabled: false
     initial_cash: 10000000
+    require_sidecar: true
+    max_target_age_days: 40
     target_file: plugins/v713/shadow_targets/Shadow_Base_latest.parquet
   - shadow_id: Shadow_Aux_Hard_TOP2
     mode: shadow
     orders_enabled: false
     initial_cash: 10000000
+    require_sidecar: true
+    max_target_age_days: 40
     target_file: plugins/v713/shadow_targets/Shadow_Aux_Hard_TOP2_latest.parquet
   - shadow_id: Shadow_ML_TOP2
     mode: shadow
     orders_enabled: false
     initial_cash: 10000000
+    require_sidecar: true
+    max_target_age_days: 40
     target_file: plugins/v713/shadow_targets/Shadow_ML_TOP2_latest.parquet
+  - shadow_id: Shadow_Hydra_V481_RB
+    mode: shadow
+    orders_enabled: false
+    initial_cash: 10000000
+    # Upstream publisher: permenant_portfolio v48/publish_hydra_shadow_target.py.
+    # Keep the exact audited producer commit pinned until a later revision is reviewed.
+    allowed_source_versions:
+      - v48.1-RB@49c16dadc298d6a51470bd5c2f931ecc36f65460
+    allowed_publisher_source_commits:
+      - c492531440cdd84b60d2c4ae281235f292bd31da
+    require_sidecar: true
+    allowed_symbols:
+      - 510300.SH
+      - 159915.SZ
+      - 511260.SH
+      - 518880.SH
+      - 159981.SZ
+      - 159985.SZ
+      - 159930.SZ
+      - 513500.SH
+      - 513100.SH
+    required_symbols:
+      - 510300.SH
+      - 159915.SZ
+      - 511260.SH
+      - 518880.SH
+      - 159981.SZ
+      - 159985.SZ
+      - 159930.SZ
+      - 513500.SH
+      - 513100.SH
+    max_target_age_days: 40
+    max_price_staleness_days: 7
+    # ETF 免印花税；佣金按单边万一、每笔最低 5 元做影子估算。
+    commission_rate: 0.0001
+    min_commission: 5.0
+    stamp_duty_sell: 0.0
+    lot_size: 100
+    target_file: plugins/v713/shadow_targets/Shadow_Hydra_V481_RB_latest.parquet

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import math
 import re
@@ -23,6 +24,15 @@ TARGET_COLUMNS = {
 }
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _CODE_RE = re.compile(r"^\d{6}\.(SH|SZ)$")
+_SIDECAR_COMMON_KEYS = {
+    "shadow_id", "decision_date", "as_of_date", "source_version",
+    "input_hash", "weight_sum",
+}
+_HYDRA_PAYLOAD_KEYS = {
+    "shadow_id", "decision_date", "source_version", "input_hashes",
+    "target_bond_abs_risk_budget", "trend_z", "duration_score",
+    "signal_date", "training_label_end",
+}
 
 
 def _now_iso() -> str:
@@ -35,6 +45,56 @@ def shadow_target_hash(frame: pd.DataFrame) -> str:
         index=False, lineterminator="\n", float_format="%.12g"
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def validate_shadow_sidecar(
+    sidecar_path: Path, target: pd.DataFrame, constraints: dict | None = None,
+) -> dict:
+    """Validate producer provenance against an already-normalized target."""
+    payload = json.loads(Path(sidecar_path).read_text(encoding="utf-8"))
+    missing = sorted(_SIDECAR_COMMON_KEYS - set(payload))
+    if missing:
+        raise ValueError(f"sidecar is missing common provenance fields: {missing}")
+    for field in ("shadow_id", "decision_date", "as_of_date", "source_version", "input_hash"):
+        if str(payload[field]) != str(target[field].iloc[0]):
+            raise ValueError(f"sidecar {field} does not match target")
+    if not _HASH_RE.fullmatch(str(payload["input_hash"])):
+        raise ValueError("sidecar input_hash must be a lowercase SHA-256")
+    if abs(float(payload["weight_sum"]) - float(target["weight"].sum())) > 1e-8:
+        raise ValueError("sidecar weight_sum does not match target")
+
+    constraints = constraints or {}
+    allowed_publishers = constraints.get("allowed_publisher_source_commits")
+    is_hydra_payload = "input_hashes" in payload or allowed_publishers is not None
+    if allowed_publishers is not None:
+        if payload.get("publisher_source_commit") not in set(allowed_publishers):
+            raise ValueError("sidecar publisher_source_commit is not approved")
+    if is_hydra_payload:
+        missing_hydra = sorted(_HYDRA_PAYLOAD_KEYS - set(payload))
+        if missing_hydra:
+            raise ValueError(
+                f"sidecar is missing Hydra provenance fields: {missing_hydra}"
+            )
+        input_hashes = payload["input_hashes"]
+        if (not isinstance(input_hashes, dict) or not input_hashes
+                or not all(
+                    _HASH_RE.fullmatch(str(value))
+                    for value in input_hashes.values()
+                )):
+            raise ValueError(
+                "sidecar input_hashes must contain lowercase SHA-256 values"
+            )
+        canonical = {key: payload[key] for key in _HYDRA_PAYLOAD_KEYS}
+        expected_hash = hashlib.sha256(
+            json.dumps(
+                canonical, sort_keys=True, separators=(",", ":")
+            ).encode()
+        ).hexdigest()
+        if expected_hash != target["input_hash"].iloc[0]:
+            raise ValueError(
+                "sidecar provenance hash does not match target input_hash"
+            )
+    return payload
 
 
 class ShadowBoundaryError(ValueError):
@@ -73,6 +133,64 @@ class ShadowLedgerService:
             target_file = Path(str(item.get("target_file", "")))
             if not target_file.is_absolute():
                 target_file = self.config_path.parent / target_file
+            allowed_symbols_raw = item.get("allowed_symbols")
+            allowed_symbols = None
+            if allowed_symbols_raw is not None:
+                allowed_symbols = [str(value).strip() for value in allowed_symbols_raw]
+                if (not allowed_symbols
+                        or len(allowed_symbols) != len(set(allowed_symbols))
+                        or not all(_CODE_RE.fullmatch(value) for value in allowed_symbols)):
+                    raise ShadowBoundaryError(
+                        f"{shadow_id} allowed_symbols must be unique tradeable codes"
+                    )
+            required_symbols_raw = item.get("required_symbols")
+            required_symbols = None
+            if required_symbols_raw is not None:
+                required_symbols = [str(value).strip() for value in required_symbols_raw]
+                if (not required_symbols
+                        or len(required_symbols) != len(set(required_symbols))
+                        or not all(_CODE_RE.fullmatch(value) for value in required_symbols)):
+                    raise ShadowBoundaryError(
+                        f"{shadow_id} required_symbols must be unique tradeable codes"
+                    )
+                if (allowed_symbols is not None
+                        and not set(required_symbols).issubset(allowed_symbols)):
+                    raise ShadowBoundaryError(
+                        f"{shadow_id} required_symbols must be inside allowed_symbols"
+                    )
+            allowed_source_versions_raw = item.get("allowed_source_versions")
+            allowed_source_versions = None
+            if allowed_source_versions_raw is not None:
+                allowed_source_versions = [
+                    str(value).strip() for value in allowed_source_versions_raw
+                ]
+                if (not allowed_source_versions
+                        or len(allowed_source_versions) != len(set(allowed_source_versions))
+                        or any(not value for value in allowed_source_versions)):
+                    raise ShadowBoundaryError(
+                        f"{shadow_id} allowed_source_versions must be unique and non-empty"
+                    )
+            allowed_publishers_raw = item.get("allowed_publisher_source_commits")
+            allowed_publisher_source_commits = None
+            if allowed_publishers_raw is not None:
+                allowed_publisher_source_commits = [
+                    str(value).strip() for value in allowed_publishers_raw
+                ]
+                if (not allowed_publisher_source_commits
+                        or len(allowed_publisher_source_commits)
+                        != len(set(allowed_publisher_source_commits))
+                        or not all(
+                            re.fullmatch(r"[0-9a-f]{40}", value)
+                            for value in allowed_publisher_source_commits
+                        )):
+                    raise ShadowBoundaryError(
+                        f"{shadow_id} publisher commits must be unique full Git SHAs"
+                    )
+            max_target_age_days = int(item.get("max_target_age_days", 45))
+            if max_target_age_days < 0:
+                raise ShadowBoundaryError(
+                    f"{shadow_id} max_target_age_days must be non-negative"
+                )
             instances.append({
                 "shadow_id": shadow_id,
                 "target_file": target_file,
@@ -82,12 +200,19 @@ class ShadowLedgerService:
                 "stamp_duty_sell": float(item.get("stamp_duty_sell", 0.0005)),
                 "lot_size": int(item.get("lot_size", 100)),
                 "max_price_staleness_days": int(item.get("max_price_staleness_days", 7)),
+                "max_target_age_days": max_target_age_days,
+                "allowed_symbols": allowed_symbols,
+                "required_symbols": required_symbols,
+                "allowed_source_versions": allowed_source_versions,
+                "allowed_publisher_source_commits": allowed_publisher_source_commits,
+                "require_sidecar": bool(item.get("require_sidecar", False)),
                 "enabled": bool(item.get("enabled", True)),
             })
         return instances
 
     def validate_target(
-        self, frame: pd.DataFrame, shadow_id: str, trade_date: int
+        self, frame: pd.DataFrame, shadow_id: str, trade_date: int,
+        constraints: dict | None = None,
     ) -> tuple[pd.DataFrame, str]:
         if set(frame.columns) != TARGET_COLUMNS:
             missing = sorted(TARGET_COLUMNS - set(frame.columns))
@@ -125,6 +250,34 @@ class ShadowLedgerService:
             raise ValueError("shadow target as_of_date is after decision_date")
         if decision > run_date:
             raise ValueError("shadow target decision_date is in the future")
+        constraints = constraints or {}
+        max_target_age_days = constraints.get("max_target_age_days")
+        if (max_target_age_days is not None
+                and (run_date - as_of).days > int(max_target_age_days)):
+            raise ValueError(
+                f"shadow target is stale: as_of_date={as_of:%Y%m%d} "
+                f"max_age_days={int(max_target_age_days)}"
+            )
+        allowed_symbols = constraints.get("allowed_symbols")
+        if allowed_symbols is not None:
+            unexpected = sorted(set(data["code"]) - set(allowed_symbols))
+            if unexpected:
+                raise ValueError(
+                    f"shadow target contains symbols outside its allowlist: {unexpected}"
+                )
+        required_symbols = constraints.get("required_symbols")
+        if required_symbols is not None:
+            missing_required = sorted(set(required_symbols) - set(data["code"]))
+            if missing_required:
+                raise ValueError(
+                    f"shadow target is missing required symbols: {missing_required}"
+                )
+        allowed_source_versions = constraints.get("allowed_source_versions")
+        if (allowed_source_versions is not None
+                and data["source_version"].iloc[0] not in set(allowed_source_versions)):
+            raise ValueError(
+                "shadow target source_version is not approved for this instance"
+            )
         return data, shadow_target_hash(data)
 
     def run_all(self, trade_date: int) -> dict:
@@ -148,7 +301,16 @@ class ShadowLedgerService:
         if not path.exists():
             raise FileNotFoundError(f"target missing: {path}")
         frame = pd.read_parquet(path) if path.suffix.lower() == ".parquet" else pd.read_csv(path)
-        target, target_hash = self.validate_target(frame, cfg["shadow_id"], trade_date)
+        target, target_hash = self.validate_target(
+            frame, cfg["shadow_id"], trade_date, constraints=cfg
+        )
+        if cfg["require_sidecar"]:
+            sidecar_path = path.with_suffix(".json")
+            if not sidecar_path.is_file():
+                raise FileNotFoundError(
+                    f"required producer sidecar missing: {sidecar_path}"
+                )
+            validate_shadow_sidecar(sidecar_path, target, cfg)
         prices = self._prices(
             set(target["code"].tolist()), trade_date, cfg["max_price_staleness_days"]
         )
