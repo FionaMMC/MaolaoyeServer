@@ -3,6 +3,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+import yaml
 
 from app.db import init_db, make_engine, make_session_factory
 from app.models import InstanceState
@@ -78,37 +79,159 @@ def test_reconcile_dryrun_perfect_match(tmp_path: Path):
 
 def test_strict_rebalance_state_becomes_reconciled_only_on_exact_snapshot(tmp_path: Path):
     sf = _factory(tmp_path)
-    _seed_instance(sf, "paper_v713_v713_relay", 1_000_000.0, {"600519.SH": 100})
+    _seed_instance(sf, "dedicated_strict_strategy", 1_000_000.0, {"600519.SH": 100})
     with sf() as s:
-        inst = s.get(InstanceState, "paper_v713_v713_relay")
+        inst = s.get(InstanceState, "dedicated_strict_strategy")
         inst.strategy_state = {"reconciliation_status": "pending"}
         s.commit()
 
     svc = ReconcileService(sf)
     svc.reconcile(_snapshot(
-        "paper_v713_v713_relay", 1_000_000.0, {"600519.SH": 100}
+        "dedicated_strict_strategy", 1_000_000.0, {"600519.SH": 100}
     ))
     with sf() as s:
-        state = s.get(InstanceState, "paper_v713_v713_relay").strategy_state
+        state = s.get(InstanceState, "dedicated_strict_strategy").strategy_state
         assert state["reconciliation_status"] == "reconciled"
         assert state["last_reconciliation_diff_count"] == 0
 
 
 def test_strict_rebalance_state_marks_mismatch_failed(tmp_path: Path):
     sf = _factory(tmp_path)
-    _seed_instance(sf, "paper_v713_v713_relay", 1_000_000.0, {"600519.SH": 100})
+    _seed_instance(sf, "dedicated_strict_strategy", 1_000_000.0, {"600519.SH": 100})
     with sf() as s:
-        inst = s.get(InstanceState, "paper_v713_v713_relay")
+        inst = s.get(InstanceState, "dedicated_strict_strategy")
         inst.strategy_state = {"reconciliation_status": "pending"}
         s.commit()
 
     ReconcileService(sf).reconcile(_snapshot(
-        "paper_v713_v713_relay", 900_000.0, {"600519.SH": 200}
+        "dedicated_strict_strategy", 900_000.0, {"600519.SH": 200}
     ))
     with sf() as s:
-        state = s.get(InstanceState, "paper_v713_v713_relay").strategy_state
+        state = s.get(InstanceState, "dedicated_strict_strategy").strategy_state
         assert state["reconciliation_status"] == "failed"
         assert state["last_reconciliation_diff_count"] == 1
+
+
+def test_shared_ledger_dryrun_does_not_certify_from_total_qmt_snapshot(tmp_path: Path):
+    sf = _factory(tmp_path)
+    _seed_instance(sf, "paper_v79_v713_relay", 1_000_000.0, {"600519.SH": 100})
+    with sf() as s:
+        inst = s.get(InstanceState, "paper_v79_v713_relay")
+        inst.strategy_state = {"reconciliation_status": "attributed_ledger"}
+        s.commit()
+
+    ReconcileService(sf).reconcile(_snapshot(
+        "paper_v79_v713_relay", 900_000.0, {"600519.SH": 200}
+    ))
+
+    with sf() as s:
+        inst = s.get(InstanceState, "paper_v79_v713_relay")
+        assert inst.strategy_state == {"reconciliation_status": "attributed_ledger"}
+        assert inst.virtual_positions == {"600519.SH": 100}
+
+
+def test_shared_ledger_apply_is_blocked_even_with_force(tmp_path: Path):
+    sf = _factory(tmp_path)
+    _seed_instance(sf, "paper_v79_v713_relay", 1_000_000.0, {"600519.SH": 100})
+    with sf() as s:
+        inst = s.get(InstanceState, "paper_v79_v713_relay")
+        inst.strategy_state = {"reconciliation_status": "attributed_ledger"}
+        s.commit()
+
+    with pytest.raises(ReconcileGuardTripped, match="reconcile_total"):
+        ReconcileService(sf).reconcile(_snapshot(
+            "paper_v79_v713_relay",
+            900_000.0,
+            {"600519.SH": 200},
+            dry_run=False,
+            force=True,
+        ))
+
+    with sf() as s:
+        inst = s.get(InstanceState, "paper_v79_v713_relay")
+        assert inst.strategy_state == {"reconciliation_status": "attributed_ledger"}
+        assert inst.virtual_positions == {"600519.SH": 100}
+
+
+def test_shared_physical_account_blocks_apply_to_other_instances(tmp_path: Path):
+    """Regression: V7.13 fills must not be re-claimed by V20H/V53 reconcile."""
+    sf = _factory(tmp_path)
+    with sf() as s:
+        s.add(InstanceState(
+            instance_id="paper_v53_v53",
+            virtual_cash=1_000_000.0,
+            virtual_positions={"510300.SH": 100},
+            owned_symbols=["510300.SH"],
+            last_update=datetime.now().isoformat(),
+        ))
+        s.add(InstanceState(
+            instance_id="paper_v79_v713_relay",
+            virtual_cash=1_000_000.0,
+            virtual_positions={"510300.SH": 50},
+            owned_symbols=[],
+            strategy_state={"reconciliation_status": "attributed_ledger"},
+            last_update=datetime.now().isoformat(),
+        ))
+        s.commit()
+
+    strategies = tmp_path / "strategies.yaml"
+    strategies.write_text(yaml.safe_dump({
+        "account_groups": [
+            {
+                "group_id": "paper_v53",
+                "qmt_account_id": "SHARED",
+                "strategies": [{"strategy_id": "v53"}],
+            },
+            {
+                "group_id": "paper_v79",
+                "qmt_account_id": "SHARED",
+                "strategies": [{
+                    "strategy_id": "v713_relay",
+                    "account_isolation": "shared_ledger",
+                }],
+            },
+        ],
+    }), encoding="utf-8")
+
+    snap = QmtPositionSnapshot(
+        instance_id="paper_v53_v53",
+        qmt_account_id="SHARED",
+        qmt_cash=2_000_000.0,
+        qmt_positions={"510300.SH": 150},
+        snapshot_time=datetime.now().isoformat(),
+        dry_run=False,
+        force=True,
+    )
+    with pytest.raises(ReconcileGuardTripped, match="任何实例都禁止"):
+        ReconcileService(sf, strategies_file=strategies).reconcile(snap)
+
+    with sf() as s:
+        assert s.get(InstanceState, "paper_v53_v53").virtual_positions == {
+            "510300.SH": 100,
+        }
+
+
+def test_configured_qmt_account_id_cannot_be_spoofed_to_bypass_guard(tmp_path: Path):
+    sf = _factory(tmp_path)
+    _seed_instance(sf, "paper_v53_v53", 1_000_000.0, {"510300.SH": 100})
+    strategies = tmp_path / "strategies.yaml"
+    strategies.write_text(yaml.safe_dump({
+        "account_groups": [{
+            "group_id": "paper_v53",
+            "qmt_account_id": "REAL_ACCOUNT",
+            "strategies": [{"strategy_id": "v53"}],
+        }],
+    }), encoding="utf-8")
+    snap = QmtPositionSnapshot(
+        instance_id="paper_v53_v53",
+        qmt_account_id="FAKE_ACCOUNT",
+        qmt_cash=1_000_000.0,
+        qmt_positions={"510300.SH": 100},
+        snapshot_time=datetime.now().isoformat(),
+        dry_run=False,
+    )
+    with pytest.raises(ReconcileGuardTripped, match="不一致"):
+        ReconcileService(sf, strategies_file=strategies).reconcile(snap)
 
 
 def test_reconcile_dryrun_server_has_extra(tmp_path: Path):
@@ -306,7 +429,7 @@ def test_reconcile_filters_outlier_positions(tmp_path: Path):
         "000001.SZ": 10_000_000_000,  # 模拟器默认股 100 亿股 — 应被过滤
         "600028.SH": 999_999_999,    # 另一个异常大持仓
     }, dry_run=False)
-    result = svc.reconcile(snap)
+    svc.reconcile(snap)
 
     # 过滤后 server 只该有正常那只
     with sf() as s:

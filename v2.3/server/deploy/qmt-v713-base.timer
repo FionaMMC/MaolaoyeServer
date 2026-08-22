@@ -1,0 +1,9 @@
+[Unit]
+Description=Run V7.13 Base weekly refresh every Monday 17:30 (Asia/Shanghai)
+
+[Timer]
+OnCalendar=Mon 17:30
+Persistent=true
+
+[Install]
+WantedBy=timers.target

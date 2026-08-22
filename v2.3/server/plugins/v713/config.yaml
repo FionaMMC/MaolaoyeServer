@@ -1,6 +1,6 @@
 strategy_id: v713_relay
 cash_buffer: 0.01
-dry_run: true
+dry_run: false
 max_target_age_days: 7
 risk_filters:
   liquidity_multiplier: 100

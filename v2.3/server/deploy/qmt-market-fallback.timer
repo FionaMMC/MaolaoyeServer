@@ -1,0 +1,10 @@
+[Unit]
+Description=Backfill QMT market store from Tushare when Windows EOD is missing
+
+[Timer]
+OnCalendar=Mon..Fri 17:05
+Persistent=true
+Unit=qmt-market-fallback.service
+
+[Install]
+WantedBy=timers.target

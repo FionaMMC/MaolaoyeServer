@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 from app.db import init_db, make_engine, make_session_factory
-from app.models import InstanceState, Order, OrderSignalMap, RawSignal as RawSignalRow
+from app.models import InstanceState, Order, OrderSignalMap, RawSignal as RawSignalRow, Trade
 from app.scheduler.pipeline import StrategyPipeline
 from app.services.aggregate import AggregateService
 from app.services.orders_queue import OrdersQueueService
@@ -185,10 +185,8 @@ def test_pipeline_runs_perf_snapshot(setup):
         assert snap.nav == 1000.0
 
 
-def test_pipeline_snapshot_not_under_future_trade_date(setup):
-    """Regression: 5/27 早 9 点 trigger trade_date=20260527 不应该提前在 perf_snapshots
-    写 20260527 的快照（当时市场还没收盘）。修复后 snapshot 写在 today。
-    """
+def test_pipeline_does_not_snapshot_future_batch_without_today_market(setup):
+    """A future batch without today's EOD data must not write any snapshot."""
     from app.models import PerfSnapshot
 
     pipeline, sf, store, yaml_path = setup
@@ -201,18 +199,17 @@ def test_pipeline_snapshot_not_under_future_trade_date(setup):
     })
     # 一个明显的 future date
     future_date = 21260101
-    pipeline.run(future_date)
+    summary = pipeline.run(future_date)
 
     import datetime as _dt
     today_str = _dt.datetime.now().strftime("%Y%m%d")
 
     with sf() as s:
-        # future date 那条不应该写
+        assert summary["skipped"] == "market_data_not_ready_for_future_batch"
         future_snap = s.get(PerfSnapshot, ("real_A_noop", str(future_date)))
         assert future_snap is None, "不该提前为 future trade_date 写 snapshot"
-        # today 那条应该有
         today_snap = s.get(PerfSnapshot, ("real_A_noop", today_str))
-        assert today_snap is not None, "应该用 today 作为 snapshot 日期"
+        assert today_snap is None, "行情未到时不应写入任何 NAV snapshot"
 
 
 def test_pipeline_idempotent_same_date_no_dupes(setup):
@@ -651,11 +648,115 @@ def test_pipeline_reset_instance_states(setup):
         assert inst.virtual_positions == {}
 
 
+def test_live_pipeline_terminalizes_prior_day_unresolved_orders(setup, monkeypatch):
+    import app.scheduler.pipeline as pipeline_module
+
+    monkeypatch.setattr(pipeline_module, "_today_int", lambda: 20260728)
+    pipeline, sf, store, yaml_path = setup
+    _write_yaml(yaml_path, {
+        "account_groups": [{
+            "group_id": "paper", "qmt_account_id": "X",
+            "strategies": [{"strategy_id": "noop", "virtual_initial_cash": 1_000_000}],
+        }],
+    })
+    with sf() as s:
+        s.add(Order(
+            order_id="old-pending", account_group="paper", symbol="600519.SH",
+            direction="BUY", quantity=100, limit_price=10.0,
+            valid_date="20260727", status="PENDING", created_at=_now(),
+        ))
+        s.add(Order(
+            order_id="old-partial", account_group="paper", symbol="000001.SZ",
+            direction="BUY", quantity=200, limit_price=10.0,
+            valid_date="20260727", status="PARTIAL", created_at=_now(),
+        ))
+        s.add(Trade(
+            order_id="old-partial", filled_quantity=100, filled_price=10.0,
+            status="PARTIAL", filled_time=_now(), received_at=_now(),
+        ))
+        s.commit()
+
+    summary = pipeline.run(20260728)
+
+    assert summary["stale_orders_terminalized"] == {
+        "expired": 1, "cancelled": 1, "skipped_with_trade": 0,
+    }
+    with sf() as s:
+        assert s.get(Order, "old-pending").status == "EXPIRED"
+        assert s.get(Order, "old-partial").status == "CANCELLED"
+
+
+def test_future_batch_terminalizes_todays_partial_before_strict_guard(
+    setup, monkeypatch,
+):
+    """EOD trigger for tomorrow must close today's PARTIAL remainder first.
+
+    Regression: 2026-07-29 V7.13 had an EOD PARTIAL order.  The old cutoff used
+    ``valid_date < today`` so the order remained unresolved and the strict guard
+    blocked every strategy's 2026-07-30 batch and 2026-07-29 NAV snapshot.
+    """
+    import app.scheduler.pipeline as pipeline_module
+
+    monkeypatch.setattr(pipeline_module, "_today_int", lambda: 20260729)
+    pipeline, sf, store, yaml_path = setup
+    monkeypatch.setattr(store, "latest_date", lambda *args, **kwargs: 20260729)
+    _write_yaml(yaml_path, {
+        "account_groups": [{
+            "group_id": "strict_dedicated", "qmt_account_id": "DEDICATED",
+            "strategies": [{
+                "strategy_id": "noop", "virtual_initial_cash": 1_000_000,
+                "orders_enabled": True, "account_isolation": "dedicated",
+                "requires_reconciled_rebalance": True,
+            }],
+        }],
+    })
+    with sf() as s:
+        s.add(InstanceState(
+            instance_id="strict_dedicated_noop", virtual_cash=1_000_000,
+            virtual_positions={"510300.SH": 1100}, last_update=_now(),
+        ))
+        s.add(RawSignalRow(
+            signal_id="today-partial-s1", instance_id="strict_dedicated_noop",
+            symbol="510300.SH", direction="BUY", quantity=2200,
+            reference_price=4.65, price_offset=0.0, limit_price=4.65,
+            valid_date="20260729", signal_time=_now(), precheck_status="PASS",
+        ))
+        s.add(Order(
+            order_id="today-partial-o1", account_group="strict_dedicated",
+            symbol="510300.SH", direction="BUY", quantity=2200, limit_price=4.65,
+            valid_date="20260729", status="PARTIAL", created_at=_now(),
+        ))
+        s.add(OrderSignalMap(
+            order_id="today-partial-o1", signal_id="today-partial-s1",
+            signal_quantity=2200,
+        ))
+        s.add(Trade(
+            order_id="today-partial-o1", filled_quantity=1100, filled_price=4.65,
+            status="PARTIAL", filled_time=_now(), received_at=_now(),
+        ))
+        s.commit()
+
+    summary = pipeline.run(20260730)
+
+    assert "skipped" not in summary
+    assert summary["stale_orders_terminalized"] == {
+        "expired": 0, "cancelled": 1, "skipped_with_trade": 0,
+    }
+    with sf() as s:
+        assert s.get(Order, "today-partial-o1").status == "CANCELLED"
+        trade = s.query(Trade).filter_by(order_id="today-partial-o1").one()
+        assert trade.filled_quantity == 1100
+        assert trade.status == "PARTIAL"
+        state = s.get(InstanceState, "strict_dedicated_noop")
+        assert state.virtual_cash == 1_000_000
+        assert state.virtual_positions == {"510300.SH": 1100}
+
+
 def test_strict_rebalance_guard_blocks_unresolved_and_unreconciled(setup):
     pipeline, sf, store, yaml_path = setup
     _write_yaml(yaml_path, {
         "account_groups": [{
-            "group_id": "paper_v713", "qmt_account_id": "DEDICATED",
+            "group_id": "strict_dedicated", "qmt_account_id": "DEDICATED",
             "strategies": [{
                 "strategy_id": "noop", "virtual_initial_cash": 1_000_000,
                 "orders_enabled": True, "account_isolation": "dedicated",
@@ -666,7 +767,7 @@ def test_strict_rebalance_guard_blocks_unresolved_and_unreconciled(setup):
     instances = pipeline._load_instances()
     pipeline._ensure_instance_states(instances)
     with sf() as s:
-        inst = s.get(InstanceState, "paper_v713_noop")
+        inst = s.get(InstanceState, "strict_dedicated_noop")
         inst.strategy_state = {"reconciliation_status": "pending"}
         s.add(RawSignalRow(
             signal_id="strict-s1", instance_id=inst.instance_id,
@@ -675,7 +776,7 @@ def test_strict_rebalance_guard_blocks_unresolved_and_unreconciled(setup):
             valid_date="20260720", signal_time=_now(), precheck_status="PASS",
         ))
         s.add(Order(
-            order_id="strict-o1", account_group="paper_v713", symbol="600519.SH",
+            order_id="strict-o1", account_group="strict_dedicated", symbol="600519.SH",
             direction="BUY", quantity=100, limit_price=10.0,
             valid_date="20260720", status="PARTIAL", created_at=_now(),
         ))
@@ -684,7 +785,7 @@ def test_strict_rebalance_guard_blocks_unresolved_and_unreconciled(setup):
         ))
         s.commit()
 
-    guard = pipeline._execution_guards(instances)["paper_v713_noop"]
+    guard = pipeline._execution_guards(instances)["strict_dedicated_noop"]
     assert not guard["allowed"]
     assert "unresolved_order" in guard["blockers"]
     assert "previous_rebalance_not_reconciled" in guard["blockers"]
@@ -694,7 +795,7 @@ def test_strict_rebalance_guard_requires_safe_account_boundary(setup):
     pipeline, sf, store, yaml_path = setup
     _write_yaml(yaml_path, {
         "account_groups": [{
-            "group_id": "paper_v713", "qmt_account_id": None,
+            "group_id": "strict_invalid", "qmt_account_id": None,
             "strategies": [{
                 "strategy_id": "noop", "virtual_initial_cash": 1_000_000,
                 "orders_enabled": False, "owned_symbols": [],
@@ -704,7 +805,7 @@ def test_strict_rebalance_guard_requires_safe_account_boundary(setup):
     })
     instances = pipeline._load_instances()
     pipeline._ensure_instance_states(instances)
-    guard = pipeline._execution_guards(instances)["paper_v713_noop"]
+    guard = pipeline._execution_guards(instances)["strict_invalid_noop"]
     assert set(guard["blockers"]) >= {
         "orders_disabled", "ambiguous_position_ownership", "missing_qmt_account",
     }
@@ -717,7 +818,7 @@ def test_dedicated_label_is_rejected_when_qmt_account_is_shared(setup):
             {"group_id": "other", "qmt_account_id": "SAME", "strategies": [
                 {"strategy_id": "noop", "virtual_initial_cash": 1_000_000},
             ]},
-            {"group_id": "paper_v713", "qmt_account_id": "SAME", "strategies": [{
+            {"group_id": "strict_dedicated", "qmt_account_id": "SAME", "strategies": [{
                 "strategy_id": "always_buy", "virtual_initial_cash": 1_000_000,
                 "orders_enabled": True, "account_isolation": "dedicated",
                 "requires_reconciled_rebalance": True,
@@ -725,15 +826,57 @@ def test_dedicated_label_is_rejected_when_qmt_account_is_shared(setup):
         ],
     })
     instances = pipeline._load_instances()
-    guard = pipeline._execution_guards(instances)["paper_v713_always_buy"]
+    guard = pipeline._execution_guards(instances)["strict_dedicated_always_buy"]
     assert "qmt_account_not_dedicated" in guard["blockers"]
+
+
+def test_shared_ledger_is_allowed_on_shared_qmt_account(setup):
+    pipeline, sf, store, yaml_path = setup
+    _write_yaml(yaml_path, {
+        "account_groups": [
+            {"group_id": "paper_v53", "qmt_account_id": "SAME", "strategies": [{
+                "strategy_id": "noop", "virtual_initial_cash": 1_000_000,
+                "owned_symbols": ["510300.SH"],
+            }]},
+            {"group_id": "paper_v79", "qmt_account_id": "SAME", "strategies": [{
+                "strategy_id": "noop", "virtual_initial_cash": 1_000_000,
+                "orders_enabled": True, "owned_symbols": [],
+                "account_isolation": "shared_ledger",
+                "requires_reconciled_rebalance": True,
+            }]},
+        ],
+    })
+    instances = pipeline._load_instances()
+    guard = pipeline._execution_guards(instances)["paper_v79_noop"]
+    assert guard["allowed"] is True
+    assert guard["blockers"] == []
+    assert guard["reconciliation_scope"] == "attributed_ledger"
+
+
+def test_shared_ledger_cannot_claim_qmt_symbols(setup):
+    pipeline, sf, store, yaml_path = setup
+    _write_yaml(yaml_path, {
+        "account_groups": [{
+            "group_id": "paper_v79", "qmt_account_id": "SAME",
+            "strategies": [{
+                "strategy_id": "noop", "virtual_initial_cash": 1_000_000,
+                "orders_enabled": True, "owned_symbols": ["510300.SH"],
+                "account_isolation": "shared_ledger",
+                "requires_reconciled_rebalance": True,
+            }],
+        }],
+    })
+    instances = pipeline._load_instances()
+    guard = pipeline._execution_guards(instances)["paper_v79_noop"]
+    assert guard["allowed"] is False
+    assert "shared_ledger_must_not_claim_symbols" in guard["blockers"]
 
 
 def test_strict_preflight_preserves_unfetched_pending_order(setup):
     pipeline, sf, store, yaml_path = setup
     _write_yaml(yaml_path, {
         "account_groups": [{
-            "group_id": "paper_v713", "qmt_account_id": "DEDICATED",
+            "group_id": "strict_dedicated", "qmt_account_id": "DEDICATED",
             "strategies": [{
                 "strategy_id": "noop", "virtual_initial_cash": 1_000_000,
                 "orders_enabled": True, "account_isolation": "dedicated",
@@ -743,17 +886,17 @@ def test_strict_preflight_preserves_unfetched_pending_order(setup):
     })
     with sf() as s:
         s.add(InstanceState(
-            instance_id="paper_v713_noop", virtual_cash=1_000_000,
+            instance_id="strict_dedicated_noop", virtual_cash=1_000_000,
             virtual_positions={}, last_update=_now(),
         ))
         s.add(RawSignalRow(
-            signal_id="preserve-s1", instance_id="paper_v713_noop",
+            signal_id="preserve-s1", instance_id="strict_dedicated_noop",
             symbol="600519.SH", direction="BUY", quantity=100,
             reference_price=10.0, price_offset=0.0, limit_price=10.0,
             valid_date="20260720", signal_time=_now(), precheck_status="PASS",
         ))
         s.add(Order(
-            order_id="preserve-o1", account_group="paper_v713", symbol="600519.SH",
+            order_id="preserve-o1", account_group="strict_dedicated", symbol="600519.SH",
             direction="BUY", quantity=100, limit_price=10.0,
             valid_date="20260720", status="PENDING", created_at=_now(),
         ))

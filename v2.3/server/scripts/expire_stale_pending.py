@@ -37,8 +37,13 @@ def _d(yyyymmdd: str) -> date:
     return date(int(s[:4]), int(s[4:6]), int(s[6:8]))
 
 
-def expire_stale_pending(session_factory, max_age_days: int = 2,
-                         today: str | None = None, apply: bool = False) -> dict:
+def expire_stale_pending(
+    session_factory,
+    max_age_days: int = 2,
+    today: str | None = None,
+    apply: bool = False,
+    account_group: str | None = None,
+) -> dict:
     """把 valid_date 早于 today-max_age_days 的 PENDING 单标记 EXPIRED。
 
     Returns: {candidates, to_expire, expired, skipped_filled, orders}
@@ -48,11 +53,12 @@ def expire_stale_pending(session_factory, max_age_days: int = 2,
     cutoff = (end - timedelta(days=max_age_days)).strftime("%Y%m%d")
     expired = 0
     with session_factory() as s:
-        rows = s.execute(
-            select(Order)
-            .where(Order.status == "PENDING", Order.valid_date <= cutoff)
-            .order_by(Order.valid_date)
-        ).scalars().all()
+        stmt = select(Order).where(
+            Order.status == "PENDING", Order.valid_date <= cutoff
+        )
+        if account_group:
+            stmt = stmt.where(Order.account_group == account_group)
+        rows = s.execute(stmt.order_by(Order.valid_date)).scalars().all()
         cand_ids = [o.order_id for o in rows]
         filled_ids = {x[0] for x in s.execute(
             select(Trade.order_id).where(Trade.order_id.in_(cand_ids))
@@ -78,6 +84,11 @@ def main() -> None:
     ap.add_argument("--max-age-days", type=int, default=2,
                     help="valid_date 早于 today-N 天才算僵尸（默认 2）")
     ap.add_argument("--today", default=None, help="YYYYMMDD，缺省取系统当天")
+    ap.add_argument(
+        "--account-group",
+        default=None,
+        help="只清理指定 account_group；切换策略时必须用它限制范围",
+    )
     ap.add_argument("--apply", action="store_true", help="落库（缺省仅预演）")
     args = ap.parse_args()
 
@@ -88,7 +99,8 @@ def main() -> None:
 
     sf = make_session_factory(make_engine(f"sqlite:///{args.db}"))
     res = expire_stale_pending(sf, max_age_days=args.max_age_days,
-                               today=args.today, apply=args.apply)
+                               today=args.today, apply=args.apply,
+                               account_group=args.account_group)
 
     mode = "APPLY" if args.apply else "DRY-RUN"
     print(f"[{mode}] candidates={res['candidates']} to_expire={res['to_expire']} "

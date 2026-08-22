@@ -411,7 +411,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       if (!instances.length) throw new Error('服务器尚无可展示的实例');
       INSTANCE_META = Object.fromEntries(instances.map(i => [i.instance_id, i]));
       select.innerHTML = instances.map(i =>
-        `<option value="${i.instance_id}">${i.instance_id}${i.is_shadow ? ' [shadow]' : ''}</option>`
+        `<option value="${i.instance_id}">${i.display_name || i.instance_id}${i.is_shadow ? ' [shadow]' : ''}</option>`
       ).join('');
       select.value = instances.some(i => i.instance_id === previous)
         ? previous : instances[0].instance_id;
@@ -549,7 +549,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
           const ret = i.latest_daily_return;
           const retCls = colorOf(ret);
           return `<tr>
-            <td>${i.instance_id}${i.is_shadow ? ' ' + badge('shadow', 'warn') : ''}</td>
+            <td>${i.display_name || i.instance_id}${i.is_shadow ? ' ' + badge('shadow', 'warn') : ''}</td>
             <td class="num">${fmt(i.virtual_cash, {cur:true})}</td>
             <td class="num">${i.holdings_count}</td>
             <td class="num">${i.latest_nav ? fmt(i.latest_nav, {cur:true}) : '—'}</td>
@@ -1045,7 +1045,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 
     function renderPortfolioOverview(data) {
       const rows = data.items.map(i => `<tr>
-        <td>${i.instance_id}${i.is_shadow ? ' ' + badge('shadow', 'warn') : ''}</td>
+        <td>${i.display_name || i.instance_id}${i.is_shadow ? ' ' + badge('shadow', 'warn') : ''}</td>
         <td class="num">${fmt(i.virtual_cash, {cur:true})}</td>
         <td class="num">${i.holdings_count}</td>
         <td class="num">${fmt(i.latest_nav, {cur:true})}</td>

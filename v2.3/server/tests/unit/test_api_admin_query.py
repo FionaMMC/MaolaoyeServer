@@ -193,6 +193,48 @@ def test_shadow_ledgers_join_portfolio_selector_and_v79_is_not_shadow(
     assert summary["n_days"] == 1
 
 
+def test_portfolio_selector_hides_retired_regular_instance(
+    client, settings_for_test,
+):
+    from app.db import init_db, make_engine, make_session_factory
+    from app.models import InstanceState
+
+    settings_for_test.strategies_file.write_text(
+        """
+account_groups:
+  - group_id: paper_v79
+    qmt_account_id: SHARED
+    strategies:
+      - strategy_id: v713_relay
+        display_name: V7.13_Base
+        orders_enabled: true
+""",
+        encoding="utf-8",
+    )
+    engine = make_engine(settings_for_test.db_url)
+    init_db(engine)
+    sf = make_session_factory(engine)
+    with sf() as session:
+        session.add_all([
+            InstanceState(
+                instance_id="paper_v79_v79_relay", virtual_cash=10_000_000,
+                virtual_positions={}, last_update=_now(),
+            ),
+            InstanceState(
+                instance_id="paper_v79_v713_relay", virtual_cash=10_000_000,
+                virtual_positions={}, last_update=_now(),
+            ),
+        ])
+        session.commit()
+
+    items = client.get(
+        "/admin/portfolio-overview", headers=_AUTH,
+    ).json()["data"]["items"]
+    regular = [item for item in items if not item["is_shadow"]]
+    assert [item["instance_id"] for item in regular] == ["paper_v79_v713_relay"]
+    assert regular[0]["display_name"] == "V7.13_Base"
+
+
 # ── /admin/nav-history ────────────────────────────────────────
 def test_admin_nav_history(client, settings_for_test):
     from app.db import init_db, make_engine, make_session_factory

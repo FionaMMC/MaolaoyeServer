@@ -1,0 +1,17 @@
+[Unit]
+Description=QMT market EOD Tushare fallback
+After=network-online.target qmt-server.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=qmtserver
+Group=qmtserver
+WorkingDirectory=/opt/qmt-server/v2.3/server
+EnvironmentFile=/opt/qmt-refresh/.env
+ExecStart=/opt/qmt-refresh/venv/bin/python -m scripts.fetch_market_from_tushare
+TimeoutStartSec=45m
+Nice=10
+CPUWeight=50
+StandardOutput=append:/opt/qmt-refresh/logs/market_fallback.service.log
+StandardError=inherit

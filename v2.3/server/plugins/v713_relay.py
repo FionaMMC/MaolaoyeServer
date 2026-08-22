@@ -42,6 +42,22 @@ def basket_hash(frame: pd.DataFrame) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def allocation_hash(frame: pd.DataFrame) -> str:
+    """Identify the executable monthly allocation, excluding publication date.
+
+    ``decision_date`` is artifact provenance, not a rebalance cadence key.  The
+    producer may run more than once during a month, while V7.13 must keep using
+    the same completed ``as_of_date`` allocation until a new month closes.
+    """
+    canonical = frame[
+        ["code", "weight", "strategy_version", "sleeve", "as_of_date"]
+    ].sort_values("code")
+    payload = canonical.to_csv(
+        index=False, lineterminator="\n", float_format="%.12g"
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 class V713RelayAdapter(V79RelayAdapter):
     """Consume only a verified V7.13 executable basket."""
 
@@ -120,6 +136,8 @@ class V713RelayAdapter(V79RelayAdapter):
             logger.warning("V7.13 target decision date %s is in the future; skip", decision_date)
             return []
         basket_id = str(basket["basket_sha256"].iloc[0])
+        basket_as_of_date = str(basket["as_of_date"].iloc[0])
+        allocation_id = allocation_hash(basket)
         state = ctx.strategy_state()
         guard = ctx.execution_guard()
         if not cfg.get("dry_run", True) and not guard.get("allowed", False):
@@ -135,9 +153,7 @@ class V713RelayAdapter(V79RelayAdapter):
                 ctx.instance_id, basket_id[:12], blockers,
             )
             return []
-        if state.get("last_consumed_basket_sha256") == basket_id:
-            logger.info("V7.13[%s] basket=%s already consumed; skip", ctx.instance_id, basket_id[:12])
-            return []
+        consumed = state.get("last_consumed_basket_sha256") == basket_id
         if cfg.get("dry_run", True) and state.get("last_replayed_basket_sha256") == basket_id:
             logger.info(
                 "V7.13[%s] basket=%s already replayed in dry-run; skip",
@@ -147,9 +163,114 @@ class V713RelayAdapter(V79RelayAdapter):
 
         max_age_days = int(cfg.get("max_target_age_days", 7))
         decision_ts = pd.to_datetime(decision_date, format="%Y%m%d")
-        if (target - decision_ts).days > max_age_days:
+        target_age_days = (target - decision_ts).days
+
+        if consumed:
+            # Content-addressed idempotency means "do not recompute a consumed
+            # basket", not "abandon its unfilled remainder".  Reuse the exact
+            # persisted target quantities and diff them against the settlement-
+            # updated virtual ledger.  Fully filled baskets still emit nothing;
+            # PARTIAL/CANCELLED batches emit only their residual quantity.
+            if target_age_days > max_age_days:
+                next_state = dict(state)
+                next_state.update({
+                    "last_residual_retry_blocked_trade_date": str(trade_date),
+                    "last_residual_retry_blocked_reason": "stale_consumed_basket",
+                })
+                ctx.set_strategy_state(next_state)
+                logger.warning(
+                    "V7.13[%s] consumed basket=%s is stale by %d days; "
+                    "skip residual retry",
+                    ctx.instance_id, basket_id[:12], target_age_days,
+                )
+                return []
+            saved_target = state.get("last_target_quantities")
+            if not isinstance(saved_target, dict):
+                logger.error(
+                    "V7.13[%s] basket=%s consumed without persisted target; skip residual",
+                    ctx.instance_id, basket_id[:12],
+                )
+                return []
+            try:
+                target_qty = {
+                    str(code): int(quantity)
+                    for code, quantity in saved_target.items()
+                }
+            except (TypeError, ValueError):
+                logger.error(
+                    "V7.13[%s] basket=%s has invalid persisted target; skip residual",
+                    ctx.instance_id, basket_id[:12],
+                )
+                return []
+            signals = self._diff_and_emit(ctx, ctx.positions(), target_qty, target)
+            if not signals:
+                logger.info(
+                    "V7.13[%s] basket=%s already consumed and target reached; skip",
+                    ctx.instance_id, basket_id[:12],
+                )
+                return []
+            next_state = dict(state)
+            next_state.update({
+                "last_residual_retry_trade_date": str(trade_date),
+                "last_residual_retry_signals": len(signals),
+            })
+            ctx.set_strategy_state(next_state)
+            logger.warning(
+                "V7.13[%s] retrying %d residual signals for consumed basket=%s",
+                ctx.instance_id, len(signals), basket_id[:12],
+            )
+            return signals
+
+        # V7.13 is monthly.  A weekly publisher may legitimately create a new
+        # artifact with a later decision_date, but the relay must not turn that
+        # metadata-only change into another rebalance for the same completed
+        # month.  Exact consumed artifacts were handled above so their explicit
+        # PARTIAL/CANCELLED residuals can still be completed.
+        dry_run = bool(cfg.get("dry_run", True))
+        cycle_state_key = (
+            "last_replayed_as_of_date" if dry_run else "last_target_as_of_date"
+        )
+        previous_as_of_date = state.get(cycle_state_key)
+        if previous_as_of_date:
+            try:
+                previous_as_of = pd.to_datetime(
+                    str(previous_as_of_date), format="%Y%m%d", errors="raise"
+                )
+                basket_as_of = pd.to_datetime(
+                    basket_as_of_date, format="%Y%m%d", errors="raise"
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"V7.13 persisted monthly cycle is invalid: "
+                    f"{previous_as_of_date!r}"
+                ) from exc
+            if basket_as_of <= previous_as_of:
+                reason = (
+                    "monthly_cycle_already_consumed"
+                    if basket_as_of == previous_as_of
+                    else "monthly_cycle_rollback_rejected"
+                )
+                next_state = dict(state)
+                next_state.update({
+                    "last_ignored_basket_sha256": basket_id,
+                    "last_ignored_allocation_sha256": allocation_id,
+                    "last_ignored_decision_date": decision_date,
+                    "last_ignored_as_of_date": basket_as_of_date,
+                    "last_ignored_reason": reason,
+                })
+                ctx.set_strategy_state(next_state)
+                log = logger.warning if basket_as_of == previous_as_of else logger.error
+                log(
+                    "V7.13[%s] ignored artifact basket=%s decision=%s as_of=%s "
+                    "previous_as_of=%s reason=%s",
+                    ctx.instance_id, basket_id[:12], decision_date,
+                    basket_as_of_date, previous_as_of_date, reason,
+                )
+                return []
+
+        if target_age_days > max_age_days:
             raise ValueError(
-                f"V7.13 target is stale by {(target - decision_ts).days} days "
+                f"V7.13 target is stale by {target_age_days} days "
                 f"(max {max_age_days})"
             )
 
@@ -165,6 +286,8 @@ class V713RelayAdapter(V79RelayAdapter):
                 "last_replayed_basket_sha256": basket_id,
                 "last_replayed_decision_date": decision_date,
                 "last_replayed_sleeve": str(basket["sleeve"].iloc[0]),
+                "last_replayed_as_of_date": basket_as_of_date,
+                "last_replayed_allocation_sha256": allocation_id,
                 "last_target_quantities": target_qty,
             })
             ctx.set_strategy_state(next_state)
@@ -182,8 +305,16 @@ class V713RelayAdapter(V79RelayAdapter):
             "last_consumed_sleeve": str(basket["sleeve"].iloc[0]),
             "last_target_weights": weights,
             "last_target_quantities": target_qty,
-            "last_target_as_of_date": str(basket["as_of_date"].iloc[0]),
-            "reconciliation_status": "pending",
+            "last_target_as_of_date": basket_as_of_date,
+            "last_target_allocation_sha256": allocation_id,
+            # 共享 QMT 账户无法把重叠 ETF 的真实持仓直接切成单策略快照；
+            # V7.13 依靠 order_signal_map + settlement 维护独立虚拟账本，
+            # 物理账户由 portfolio 级总量对账兜底。
+            "reconciliation_status": (
+                "pending"
+                if guard.get("reconciliation_scope") == "instance_qmt"
+                else "attributed_ledger"
+            ),
         })
         ctx.set_strategy_state(next_state)
         logger.info("V7.13[%s] emitted %d signals for basket=%s", ctx.instance_id, len(signals), basket_id[:12])

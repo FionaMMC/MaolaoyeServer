@@ -32,24 +32,15 @@ account_groups:
   - group_id: paper_v79
     qmt_account_id: "301300148788"
     strategies:
-      - strategy_id: v79_relay
-        virtual_initial_cash: 10000000
-        # V79 已转正；成交回报维护独立虚拟账本。共享账户下暂不按标的自动 reconcile，
-        # 因此不声明 owned_symbols，避免误认领 V20H/V53 的真实持仓。
-        owned_symbols: []
-
-  # V7.13 is an external, content-verified basket.  It starts in dry-run and
-  # deliberately claims no symbols while it shares the existing QMT account.
-  - group_id: paper_v713
-    # Fail-closed staging value.  Replace with the dedicated V7.13 paper account
-    # and set the three flags below only after offline replay + reconciliation.
-    qmt_account_id: null
-    strategies:
+      # V7.13_Base replaces V79 on the existing paper_v79 client route.
+      # V20H and V53 remain unchanged on the same QMT account.  Fills are
+      # attributed to this virtual ledger through order_signal_map.
       - strategy_id: v713_relay
+        display_name: V7.13_Base
         virtual_initial_cash: 10000000
         owned_symbols: []
-        orders_enabled: false
-        account_isolation: none
+        orders_enabled: true
+        account_isolation: shared_ledger
         dynamic_ownership: false
         requires_reconciled_rebalance: true
 
@@ -74,6 +65,12 @@ shadow_instances:
     max_target_age_days: 40
     allowed_source_versions:
       - v7.9-hard-logistic-aux-top2-r1@88c2cb1050c7391ce84a9d524a9884dfefaf3ef4
+    # Outside AUX_HYDRA the audited producer intentionally mirrors Base, which
+    # may contain the monthly TOP50 stock universe.  Keep the ETF allowlist for
+    # active TOP2 states and exempt only these two exact fallback contracts.
+    allowed_symbol_fallback_state_reasons:
+      - BASE:TOP50:top2_not_applicable
+      - BASE:T1_5050:top2_not_applicable
     allowed_symbols:
       - 159915.SZ
       - 159930.SZ
@@ -97,6 +94,9 @@ shadow_instances:
     max_target_age_days: 40
     allowed_source_versions:
       - v7.9-hard-logistic-aux-top2-short-credit-r1@88c2cb1050c7391ce84a9d524a9884dfefaf3ef4
+    allowed_symbol_fallback_state_reasons:
+      - BASE:TOP50:top2_not_applicable
+      - BASE:T1_5050:top2_not_applicable
     allowed_symbols:
       - 159915.SZ
       - 159930.SZ

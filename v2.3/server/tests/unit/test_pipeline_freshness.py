@@ -87,6 +87,53 @@ def test_pipeline_runs_when_fresh(tmp_path):
     assert summary["orders"] >= 1
 
 
+def test_future_batch_requires_todays_market_data(tmp_path, monkeypatch):
+    import app.scheduler.pipeline as pipeline_module
+
+    class FixedDateTime:
+        @staticmethod
+        def now(tz=None):
+            value = pd.Timestamp("2026-07-28").to_pydatetime()
+            return value.replace(tzinfo=tz) if tz else value
+
+    monkeypatch.setattr(pipeline_module, "datetime", FixedDateTime)
+    pipeline, sf, store = _mk_pipeline(tmp_path, max_staleness_days=5)
+    store.append("indexes", "000852.SH", pd.DataFrame([_bar(20260727)]))
+    store.append("stocks", "600519.SH", pd.DataFrame([_bar(20260727)]))
+
+    summary = pipeline.run(20260729)
+
+    assert summary["skipped"] == "market_data_not_ready_for_future_batch"
+    assert summary["latest_market_date"] == 20260727
+    with sf() as s:
+        assert s.query(Order).count() == 0
+        assert s.query(RawSignalRow).count() == 0
+
+
+def test_future_batch_runs_after_todays_market_data_arrives(tmp_path, monkeypatch):
+    import app.scheduler.pipeline as pipeline_module
+    from app.models import PerfSnapshot
+
+    class FixedDateTime:
+        @staticmethod
+        def now(tz=None):
+            value = pd.Timestamp("2026-07-28").to_pydatetime()
+            return value.replace(tzinfo=tz) if tz else value
+
+    monkeypatch.setattr(pipeline_module, "datetime", FixedDateTime)
+    pipeline, sf, store = _mk_pipeline(tmp_path, max_staleness_days=5)
+    store.append("indexes", "000852.SH", pd.DataFrame([_bar(20260728)]))
+    store.append("stocks", "600519.SH", pd.DataFrame([_bar(20260728)]))
+
+    summary = pipeline.run(20260729)
+
+    assert "skipped" not in summary
+    assert summary["orders"] >= 1
+    with sf() as s:
+        assert s.get(PerfSnapshot, ("real_A_always_buy", "20260728")) is not None
+        assert s.get(PerfSnapshot, ("real_A_always_buy", "20260729")) is None
+
+
 def test_guard_disabled_when_none(tmp_path):
     # max_staleness_days=None → 不启用护栏（向后兼容旧构造）
     pipeline, sf, store = _mk_pipeline(tmp_path, max_staleness_days=None)

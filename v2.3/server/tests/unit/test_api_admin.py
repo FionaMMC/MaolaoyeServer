@@ -10,6 +10,8 @@ def test_admin_run_pipeline_no_yaml(client, settings_for_test):
     body = r.json()
     assert body["code"] == 0
     assert body["data"]["instances"] == 0
+    assert body["data"]["trade_date"] == 20260430
+    assert body["data"]["valid_date"] == "20260430"
 
 
 def test_admin_run_pipeline_no_auth_returns_401(client):

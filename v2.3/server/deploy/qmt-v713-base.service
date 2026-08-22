@@ -1,0 +1,19 @@
+[Unit]
+Description=V7.13 Base weekly target and shadow refresh
+After=network-online.target qmt-server.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=qmtserver
+Group=qmtserver
+WorkingDirectory=/opt/qmt-refresh
+EnvironmentFile=/opt/qmt-refresh/.env
+ExecStart=/opt/qmt-refresh/bin/run_v713_weekly.sh
+TimeoutStartSec=8h
+Nice=10
+CPUWeight=50
+MemoryHigh=infinity
+MemoryMax=3000M
+StandardOutput=append:/opt/qmt-refresh/logs/v713_weekly.service.log
+StandardError=inherit

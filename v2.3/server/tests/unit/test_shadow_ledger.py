@@ -314,3 +314,50 @@ shadow_instances:
             stale_as_of, "Shadow_Hydra_V481_RB", 20260725,
             constraints=constraints,
         )
+
+
+def test_symbol_allowlist_exemption_requires_exact_approved_fallback_reason(tmp_path):
+    config = tmp_path / "strategies.yaml"
+    config.write_text("""
+shadow_instances:
+  - shadow_id: Shadow_Aux_Hard_TOP2
+    mode: shadow
+    orders_enabled: false
+    target_file: target.parquet
+    allowed_symbols: [511880.SH]
+    allowed_symbol_fallback_state_reasons:
+      - BASE:TOP50:top2_not_applicable
+      - BASE:T1_5050:top2_not_applicable
+""", encoding="utf-8")
+    service = ShadowLedgerService(None, None, config)
+    constraints = service.load_instances()[0]
+    frame = pd.DataFrame([{
+        "shadow_id": "Shadow_Aux_Hard_TOP2",
+        "code": "000001.SZ",
+        "weight": 1.0,
+        "decision_date": "20260807",
+        "as_of_date": "20260731",
+        "state_reason": "BASE:T1_5050:top2_not_applicable",
+        "source_version": "v7.9-hard-logistic-aux-top2-r1@approved",
+        "input_hash": "a" * 64,
+    }])
+
+    service.validate_target(
+        frame, "Shadow_Aux_Hard_TOP2", 20260807, constraints=constraints
+    )
+
+    active_aux = frame.copy()
+    active_aux["state_reason"] = "AUX_HYDRA:rotation_top2"
+    with pytest.raises(ValueError, match="allowlist"):
+        service.validate_target(
+            active_aux, "Shadow_Aux_Hard_TOP2", 20260807,
+            constraints=constraints,
+        )
+
+    almost_fallback = frame.copy()
+    almost_fallback["state_reason"] = "BASE:T1_5050:top2_not_applicable:extra"
+    with pytest.raises(ValueError, match="allowlist"):
+        service.validate_target(
+            almost_fallback, "Shadow_Aux_Hard_TOP2", 20260807,
+            constraints=constraints,
+        )

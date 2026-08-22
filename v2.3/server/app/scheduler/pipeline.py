@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Type
 
@@ -30,6 +30,10 @@ def _now_iso() -> str:
 def _to_date(yyyymmdd: int) -> date:
     d = int(yyyymmdd)
     return date(d // 10000, (d // 100) % 100, d % 100)
+
+
+def _today_int() -> int:
+    return int(datetime.now().strftime("%Y%m%d"))
 
 
 class StrategyPipeline:
@@ -90,6 +94,34 @@ class StrategyPipeline:
         valid_date_str = str(trade_date)
         logger.info("pipeline_start trade_date=%s", trade_date)
 
+        # Live future batches are only valid after today's EOD market data has
+        # landed.  A broad N-day staleness tolerance is useful for historical
+        # replay/weekends, but must not allow tomorrow's live orders to use the
+        # previous trading day's close (2026-07-28 incident).
+        today_int = _today_int()
+        if trade_date > today_int:
+            latest = self.store.latest_date(
+                self.freshness_probe_category, self.freshness_probe_symbol,
+            )
+            if latest is None or latest < today_int:
+                logger.error(
+                    "pipeline_skipped market_data_not_ready_for_future_batch "
+                    "probe=%s/%s latest=%s today=%s valid_date=%s",
+                    self.freshness_probe_category,
+                    self.freshness_probe_symbol,
+                    latest,
+                    today_int,
+                    trade_date,
+                )
+                return {
+                    "signals": 0, "passed": 0, "orders": 0, "instances": 0,
+                    "skipped": "market_data_not_ready_for_future_batch",
+                    "latest_market_date": latest,
+                    "today": today_int,
+                    "trade_date": trade_date,
+                    "valid_date": valid_date_str,
+                }
+
         # 00. 数据新鲜度护栏：行情比 trade_date 旧太多 → 跳过，绝不拿陈旧价下单。
         #     （灾备/回填历史 trade_date 时行情正好在该日附近，diff 小，自然放行。）
         stale = self._market_staleness_days(trade_date)
@@ -105,8 +137,21 @@ class StrategyPipeline:
                 "signals": 0, "passed": 0, "orders": 0, "instances": 0,
                 "skipped": "stale_market_data",
                 "latest_market_date": latest, "trade_date": trade_date,
+                "valid_date": valid_date_str,
                 "staleness_days": stale,
             }
+
+        stale_orders = {"expired": 0, "cancelled": 0, "skipped_with_trade": 0}
+        if trade_date >= today_int:
+            # 同日批次仍可能在交易中，只终结今天之前的尾单；未来批次只有在上面的
+            # 当日 EOD 行情护栏通过后才会走到这里，此时今天的日内委托已经终局，
+            # 必须连今天一起终结，否则 EOD PARTIAL 会把次日整条管线卡住。
+            cutoff_exclusive = str(today_int)
+            if trade_date > today_int:
+                cutoff_exclusive = (
+                    _to_date(today_int) + timedelta(days=1)
+                ).strftime("%Y%m%d")
+            stale_orders = self._terminalize_prior_unresolved_orders(cutoff_exclusive)
 
         # 00b. 已结算护栏（2026-06 孤儿成交事故根因）：该 valid_date 已收到成交回报
         #      → 绝不重算。重算会先 _clear_for_date 删掉已结算订单 → 其 trades 变孤儿；
@@ -120,7 +165,8 @@ class StrategyPipeline:
                 valid_date_str, len(settled))
             return {
                 "signals": 0, "passed": 0, "orders": 0, "instances": 0,
-                "skipped": "already_settled", "valid_date": valid_date_str,
+                "skipped": "already_settled", "trade_date": trade_date,
+                "valid_date": valid_date_str,
                 "settled_orders": len(settled),
             }
 
@@ -137,7 +183,8 @@ class StrategyPipeline:
                 valid_date_str, len(fetched))
             return {
                 "signals": 0, "passed": 0, "orders": 0, "instances": 0,
-                "skipped": "already_fetched", "valid_date": valid_date_str,
+                "skipped": "already_fetched", "trade_date": trade_date,
+                "valid_date": valid_date_str,
                 "fetched_orders": len(fetched),
             }
         if fetched and force:
@@ -170,6 +217,8 @@ class StrategyPipeline:
                 "signals": 0, "passed": 0, "orders": 0,
                 "instances": len(instances),
                 "skipped": "strict_rebalance_blocked",
+                "trade_date": trade_date,
+                "valid_date": valid_date_str,
                 "blockers": strict_blocked,
             }
 
@@ -187,7 +236,10 @@ class StrategyPipeline:
         # 1. 加载 strategies.yaml
         if not instances:
             logger.warning("strategies.yaml 无 instance 定义，pipeline 退出")
-            return {"signals": 0, "passed": 0, "orders": 0, "instances": 0}
+            return {
+                "trade_date": trade_date, "valid_date": valid_date_str,
+                "signals": 0, "passed": 0, "orders": 0, "instances": 0,
+            }
 
         # 2. 加载/创建 instance_state
         states = self._ensure_instance_states(instances)
@@ -318,11 +370,14 @@ class StrategyPipeline:
 
         summary = {
             "trade_date": trade_date,
+            "valid_date": valid_date_str,
             "instances": len(instances),
             "signals": signals_total,
             "passed": passed_total,
             "orders": len(agg.orders),
         }
+        if any(stale_orders.values()):
+            summary["stale_orders_terminalized"] = stale_orders
         if fetched and force:
             # 审计标记：这次重算换掉了已被客户端拉走的批次
             summary["force_regen_after_fetch"] = len(fetched)
@@ -382,12 +437,16 @@ class StrategyPipeline:
 
                 strict = inst.get("requires_reconciled_rebalance", False)
                 if strict:
-                    isolated = inst.get("account_isolation") == "dedicated"
+                    isolation = inst.get("account_isolation")
+                    isolated = isolation == "dedicated"
+                    shared_ledger = isolation == "shared_ledger"
                     dynamic = inst.get("dynamic_ownership", False)
-                    if not isolated:
+                    if not isolated and not shared_ledger:
                         blockers.append("ambiguous_position_ownership")
                     if dynamic:
                         blockers.append("dynamic_ownership_not_implemented")
+                    if shared_ledger and inst.get("owned_symbols") != []:
+                        blockers.append("shared_ledger_must_not_claim_symbols")
                     if not inst.get("qmt_account_id"):
                         blockers.append("missing_qmt_account")
                     elif isolated and len(account_groups_by_qmt.get(
@@ -427,6 +486,13 @@ class StrategyPipeline:
                     "blockers": blockers,
                     "orders_enabled": inst.get("orders_enabled", True),
                     "account_isolation": inst.get("account_isolation", "legacy"),
+                    "reconciliation_scope": (
+                        "instance_qmt"
+                        if inst.get("account_isolation") == "dedicated"
+                        else "attributed_ledger"
+                        if inst.get("account_isolation") == "shared_ledger"
+                        else "legacy"
+                    ),
                 }
         return guards
 
@@ -485,6 +551,58 @@ class StrategyPipeline:
                     .where(Order.order_id.in_(select(Trade.order_id)))
                 ).all()
             }
+
+    def _terminalize_prior_unresolved_orders(
+        self, cutoff_exclusive: str,
+    ) -> dict[str, int]:
+        """Close day-valid orders left unresolved after their validity date.
+
+        ``cutoff_exclusive`` is the first date that must remain open.  A future
+        batch uses tomorrow-as-cutoff after today's EOD data has landed, so today's
+        PARTIAL remainder is terminalized before strict rebalance guards run.
+
+        PENDING orders without fills become EXPIRED. PARTIAL orders retain their
+        trade rows but their unfilled remainder becomes CANCELLED. A logically
+        inconsistent PENDING order that already has a trade is left untouched and
+        logged for manual review.
+        """
+        result = {"expired": 0, "cancelled": 0, "skipped_with_trade": 0}
+        with self.session_factory() as session:
+            rows = session.execute(
+                select(Order)
+                .where(Order.valid_date < cutoff_exclusive)
+                .where(Order.status.in_(("PENDING", "PARTIAL")))
+                .order_by(Order.valid_date, Order.order_id)
+            ).scalars().all()
+            traded_ids = {
+                row[0]
+                for row in session.execute(
+                    select(Trade.order_id).where(
+                        Trade.order_id.in_([order.order_id for order in rows])
+                    )
+                ).all()
+            } if rows else set()
+            for order in rows:
+                if order.status == "PENDING":
+                    if order.order_id in traded_ids:
+                        result["skipped_with_trade"] += 1
+                        logger.error(
+                            "stale_pending_has_trade order_id=%s valid_date=%s",
+                            order.order_id, order.valid_date,
+                        )
+                        continue
+                    order.status = "EXPIRED"
+                    result["expired"] += 1
+                else:
+                    order.status = "CANCELLED"
+                    result["cancelled"] += 1
+            session.commit()
+        if any(result.values()):
+            logger.warning(
+                "stale_orders_terminalized cutoff_exclusive=%s result=%s",
+                cutoff_exclusive, result,
+            )
+        return result
 
     def _fetched_order_ids(self, valid_date: str) -> set[str]:
         """该 valid_date 下客户端已拉取（fetched_at 非空）的 order_id 集合。

@@ -8,6 +8,7 @@ import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import yaml
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import desc, func, select
 
@@ -44,6 +45,25 @@ from app.settings import Settings
 router = APIRouter(prefix="/admin")
 
 logger = logging.getLogger(__name__)
+
+
+def _configured_regular_instances(settings: Settings) -> dict[str, dict] | None:
+    """Return configured regular instances, or None when no config is available."""
+    path = Path(settings.strategies_file)
+    if not path.is_file():
+        return None
+    with path.open(encoding="utf-8") as handle:
+        config = yaml.safe_load(handle) or {}
+    result: dict[str, dict] = {}
+    for group in config.get("account_groups", []):
+        group_id = group["group_id"]
+        for strategy in group.get("strategies", []):
+            instance_id = f"{group_id}_{strategy['strategy_id']}"
+            result[instance_id] = {
+                "display_name": strategy.get("display_name", instance_id),
+                "orders_enabled": bool(strategy.get("orders_enabled", True)),
+            }
+    return result
 
 
 @router.get(
@@ -303,11 +323,18 @@ async def instance_state(
     response_model=APIResponse[dict],
     dependencies=[Depends(verify_api_key)],
 )
-async def portfolio_overview(sf=Depends(get_session_factory)):
+async def portfolio_overview(
+    sf=Depends(get_session_factory),
+    settings: Settings = Depends(get_settings),
+):
     """Return regular and no-order shadow ledgers in one selectable catalogue."""
+    configured = _configured_regular_instances(settings)
     with sf() as session:
         items = []
         for state in session.execute(select(InstanceState)).scalars().all():
+            if configured is not None and state.instance_id not in configured:
+                continue
+            instance_cfg = (configured or {}).get(state.instance_id, {})
             latest = session.execute(
                 select(PerfSnapshot)
                 .where(PerfSnapshot.instance_id == state.instance_id)
@@ -316,6 +343,7 @@ async def portfolio_overview(sf=Depends(get_session_factory)):
             ).scalar_one_or_none()
             items.append({
                 "instance_id": state.instance_id,
+                "display_name": instance_cfg.get("display_name", state.instance_id),
                 "virtual_cash": state.virtual_cash,
                 "holdings_count": len(state.virtual_positions or {}),
                 "latest_nav": latest.nav if latest else None,
@@ -323,7 +351,7 @@ async def portfolio_overview(sf=Depends(get_session_factory)):
                 "latest_daily_return": latest.daily_return if latest else None,
                 "last_update": state.last_update,
                 "is_shadow": False,
-                "orders_enabled": True,
+                "orders_enabled": instance_cfg.get("orders_enabled", True),
             })
 
         for state in session.execute(select(ShadowInstanceState)).scalars().all():
@@ -500,6 +528,7 @@ async def admin_health(
     }
 
     # PENDING orders
+    configured = _configured_regular_instances(settings)
     with sf() as session:
         pending_count = session.execute(
             select(func.count()).select_from(Order).where(Order.status == "PENDING")
@@ -519,6 +548,9 @@ async def admin_health(
         # 各 instance 最新 NAV
         instance_navs = []
         for st_row in session.execute(select(InstanceState)).scalars().all():
+            if configured is not None and st_row.instance_id not in configured:
+                continue
+            instance_cfg = (configured or {}).get(st_row.instance_id, {})
             latest_perf = session.execute(
                 select(PerfSnapshot)
                 .where(PerfSnapshot.instance_id == st_row.instance_id)
@@ -527,6 +559,7 @@ async def admin_health(
             ).scalar()
             instance_navs.append({
                 "instance_id": st_row.instance_id,
+                "display_name": instance_cfg.get("display_name", st_row.instance_id),
                 "virtual_cash": st_row.virtual_cash,
                 "holdings_count": len(st_row.virtual_positions or {}),
                 "last_update": st_row.last_update,
@@ -534,7 +567,7 @@ async def admin_health(
                 "latest_nav_date": latest_perf.date if latest_perf else None,
                 "latest_daily_return": latest_perf.daily_return if latest_perf else None,
                 "is_shadow": False,
-                "orders_enabled": True,
+                "orders_enabled": instance_cfg.get("orders_enabled", True),
             })
 
         for st_row in session.execute(select(ShadowInstanceState)).scalars().all():
@@ -760,16 +793,9 @@ async def reconcile_positions(
     dry_run=true: 返回 diff 详情供人眼审查
     dry_run=false: 强制把 instance_state.virtual_cash/positions 改成 QMT 状态
     """
-    try:
-        result = service.reconcile(snapshot)
-    except InstanceNotFound as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ReconcileSanityCheckFailed as e:
-        # 返回 422 而非 500，告诉 client 是数据校验问题而非系统故障
-        raise HTTPException(status_code=422, detail=str(e))
-
-    # 影子总量对账（Plan 2 Task 4）：切权前观察窗，log-only，绝不改任何 state。
-    # 独立 try/except —— shadow 的任何异常都不得影响权威 reconcile 结果。
+    # Portfolio total reconciliation must run before any per-instance operation.
+    # This still records the authoritative total diff when a shared-account apply
+    # is correctly rejected below.
     # snapshot.qmt_positions 是全账户持仓（client 每个 instance 都推同一份），
     # 故此处即可做 portfolio 级 Σ台账 vs QMT 校验。
     try:
@@ -778,6 +804,14 @@ async def reconcile_positions(
         )
     except Exception:
         logger.exception("shadow_compare failed (non-fatal, ignored)")
+
+    try:
+        result = service.reconcile(snapshot)
+    except InstanceNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ReconcileSanityCheckFailed as e:
+        # 返回 422 而非 500，告诉 client 是数据校验问题而非系统故障
+        raise HTTPException(status_code=422, detail=str(e))
 
     return APIResponse[ReconcileResult](code=0, message="ok", data=result)
 

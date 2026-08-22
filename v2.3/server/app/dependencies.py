@@ -91,8 +91,12 @@ from app.services.reconcile import ReconcileService
 
 def get_reconcile_service(
     sf: sessionmaker = Depends(get_session_factory),
+    settings: Settings = Depends(get_settings),
 ) -> ReconcileService:
-    return ReconcileService(session_factory=sf)
+    return ReconcileService(
+        session_factory=sf,
+        strategies_file=Path(settings.strategies_file),
+    )
 
 
 from pathlib import Path

@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
+import yaml
 from sqlalchemy import select
 
 from app.models import InstanceState
@@ -72,8 +74,56 @@ GUARD_CLOSE_FRACTION = 0.34
 class ReconcileService:
     """持仓对账：server virtual vs QMT real。"""
 
-    def __init__(self, session_factory):
+    def __init__(self, session_factory, strategies_file: Path | None = None):
         self.session_factory = session_factory
+        self.strategies_file = Path(strategies_file) if strategies_file else None
+
+    def _configured_account_policy(
+        self, instance_id: str, supplied_qmt_account_id: str,
+    ) -> tuple[str | None, bool]:
+        """Return (configured account, whether that account has shared ledger).
+
+        A physical account becomes portfolio-ledger-only as soon as any strategy
+        on it uses ``account_isolation: shared_ledger``.  In that topology a QMT
+        snapshot cannot identify which overlapping shares belong to which strategy.
+        """
+        if self.strategies_file is None or not self.strategies_file.exists():
+            return None, False
+        try:
+            cfg = yaml.safe_load(
+                self.strategies_file.read_text(encoding="utf-8")
+            ) or {}
+        except Exception as exc:
+            raise ReconcileGuardTripped(
+                f"无法读取 strategies.yaml 账户归属，拒绝 apply: {exc}"
+            ) from exc
+
+        configured_accounts: dict[str, str] = {}
+        shared_accounts: set[str] = set()
+        for group in cfg.get("account_groups", []):
+            account = group.get("qmt_account_id")
+            if not account:
+                continue
+            account = str(account)
+            for strategy in group.get("strategies", []):
+                strategy_id = strategy.get("strategy_id")
+                if not strategy_id:
+                    continue
+                configured_accounts[
+                    f"{group.get('group_id')}_{strategy_id}"
+                ] = account
+                if strategy.get("account_isolation") == "shared_ledger":
+                    shared_accounts.add(account)
+
+        configured = configured_accounts.get(instance_id)
+        if configured is not None and configured != str(supplied_qmt_account_id):
+            raise ReconcileGuardTripped(
+                f"qmt_account_id 与 strategies.yaml 不一致："
+                f"instance={instance_id} configured={configured} "
+                f"supplied={supplied_qmt_account_id}"
+            )
+        effective_account = configured or str(supplied_qmt_account_id)
+        return configured, effective_account in shared_accounts
 
     def reconcile(
         self,
@@ -97,6 +147,17 @@ class ReconcileService:
             if inst is None:
                 raise InstanceNotFound(
                     f"instance_id={snapshot.instance_id} 不存在于 instance_state 表"
+                )
+
+            _, account_has_shared_ledger = self._configured_account_policy(
+                snapshot.instance_id, snapshot.qmt_account_id,
+            )
+            if not snapshot.dry_run and account_has_shared_ledger:
+                raise ReconcileGuardTripped(
+                    "该 QMT 物理账户包含 shared_ledger 策略，任何实例都禁止用整账户"
+                    "快照做单实例 apply（force 也不可绕过）。虚拟账本只能由 "
+                    "order_signal_map/settlement 归因维护；请使用 reconcile_total() "
+                    "校验账户总量。"
                 )
 
             # 读取本 instance 的 owned_symbols 白名单
@@ -189,11 +250,14 @@ class ReconcileService:
                 diffs=diffs if snapshot.dry_run else [],
             )
 
-            # Strict-rebalance adapters (V7.13) mark a basket as pending until a
-            # post-trade QMT snapshot agrees with both positions and cash.  Keep
-            # this status in strategy_state so the next rebalance fails closed.
+            # Dedicated-account strict-rebalance adapters mark a basket as pending
+            # until a post-trade QMT snapshot agrees with both positions and cash.
+            # A shared-ledger instance is different: the QMT snapshot belongs to
+            # the whole physical account, so it must never overwrite or certify one
+            # strategy's attributed virtual ledger.
             strategy_state = dict(inst.strategy_state or {})
-            if "reconciliation_status" in strategy_state:
+            reconciliation_status = strategy_state.get("reconciliation_status")
+            if reconciliation_status in {"pending", "reconciled", "failed"}:
                 cash_tolerance = max(1.0, abs(server_cash) * 0.001)
                 consistent = not diffs and abs(cash_diff) <= cash_tolerance
                 strategy_state["reconciliation_status"] = (
@@ -214,6 +278,12 @@ class ReconcileService:
                     n_matched, n_mismatched, n_server_only, n_qmt_only,
                 )
                 return result
+
+            if reconciliation_status == "attributed_ledger":
+                raise ReconcileGuardTripped(
+                    "共享 QMT 账户的实例只能按 order_signal_map/settlement 维护虚拟账本；"
+                    "禁止用单实例 QMT 快照覆盖。请使用 reconcile_total() 校验物理账户总量。"
+                )
 
             # 护栏：apply 会把 server_only 持仓清掉。若快照不完整（缺大量持仓），
             # 会误删一批好仓（V53 曾被只含 5/10 ETF 的快照 apply 删掉 5 个）。

@@ -143,6 +143,20 @@ class ShadowLedgerService:
                     raise ShadowBoundaryError(
                         f"{shadow_id} allowed_symbols must be unique tradeable codes"
                     )
+            fallback_reasons_raw = item.get("allowed_symbol_fallback_state_reasons")
+            fallback_reasons = None
+            if fallback_reasons_raw is not None:
+                fallback_reasons = [
+                    str(value).strip() for value in fallback_reasons_raw
+                ]
+                if (allowed_symbols is None
+                        or not fallback_reasons
+                        or len(fallback_reasons) != len(set(fallback_reasons))
+                        or any(not value for value in fallback_reasons)):
+                    raise ShadowBoundaryError(
+                        f"{shadow_id} symbol fallback reasons require an allowlist "
+                        "and must be unique and non-empty"
+                    )
             required_symbols_raw = item.get("required_symbols")
             required_symbols = None
             if required_symbols_raw is not None:
@@ -202,6 +216,7 @@ class ShadowLedgerService:
                 "max_price_staleness_days": int(item.get("max_price_staleness_days", 7)),
                 "max_target_age_days": max_target_age_days,
                 "allowed_symbols": allowed_symbols,
+                "allowed_symbol_fallback_state_reasons": fallback_reasons,
                 "required_symbols": required_symbols,
                 "allowed_source_versions": allowed_source_versions,
                 "allowed_publisher_source_commits": allowed_publisher_source_commits,
@@ -261,7 +276,11 @@ class ShadowLedgerService:
         allowed_symbols = constraints.get("allowed_symbols")
         if allowed_symbols is not None:
             unexpected = sorted(set(data["code"]) - set(allowed_symbols))
-            if unexpected:
+            fallback_reasons = set(
+                constraints.get("allowed_symbol_fallback_state_reasons") or []
+            )
+            is_approved_fallback = data["state_reason"].iloc[0] in fallback_reasons
+            if unexpected and not is_approved_fallback:
                 raise ValueError(
                     f"shadow target contains symbols outside its allowlist: {unexpected}"
                 )
