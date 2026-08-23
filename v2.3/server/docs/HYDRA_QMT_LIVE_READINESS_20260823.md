@@ -5,6 +5,12 @@
 当前状态是 **NO-GO**。Hydra 目标和服务器影子账本可以继续运行，但不得通过修改
 `dry_run` 或 `orders_enabled` 直接接入实盘账户。
 
+> 2026-08-23 implementation addendum: the repository-side Phase 1–3 foundation
+> described below has now been implemented on the candidate branch. The P0 list is
+> retained as the original audit finding; see
+> `HYDRA_LIVE_OPERATIONS_RUNBOOK_20260823.md` for delivered controls and the current
+> external GO gate. Production is still unchanged and remains NO-GO.
+
 实盘首要工作不是开启策略，而是建立不可绕过的 paper/live 分域、两条价格数据链、
 独立 live client、外部现金流账本和残余目标补单状态机。生产服务器在这些门禁完成前
 保持不变。
@@ -186,29 +192,31 @@ lot-rounding preflight，不能仅依赖一个静态最低金额。
 
 ### Phase 1 — Server 分域地基
 
-- [ ] 新模型和向后兼容迁移，历史记录默认 paper。
-- [ ] domain-scoped API key 和强制过滤。
-- [ ] order batch / target / attempt 持久化。
-- [ ] external cash-flow journal。
-- [ ] paper/live 交叉访问负向测试。
+- [x] 新模型和向后兼容迁移，历史记录默认 paper。
+- [x] domain-scoped API key、client/account scope 和强制过滤。
+- [x] order batch / target / rebalance / attempt 持久化。
+- [x] external cash-flow journal。
+- [x] paper/live 交叉访问负向测试。
 
 退出门禁：现有 paper 全量测试不回归，任何跨域读写均失败。
 
 ### Phase 2 — Hydra relay 与双数据链
 
-- [ ] 原子数据 manifest 和双链新鲜度检查。
-- [ ] Hydra target producer/validator/relay。
-- [ ] lot-rounding、价格 tick、白名单、停牌和账户权限预检。
-- [ ] residual retry 状态机。
+- [x] 原子、不可变、内容寻址的数据 manifest 和双链日期检查。
+- [x] Hydra target request builder/validator/relay（生产 publisher 尚待批准）。
+- [x] lot-rounding、价格 tick、白名单、停牌、资金和账户权限预检。
+- [x] post-trade reconcile-gated residual retry 状态机。
 
 退出门禁：固定输入 replay 可复现相同 basket/order hashes；缺任一数据或血缘字段均不产单。
 
 ### Phase 3 — 独立 live client
 
-- [ ] 独立目录、入口、配置、数据库、日志、session、userdata 和任务计划。
-- [ ] 双重 emergency stop、日/单/组合硬限额。
-- [ ] 批次复核及账户/domain fail-closed。
-- [ ] QMT 委托、撤单、累计成交、残余补单和审计包。
+- [x] 独立目录、入口、配置、数据库、日志、session、userdata 和任务命名规范。
+- [x] 双重 emergency stop、日/单/组合硬限额（数值默认 0，待业务批准）。
+- [x] 批次复核及账户/domain fail-closed。
+- [x] QMT 委托、累计成交、残余补单、滑点与审计包；撤单仍只允许显式 broker 流程。
+- [x] 下单前 QMT 总持仓/可卖持仓分离，并强制实时 server 对账；活动/未知委托状态
+  禁止推断为撤单。
 
 退出门禁：mock_qmt 能完整重放，且没有任何真实委托路径被触发。
 
@@ -228,4 +236,3 @@ lot-rounding preflight，不能仅依赖一个静态最低金额。
 5. server 门禁稳定后才创建 live client；最后才写入私有账户配置。
 
 任何阶段都不得把真实账号、API key、QMT 路径或密码提交到 Git。
-

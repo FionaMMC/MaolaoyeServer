@@ -3,11 +3,15 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from app.execution import ExecutionDomain
+
 
 class QmtPositionSnapshot(BaseModel):
     """Client 推上来的 QMT 实时账户快照。"""
 
     instance_id: str = Field(description="对应 strategies.yaml 里的 instance")
+    execution_domain: ExecutionDomain = "paper"
+    account_alias: str | None = None
     qmt_account_id: str = Field(description="QMT 账户号，仅作记录")
     qmt_cash: float = Field(description="账户可用资金（人民币元）")
     qmt_positions: dict[str, int] = Field(

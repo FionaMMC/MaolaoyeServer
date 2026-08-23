@@ -8,7 +8,19 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.api import admin, admin_query, dashboard, health, market_data, ops, orders, trade_result
+from app.api import (
+    admin,
+    admin_query,
+    account_initialization,
+    cash_flow,
+    dashboard,
+    health,
+    hydra_relay,
+    market_data,
+    ops,
+    orders,
+    trade_result,
+)
 from app.exceptions import APIError, ErrorCode
 from app.logging_setup import get_logger, setup_logging
 from app.settings import Settings, get_settings
@@ -22,7 +34,6 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # 启动校验：owned_symbols 两两不重叠（多实例共用 QMT 账户时防止 symbol 归属冲突）
     try:
-        from app.dependencies import get_session_factory, get_engine
         from app.db import init_db, make_engine, make_session_factory
         settings = get_settings()
         _engine = make_engine(settings.db_url)
@@ -134,6 +145,9 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
     app.include_router(market_data.router, tags=["market-data"])
     app.include_router(orders.router, tags=["orders"])
     app.include_router(trade_result.router, tags=["trade-result"])
+    app.include_router(cash_flow.router, tags=["cash-flow"])
+    app.include_router(account_initialization.router, tags=["account-initialization"])
+    app.include_router(hydra_relay.router, tags=["hydra-relay"])
     app.include_router(admin.router, tags=["admin"])
     app.include_router(admin_query.router, tags=["admin-query"])
     app.include_router(ops.router, tags=["ops"])

@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -12,7 +13,7 @@ import yaml
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import desc, func, select
 
-from app.auth import verify_api_key
+from app.auth import AuthContext, verify_api_key
 from app.dependencies import (
     get_blacklist_service,
     get_data_upload_service,
@@ -493,8 +494,6 @@ async def admin_health(
     upload: DataUploadService = Depends(get_data_upload_service),
 ):
     """一站式健康度：pred 新鲜度、黑名单大小、PENDING 数量、各 instance NAV。"""
-    today = datetime.now().strftime("%Y%m%d")
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
     week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d")
 
     # pred 文件新鲜度
@@ -772,10 +771,11 @@ async def bookkeeping_divergence(
 @router.post(
     "/reconcile-positions",
     response_model=APIResponse[ReconcileResult],
-    dependencies=[Depends(verify_api_key)],
 )
 async def reconcile_positions(
     snapshot: QmtPositionSnapshot,
+    auth: AuthContext = Depends(verify_api_key),
+    settings: Settings = Depends(get_settings),
     service: ReconcileService = Depends(get_reconcile_service),
 ):
     """对账：server virtual_positions vs QMT 真实持仓。
@@ -793,6 +793,31 @@ async def reconcile_positions(
     dry_run=true: 返回 diff 详情供人眼审查
     dry_run=false: 强制把 instance_state.virtual_cash/positions 改成 QMT 状态
     """
+    # 少数纯单元测试会直接调用 endpoint 函数而绕过 FastAPI DI；生产 HTTP
+    # 始终注入 AuthContext。直接调用按 legacy paper 上下文处理以保持兼容。
+    if not isinstance(auth, AuthContext):
+        auth = AuthContext(
+            execution_domain="paper",
+            client_id="direct-call-legacy",
+            allowed_account_aliases=(),
+        )
+    if snapshot.execution_domain != auth.execution_domain:
+        raise HTTPException(status_code=403, detail="reconcile execution_domain 跨域")
+    if not auth.allows_account(snapshot.account_alias):
+        raise HTTPException(status_code=403, detail="token 无权访问该 account_alias")
+    if auth.execution_domain == "live":
+        fingerprint = hashlib.sha256(snapshot.qmt_account_id.encode()).hexdigest()
+        if (
+            not settings.live_qmt_account_sha256
+            or fingerprint != settings.live_qmt_account_sha256
+        ):
+            raise HTTPException(status_code=403, detail="QMT account fingerprint 不匹配")
+        if not snapshot.dry_run or snapshot.force:
+            raise HTTPException(
+                status_code=403,
+                detail="live token 仅允许只读对账；账本修复必须走受控恢复流程",
+            )
+
     # Portfolio total reconciliation must run before any per-instance operation.
     # This still records the authoritative total diff when a shared-account apply
     # is correctly rejected below.
@@ -801,6 +826,7 @@ async def reconcile_positions(
     try:
         service.shadow_compare(
             snapshot.qmt_positions, snapshot.qmt_cash, snapshot.snapshot_time,
+            execution_domain=snapshot.execution_domain,
         )
     except Exception:
         logger.exception("shadow_compare failed (non-fatal, ignored)")

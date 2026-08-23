@@ -34,6 +34,8 @@ class OrdersQueueService:
             for o in orders:
                 session.add(Order(
                     order_id=o.order_id,
+                    execution_domain=o.execution_domain,
+                    qmt_account_alias=o.qmt_account_alias,
                     account_group=o.account_group,
                     symbol=o.symbol,
                     direction=o.direction,
@@ -52,11 +54,17 @@ class OrdersQueueService:
             session.commit()
         return len(orders)
 
-    def list_pending(self, valid_date: str) -> list[OrderItem]:
+    def list_pending(
+        self,
+        valid_date: str,
+        execution_domain: str = "paper",
+        allowed_account_aliases: tuple[str, ...] | None = None,
+    ) -> list[OrderItem]:
         with self.session_factory() as session:
             stmt = (
                 select(Order)
                 .where(Order.valid_date == valid_date)
+                .where(Order.execution_domain == execution_domain)
                 .where(Order.status == "PENDING")
                 .order_by(
                     case((Order.direction == "SELL", 0), else_=1),
@@ -64,6 +72,8 @@ class OrdersQueueService:
                     Order.order_id,
                 )
             )
+            if allowed_account_aliases:
+                stmt = stmt.where(Order.qmt_account_alias.in_(allowed_account_aliases))
             rows = session.execute(stmt).scalars().all()
             # 拉取即盖章（只记首次）：fetched_at 非空的日期不允许默认重算，
             # 否则 order_id 换新 → 客户端次日成交回报全量 unmatched（2026-07-02 事故）。
@@ -78,6 +88,16 @@ class OrdersQueueService:
             return [
                 OrderItem(
                     order_id=r.order_id,
+                    execution_domain=r.execution_domain,
+                    qmt_account_alias=r.qmt_account_alias,
+                    target_id=r.target_id,
+                    rebalance_id=r.rebalance_id,
+                    attempt_id=r.attempt_id,
+                    attempt_number=r.attempt_number,
+                    batch_id=r.batch_id,
+                    batch_sha256=r.batch_sha256,
+                    target_hash=r.target_hash,
+                    execution_reference_price=r.execution_reference_price,
                     account_group=r.account_group,
                     symbol=r.symbol,
                     direction=r.direction,

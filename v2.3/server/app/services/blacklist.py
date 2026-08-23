@@ -38,11 +38,16 @@ class BlacklistService:
         self,
         lookback_days: int | None = None,
         min_rejections: int | None = None,
+        execution_domain: str = "paper",
     ) -> set[str]:
         """返回（自动派生 ∪ 手工维护）的并集。"""
-        return self._compute_auto(lookback_days, min_rejections) | self._load_manual()
+        return self._compute_auto(
+            lookback_days, min_rejections, execution_domain,
+        ) | self._load_manual()
 
-    def _compute_auto(self, lookback_days, min_rejections) -> set[str]:
+    def _compute_auto(
+        self, lookback_days, min_rejections, execution_domain: str = "paper",
+    ) -> set[str]:
         lookback = lookback_days if lookback_days is not None else self.DEFAULT_LOOKBACK_DAYS
         min_rej = min_rejections if min_rejections is not None else self.DEFAULT_MIN_REJECTIONS
         cutoff = (datetime.now() - timedelta(days=lookback)).strftime("%Y%m%d")
@@ -50,6 +55,7 @@ class BlacklistService:
         with self.session_factory() as session:
             stmt = (
                 select(Order.symbol)
+                .where(Order.execution_domain == execution_domain)
                 .where(Order.valid_date >= cutoff)
                 .where(Order.status == "REJECTED")
             )
@@ -131,6 +137,7 @@ class BlacklistService:
         self,
         lookback_days: int | None = None,
         min_rejections: int | None = None,
+        execution_domain: str = "paper",
     ) -> dict:
         """把过去 N 天 REJECTED ≥ min 次的 symbol 永久存进 risk_blacklist。
 
@@ -138,7 +145,9 @@ class BlacklistService:
         - 新出现的 REJECTED symbol 进表
         - 即便后续 clear-state 清了 orders 表，永久黑名单不丢
         """
-        auto_set = self._compute_auto(lookback_days, min_rejections)
+        auto_set = self._compute_auto(
+            lookback_days, min_rejections, execution_domain,
+        )
         if not auto_set:
             return {"promoted": 0, "already_present": 0}
 
@@ -150,7 +159,7 @@ class BlacklistService:
             for sym in new_symbols:
                 session.add(RiskBlacklistEntry(
                     symbol=sym,
-                    reason=f"auto-promoted from REJECTED orders",
+                    reason="auto-promoted from REJECTED orders",
                     added_at=_now(),
                 ))
             session.commit()

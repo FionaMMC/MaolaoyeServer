@@ -6,7 +6,14 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select
 
-from app.models import InstanceState, Order, OrderSignalMap, RawSignal, Trade
+from app.models import (
+    ExecutionQualityObservation,
+    InstanceState,
+    Order,
+    OrderSignalMap,
+    RawSignal,
+    Trade,
+)
 from app.schemas.trade_result import TradeResult, TradeResultResponseData
 
 logger = logging.getLogger(__name__)
@@ -72,16 +79,24 @@ class SettlementService:
         self.min_commission = min_commission
         self.stamp_duty_sell = stamp_duty_sell
 
-    def _calc_fees(self, gross: float, direction: str) -> float:
-        """计算单边交易费用：佣金（双边）+ 印花税（仅 SELL）。"""
+    def _calc_fees(
+        self, gross: float, direction: str, *, hydra_etf: bool = False,
+    ) -> float:
+        """计算单边交易费用；Hydra ETF 卖出不计股票印花税。"""
         commission = max(self.min_commission, gross * self.commission_rate)
-        duty = gross * self.stamp_duty_sell if direction == "SELL" else 0.0
+        duty = (
+            gross * self.stamp_duty_sell
+            if direction == "SELL" and not hydra_etf
+            else 0.0
+        )
         return commission + duty
 
     def settle(
         self,
         trade_date: str,
         results: list[TradeResult],
+        execution_domain: str = "paper",
+        allowed_account_aliases: tuple[str, ...] | None = None,
     ) -> TradeResultResponseData:
         """处理一批成交回报。"""
         matched = 0
@@ -92,9 +107,26 @@ class SettlementService:
         with self.session_factory() as session:
             for result in results:
                 order = session.get(Order, result.order_id)
-                if order is None:
+                account_allowed = (
+                    not allowed_account_aliases
+                    or (
+                        order is not None
+                        and order.qmt_account_alias in allowed_account_aliases
+                    )
+                )
+                if (
+                    order is None
+                    or order.execution_domain != execution_domain
+                    or not account_allowed
+                ):
                     unmatched.append(result.order_id)
-                    candidates = self._find_candidates(session, trade_date, result)
+                    candidates = self._find_candidates(
+                        session,
+                        trade_date,
+                        result,
+                        execution_domain,
+                        allowed_account_aliases,
+                    )
                     if candidates:
                         unmatched_candidates[result.order_id] = candidates
                         logger.error(
@@ -115,6 +147,7 @@ class SettlementService:
                 already = session.execute(
                     select(Trade.id).where(
                         Trade.order_id == result.order_id,
+                        Trade.execution_domain == execution_domain,
                         Trade.filled_time == result.filled_time,
                         Trade.filled_quantity == result.filled_quantity,
                         Trade.filled_price == result.filled_price,
@@ -157,11 +190,19 @@ class SettlementService:
                     delta_notional / delta_qty if delta_qty > 0 else result.filled_price
                 )
                 previous_fees = (
-                    self._calc_fees(previous_notional, order.direction)
+                    self._calc_fees(
+                        previous_notional,
+                        order.direction,
+                        hydra_etf=order.target_id is not None,
+                    )
                     if previous_qty > 0 else 0.0
                 )
                 cumulative_fees = (
-                    self._calc_fees(cumulative_notional, order.direction)
+                    self._calc_fees(
+                        cumulative_notional,
+                        order.direction,
+                        hydra_etf=order.target_id is not None,
+                    )
                     if result.filled_quantity > 0 else 0.0
                 )
                 delta_fees = max(0.0, cumulative_fees - previous_fees)
@@ -169,12 +210,16 @@ class SettlementService:
                 # 写 trades 表
                 session.add(Trade(
                     order_id=result.order_id,
+                    execution_domain=execution_domain,
                     filled_quantity=result.filled_quantity,
                     filled_price=result.filled_price,
                     filled_time=result.filled_time,
                     status=result.status,
                     received_at=_now_iso(),
                 ))
+                self._upsert_execution_quality(
+                    session, order, result, cumulative_fees,
+                )
 
                 # 拆单 + 更新虚拟账本（仅在有成交时）
                 if delta_qty > 0:
@@ -196,6 +241,7 @@ class SettlementService:
 
         return TradeResultResponseData(
             trade_date=trade_date,
+            execution_domain=execution_domain,
             matched_count=matched,
             unmatched_order_ids=unmatched,
             unmatched_candidates=unmatched_candidates,
@@ -203,7 +249,74 @@ class SettlementService:
 
     # ── 内部 ────────────────────────────────────────────────────────────
     @staticmethod
-    def _find_candidates(session, trade_date: str, result: TradeResult) -> list[str]:
+    def _directional_bps(numerator_price: float, base_price: float, direction: str) -> float:
+        sign = 1.0 if direction == "BUY" else -1.0
+        return sign * (numerator_price / base_price - 1.0) * 10_000
+
+    def _upsert_execution_quality(
+        self, session, order: Order, result: TradeResult, cumulative_fees: float,
+    ) -> None:
+        row = session.get(ExecutionQualityObservation, order.order_id)
+        if row is None:
+            row = ExecutionQualityObservation(
+                order_id=order.order_id,
+                execution_domain=order.execution_domain,
+                target_id=order.target_id,
+                rebalance_id=order.rebalance_id,
+                attempt_id=order.attempt_id,
+                symbol=order.symbol,
+                direction=order.direction,
+                decision_reference_price=order.execution_reference_price,
+                submitted_price=result.submitted_price or order.limit_price,
+                filled_quantity=0,
+                estimated_fees=0.0,
+                updated_at=_now_iso(),
+            )
+            session.add(row)
+        if result.arrival_reference_price is not None:
+            row.arrival_reference_price = result.arrival_reference_price
+        if result.arrival_reference_time is not None:
+            row.arrival_reference_time = result.arrival_reference_time
+        if result.submitted_price is not None:
+            row.submitted_price = result.submitted_price
+        if result.submitted_time is not None:
+            row.submitted_time = result.submitted_time
+        if result.qmt_order_id is not None:
+            row.qmt_order_id = result.qmt_order_id
+        if result.iopv is not None:
+            row.iopv = result.iopv
+        if result.iopv_time is not None:
+            row.iopv_time = result.iopv_time
+        row.filled_quantity = result.filled_quantity
+        row.fill_vwap = result.filled_price if result.filled_quantity > 0 else None
+        row.estimated_fees = cumulative_fees
+        if (
+            row.decision_reference_price is not None
+            and row.arrival_reference_price is not None
+        ):
+            row.decision_gap_bps = self._directional_bps(
+                row.arrival_reference_price,
+                row.decision_reference_price,
+                order.direction,
+            )
+        if row.arrival_reference_price is not None and row.fill_vwap is not None:
+            row.execution_shortfall_bps = self._directional_bps(
+                row.fill_vwap, row.arrival_reference_price, order.direction,
+            )
+        if row.arrival_reference_price is not None and row.iopv is not None:
+            row.premium_bps = (
+                row.arrival_reference_price / row.iopv - 1.0
+            ) * 10_000
+        row.updated_at = _now_iso()
+
+    @staticmethod
+    def _find_candidates(
+        session,
+        trade_date: str,
+        result: TradeResult,
+        execution_domain: str,
+        allowed_account_aliases: tuple[str, ...] | None = None,
+    ) -> list[str]:
         """unmatched 回报的候选订单：当日同 symbol/direction/quantity 的未结算单。
 
         老客户端 payload 不带 symbol/direction → 退化为仅按 quantity 匹配
@@ -212,9 +325,12 @@ class SettlementService:
         stmt = (
             select(Order.order_id)
             .where(Order.valid_date == trade_date)
+            .where(Order.execution_domain == execution_domain)
             .where(Order.status == "PENDING")
             .where(Order.quantity == result.filled_quantity)
         )
+        if allowed_account_aliases:
+            stmt = stmt.where(Order.qmt_account_alias.in_(allowed_account_aliases))
         if result.symbol:
             stmt = stmt.where(Order.symbol == result.symbol)
         if result.direction:
@@ -264,6 +380,8 @@ class SettlementService:
                 )
                 inst = InstanceState(
                     instance_id=sig.instance_id,
+                    execution_domain=order.execution_domain,
+                    account_alias=order.qmt_account_alias,
                     virtual_cash=0.0,
                     virtual_positions={},
                     last_update=_now_iso(),

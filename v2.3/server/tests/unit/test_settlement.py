@@ -4,7 +4,14 @@ from pathlib import Path
 
 
 from app.db import init_db, make_engine, make_session_factory
-from app.models import InstanceState, Order, OrderSignalMap, RawSignal, Trade
+from app.models import (
+    ExecutionQualityObservation,
+    InstanceState,
+    Order,
+    OrderSignalMap,
+    RawSignal,
+    Trade,
+)
 from app.schemas.trade_result import TradeResult
 from app.services.settlement import SettlementService, largest_remainder_split
 
@@ -107,6 +114,46 @@ def test_settle_writes_trade_record(tmp_path: Path):
         assert len(trades) == 1
         assert trades[0].filled_quantity == 300
         assert trades[0].status == "FILLED"
+
+
+def test_settle_records_directional_slippage_and_premium(tmp_path: Path):
+    sf = _factory(tmp_path)
+    _seed(sf)
+    with sf() as s:
+        order = s.get(Order, "oid1")
+        order.execution_reference_price = 10.0
+        order.target_id = "ht-1"
+        order.rebalance_id = "hr-1"
+        order.attempt_id = "ha-1"
+        s.commit()
+    svc = _make_svc(sf, commission_rate=0.001, min_commission=0.0)
+    svc.settle("20260430", [
+        TradeResult(
+            order_id="oid1",
+            filled_quantity=300,
+            filled_price=10.12,
+            filled_time="2026-04-30T09:26:00+08:00",
+            status="FILLED",
+            arrival_reference_price=10.1,
+            arrival_reference_time="2026-04-30T09:24:59+08:00",
+            submitted_price=10.15,
+            submitted_time="2026-04-30T09:25:01+08:00",
+            qmt_order_id="qmt-123",
+            iopv=10.05,
+            iopv_time="2026-04-30T09:24:59+08:00",
+        ),
+    ])
+    with sf() as s:
+        quality = s.get(ExecutionQualityObservation, "oid1")
+        assert quality.target_id == "ht-1"
+        assert round(quality.decision_gap_bps, 6) == 100.0
+        assert round(quality.execution_shortfall_bps, 6) == round(
+            (10.12 / 10.1 - 1) * 10_000, 6,
+        )
+        assert round(quality.premium_bps, 6) == round(
+            (10.1 / 10.05 - 1) * 10_000, 6,
+        )
+        assert quality.estimated_fees == 300 * 10.12 * 0.001
 
 
 def test_settle_marks_order_status(tmp_path: Path):
@@ -348,6 +395,46 @@ def test_settle_sell_deducts_commission_and_stamp_duty(tmp_path: Path):
         # 佣金 max(5, 100000×0.0003=30) = 30, 印花税 100000×0.0005 = 50
         # 净收入 = 100000 - 30 - 50 = 99920
         assert m.virtual_cash == 99920.0
+
+
+def test_hydra_etf_sell_does_not_charge_stock_stamp_duty(tmp_path: Path):
+    """Hydra target 仅交易 ETF；卖出应收佣金但不套用股票印花税。"""
+    sf = _factory(tmp_path)
+    _seed(sf, with_state=False)
+    with sf() as s:
+        order = s.get(Order, "oid1")
+        order.direction = "SELL"
+        order.target_id = "ht_etf"
+        order.symbol = "510300.SH"
+        s.query(RawSignal).filter_by(signal_id="s1").update({
+            "direction": "SELL", "symbol": "510300.SH",
+        })
+        s.query(RawSignal).filter_by(signal_id="s2").update({
+            "direction": "SELL", "symbol": "510300.SH",
+        })
+        s.add(InstanceState(
+            instance_id="real_A_m", virtual_cash=0.0,
+            virtual_positions={"510300.SH": 100}, last_update=_now(),
+        ))
+        s.add(InstanceState(
+            instance_id="real_A_r", virtual_cash=0.0,
+            virtual_positions={"510300.SH": 200}, last_update=_now(),
+        ))
+        s.commit()
+
+    svc = _make_svc(
+        sf,
+        commission_rate=0.0003,
+        min_commission=0.0,
+        stamp_duty_sell=0.0005,
+    )
+    svc.settle("20260430", [TradeResult(
+        order_id="oid1", filled_quantity=300, filled_price=1000.0,
+        status="FILLED",
+    )])
+    with sf() as s:
+        # 100,000 gross - 30 commission; no 50 stock stamp duty.
+        assert s.get(InstanceState, "real_A_m").virtual_cash == 99_970.0
 
 
 # ── Bug C: 防穿仓 / 防超卖触发后，order.bookkeeping_divergence = True ──────

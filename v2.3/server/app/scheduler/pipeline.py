@@ -10,6 +10,7 @@ from typing import Type
 import yaml
 from sqlalchemy import delete, select
 
+from app.execution import ExecutionDomain, normalize_execution_domain
 from app.models import InstanceState, Order, OrderSignalMap, RawSignal, Trade
 from app.services.aggregate import AggregateService, TaggedSignal
 from app.services.blacklist import BlacklistService
@@ -53,6 +54,7 @@ class StrategyPipeline:
         max_staleness_days: int | None = None,
         freshness_probe_category: str = "indexes",
         freshness_probe_symbol: str = "000852.SH",
+        live_order_generation_enabled: bool = False,
     ):
         self.registry = registry
         self.store = parquet_store
@@ -68,6 +70,7 @@ class StrategyPipeline:
         self.max_staleness_days = max_staleness_days
         self.freshness_probe_category = freshness_probe_category
         self.freshness_probe_symbol = freshness_probe_symbol
+        self.live_order_generation_enabled = live_order_generation_enabled
 
     def _market_staleness_days(self, trade_date: int) -> int | None:
         """行情比 trade_date 旧几天。护栏关（None）或探针缺失（无法评估）时返回 None。"""
@@ -82,7 +85,12 @@ class StrategyPipeline:
             return None
         return (_to_date(trade_date) - _to_date(latest)).days
 
-    def run(self, trade_date: int, force: bool = False) -> dict:
+    def run(
+        self,
+        trade_date: int,
+        force: bool = False,
+        execution_domain: ExecutionDomain = "paper",
+    ) -> dict:
         """完整管线。返回执行摘要。
 
         幂等：本日（trade_date）已有 raw_signals/orders/order_signal_map 一律先清掉，
@@ -91,8 +99,26 @@ class StrategyPipeline:
         force：仅放行『已拉取』护栏（00c），操作者必须保证客户端会重新拉取信号。
         『已结算』护栏（00b）任何情况下不可绕过。
         """
+        execution_domain = normalize_execution_domain(execution_domain)
         valid_date_str = str(trade_date)
-        logger.info("pipeline_start trade_date=%s", trade_date)
+        logger.info(
+            "pipeline_start trade_date=%s execution_domain=%s",
+            trade_date,
+            execution_domain,
+        )
+
+        if execution_domain == "live" and not self.live_order_generation_enabled:
+            logger.error("pipeline_skipped live_order_generation_disabled")
+            return {
+                "signals": 0,
+                "passed": 0,
+                "orders": 0,
+                "instances": 0,
+                "skipped": "live_order_generation_disabled",
+                "trade_date": trade_date,
+                "valid_date": valid_date_str,
+                "execution_domain": execution_domain,
+            }
 
         # Live future batches are only valid after today's EOD market data has
         # landed.  A broad N-day staleness tolerance is useful for historical
@@ -151,13 +177,15 @@ class StrategyPipeline:
                 cutoff_exclusive = (
                     _to_date(today_int) + timedelta(days=1)
                 ).strftime("%Y%m%d")
-            stale_orders = self._terminalize_prior_unresolved_orders(cutoff_exclusive)
+            stale_orders = self._terminalize_prior_unresolved_orders(
+                cutoff_exclusive, execution_domain,
+            )
 
         # 00b. 已结算护栏（2026-06 孤儿成交事故根因）：该 valid_date 已收到成交回报
         #      → 绝不重算。重算会先 _clear_for_date 删掉已结算订单 → 其 trades 变孤儿；
         #      再 aggregate 生成新 uuid 订单（PENDING），客户端永不针对它回报 → SELL
         #      永久卡 PENDING。何况该日竞价已成交，重算策略也无意义。直接跳过，保持原状。
-        settled = self._settled_order_ids(valid_date_str)
+        settled = self._settled_order_ids(valid_date_str, execution_domain)
         if settled:
             logger.error(
                 "pipeline_skipped already_settled valid_date=%s settled_orders=%d "
@@ -174,7 +202,7 @@ class StrategyPipeline:
         #      拉走该日订单 → 默认拒绝重算。重算会换掉 order_id，客户端不会在下单前
         #      重新拉取 → 次日成交回报全量 unmatched，成交静默不入账。
         #      确需重算：force=true，且操作者必须让客户端在下单前重新拉取信号。
-        fetched = self._fetched_order_ids(valid_date_str)
+        fetched = self._fetched_order_ids(valid_date_str, execution_domain)
         if fetched and not force:
             logger.error(
                 "pipeline_skipped already_fetched valid_date=%s fetched_orders=%d "
@@ -197,7 +225,7 @@ class StrategyPipeline:
         # Strict instances must be checked before _clear_for_date.  Otherwise a
         # same-day rerun could delete their unfetched PENDING order and only then
         # discover that a rebalance was still unresolved.
-        instances = self._load_instances()
+        instances = self._load_instances(execution_domain=execution_domain)
         preflight_guards = self._execution_guards(instances)
         operational_blockers = {
             "unresolved_order", "bookkeeping_divergence",
@@ -224,12 +252,12 @@ class StrategyPipeline:
 
         # 0a. 自动晋升：把最近 REJECTED 的 symbol 持久化到 risk_blacklist 表
         #     这样即使后面 clear-state 清了 orders，黑名单不丢
-        promoted = self.blacklist.auto_promote()
+        promoted = self.blacklist.auto_promote(execution_domain=execution_domain)
         if promoted["promoted"]:
             logger.info("pipeline blacklist auto-promote: %s", promoted)
 
         # 0b. 幂等：清同一 trade_date 的旧 raw_signals + orders + order_signal_map
-        cleared = self._clear_for_date(valid_date_str)
+        cleared = self._clear_for_date(valid_date_str, execution_domain)
         if any(cleared.values()):
             logger.info("pipeline cleared stale data for %s: %s", trade_date, cleared)
 
@@ -245,7 +273,7 @@ class StrategyPipeline:
         states = self._ensure_instance_states(instances)
 
         # 2.5. 计算 risk blacklist（自动 + 手工）
-        risk_bl = self.blacklist.compute()
+        risk_bl = self.blacklist.compute(execution_domain=execution_domain)
 
         # 3. 跑策略
         runner = StrategyRunner(registry=self.registry, parquet_store=self.store)
@@ -302,12 +330,21 @@ class StrategyPipeline:
 
                 for sig in ordered:
                     signals_total += 1
-                    pre = self.precheck.check(
-                        sig, running_cash, running_positions,
-                    )
+                    guard = preflight_guards[instance_id]
+                    if guard["allowed"]:
+                        pre = self.precheck.check(
+                            sig, running_cash, running_positions,
+                        )
+                        pre_status = pre.status
+                        pre_reason = pre.reason
+                    else:
+                        # 策略仍可运行并更新 dry-run/replay 状态，但统一订单闸门
+                        # 强制把任何不合规 adapter 输出标为 FAIL，不能进入归集。
+                        pre_status = "FAIL"
+                        pre_reason = "execution_guard:" + ",".join(guard["blockers"])
 
                     # 若 PASS，预扣 running 现金/持仓供下一笔同实例 signal 使用
-                    if pre.status == "PASS":
+                    if pre_status == "PASS":
                         limit_p = sig.reference_price * (1.0 + sig.price_offset)
                         gross = sig.quantity * limit_p
                         if sig.direction == "SELL":
@@ -329,6 +366,7 @@ class StrategyPipeline:
                     limit_price = sig.reference_price * (1 + sig.price_offset)
                     session.add(RawSignal(
                         signal_id=signal_id,
+                        execution_domain=execution_domain,
                         instance_id=instance_id,
                         symbol=sig.symbol,
                         direction=sig.direction,
@@ -338,15 +376,17 @@ class StrategyPipeline:
                         limit_price=round(limit_price, 4),
                         valid_date=valid_date_str,
                         signal_time=_now_iso(),
-                        precheck_status=pre.status,
-                        precheck_reason=pre.reason,
+                        precheck_status=pre_status,
+                        precheck_reason=pre_reason,
                     ))
-                    if pre.status == "PASS":
+                    if pre_status == "PASS":
                         passed_total += 1
                         all_pass_tagged.append(TaggedSignal(
                             signal_id=signal_id,
                             account_group=inst["account_group"],
                             raw=sig,
+                            execution_domain=execution_domain,
+                            qmt_account_alias=inst.get("qmt_account_alias"),
                         ))
             session.commit()
 
@@ -366,7 +406,7 @@ class StrategyPipeline:
         #   - T 日 9:00 同日 trigger T  → 也写 snapshot[today=T]，但是 pre-trade state
         #     → 后面 16:00 trigger 时 UPSERT 覆盖为正确版本
         today_str = datetime.now().strftime("%Y%m%d")
-        self.perf.snapshot_all(int(today_str))
+        self.perf.snapshot_all(int(today_str), execution_domain=execution_domain)
 
         summary = {
             "trade_date": trade_date,
@@ -375,6 +415,7 @@ class StrategyPipeline:
             "signals": signals_total,
             "passed": passed_total,
             "orders": len(agg.orders),
+            "execution_domain": execution_domain,
         }
         if any(stale_orders.values()):
             summary["stale_orders_terminalized"] = stale_orders
@@ -385,7 +426,9 @@ class StrategyPipeline:
         return summary
 
     # ── 内部 ──────────────────────────────────────────────────────────
-    def _load_instances(self) -> list[dict]:
+    def _load_instances(
+        self, execution_domain: ExecutionDomain | None = None,
+    ) -> list[dict]:
         """从 strategies.yaml 解析出扁平化的实例列表。"""
         if not self.strategies_yaml_path.exists():
             logger.warning("strategies.yaml 不存在: %s", self.strategies_yaml_path)
@@ -396,14 +439,21 @@ class StrategyPipeline:
         instances: list[dict] = []
         for ag in cfg.get("account_groups", []):
             group_id = ag["group_id"]
+            group_domain = normalize_execution_domain(
+                str(ag.get("execution_domain", "paper"))
+            )
+            if execution_domain is not None and group_domain != execution_domain:
+                continue
             for strat in ag.get("strategies", []):
                 instances.append({
                     "instance_id": f"{group_id}_{strat['strategy_id']}",
                     "account_group": group_id,
                     "strategy_id": strat["strategy_id"],
                     "virtual_initial_cash": float(strat.get("virtual_initial_cash", 0)),
+                    "execution_domain": group_domain,
                     "owned_symbols": strat.get("owned_symbols"),  # list[str] or None
                     "qmt_account_id": ag.get("qmt_account_id"),
+                    "qmt_account_alias": ag.get("qmt_account_alias"),
                     "orders_enabled": bool(strat.get("orders_enabled", True)),
                     "account_isolation": strat.get("account_isolation", "legacy"),
                     "dynamic_ownership": bool(strat.get("dynamic_ownership", False)),
@@ -434,6 +484,11 @@ class StrategyPipeline:
                 blockers: list[str] = []
                 if not inst.get("orders_enabled", True):
                     blockers.append("orders_disabled")
+                if (
+                    inst["execution_domain"] == "live"
+                    and not self.live_order_generation_enabled
+                ):
+                    blockers.append("live_order_generation_disabled")
 
                 strict = inst.get("requires_reconciled_rebalance", False)
                 if strict:
@@ -459,6 +514,8 @@ class StrategyPipeline:
                         .join(OrderSignalMap, OrderSignalMap.order_id == Order.order_id)
                         .join(RawSignal, RawSignal.signal_id == OrderSignalMap.signal_id)
                         .where(RawSignal.instance_id == inst["instance_id"])
+                        .where(RawSignal.execution_domain == inst["execution_domain"])
+                        .where(Order.execution_domain == inst["execution_domain"])
                         .where(Order.status.in_(("PENDING", "PARTIAL")))
                         .limit(1)
                     ).first()
@@ -470,6 +527,8 @@ class StrategyPipeline:
                         .join(OrderSignalMap, OrderSignalMap.order_id == Order.order_id)
                         .join(RawSignal, RawSignal.signal_id == OrderSignalMap.signal_id)
                         .where(RawSignal.instance_id == inst["instance_id"])
+                        .where(RawSignal.execution_domain == inst["execution_domain"])
+                        .where(Order.execution_domain == inst["execution_domain"])
                         .where(Order.bookkeeping_divergence.is_(True))
                         .limit(1)
                     ).first()
@@ -485,6 +544,7 @@ class StrategyPipeline:
                     "allowed": not blockers,
                     "blockers": blockers,
                     "orders_enabled": inst.get("orders_enabled", True),
+                    "execution_domain": inst["execution_domain"],
                     "account_isolation": inst.get("account_isolation", "legacy"),
                     "reconciliation_scope": (
                         "instance_qmt"
@@ -514,6 +574,16 @@ class StrategyPipeline:
                     yaml_owned = inst.get("owned_symbols")
                     if row.owned_symbols != yaml_owned:
                         row.owned_symbols = yaml_owned
+                    if row.execution_domain != inst["execution_domain"]:
+                        raise RuntimeError(
+                            f"instance_id {instance_id} 已属于 {row.execution_domain}，"
+                            f"不能改为 {inst['execution_domain']}"
+                        )
+                    configured_alias = inst.get("qmt_account_alias")
+                    if configured_alias and row.account_alias not in (None, configured_alias):
+                        raise RuntimeError(f"instance_id {instance_id} account_alias 冲突")
+                    if configured_alias and row.account_alias is None:
+                        row.account_alias = configured_alias
                     result[instance_id] = {
                         "cash": float(row.virtual_cash),
                         "positions": dict(row.virtual_positions or {}),
@@ -525,6 +595,8 @@ class StrategyPipeline:
                     cash = inst["virtual_initial_cash"]
                     session.add(InstanceState(
                         instance_id=instance_id,
+                        execution_domain=inst["execution_domain"],
+                        account_alias=inst.get("qmt_account_alias"),
                         virtual_cash=cash,
                         virtual_positions={},
                         owned_symbols=inst.get("owned_symbols"),
@@ -536,7 +608,9 @@ class StrategyPipeline:
             session.commit()
         return result
 
-    def _settled_order_ids(self, valid_date: str) -> set[str]:
+    def _settled_order_ids(
+        self, valid_date: str, execution_domain: ExecutionDomain = "paper",
+    ) -> set[str]:
         """该 valid_date 下已收到成交回报（trades 表有记录）的 order_id 集合。
 
         "已结算" = 客户端已针对该订单回报成交。删这种订单会孤儿化其 trades，
@@ -548,12 +622,19 @@ class StrategyPipeline:
                 for r in session.execute(
                     select(Order.order_id)
                     .where(Order.valid_date == valid_date)
-                    .where(Order.order_id.in_(select(Trade.order_id)))
+                    .where(Order.execution_domain == execution_domain)
+                    .where(Order.order_id.in_(
+                        select(Trade.order_id).where(
+                            Trade.execution_domain == execution_domain
+                        )
+                    ))
                 ).all()
             }
 
     def _terminalize_prior_unresolved_orders(
-        self, cutoff_exclusive: str,
+        self,
+        cutoff_exclusive: str,
+        execution_domain: ExecutionDomain = "paper",
     ) -> dict[str, int]:
         """Close day-valid orders left unresolved after their validity date.
 
@@ -571,6 +652,7 @@ class StrategyPipeline:
             rows = session.execute(
                 select(Order)
                 .where(Order.valid_date < cutoff_exclusive)
+                .where(Order.execution_domain == execution_domain)
                 .where(Order.status.in_(("PENDING", "PARTIAL")))
                 .order_by(Order.valid_date, Order.order_id)
             ).scalars().all()
@@ -578,6 +660,7 @@ class StrategyPipeline:
                 row[0]
                 for row in session.execute(
                     select(Trade.order_id).where(
+                        Trade.execution_domain == execution_domain,
                         Trade.order_id.in_([order.order_id for order in rows])
                     )
                 ).all()
@@ -604,7 +687,9 @@ class StrategyPipeline:
             )
         return result
 
-    def _fetched_order_ids(self, valid_date: str) -> set[str]:
+    def _fetched_order_ids(
+        self, valid_date: str, execution_domain: ExecutionDomain = "paper",
+    ) -> set[str]:
         """该 valid_date 下客户端已拉取（fetched_at 非空）的 order_id 集合。
 
         "已拉取" = 客户端可能已按这些 order_id 下了真实委托。换掉它们的 ID
@@ -616,11 +701,14 @@ class StrategyPipeline:
                 for r in session.execute(
                     select(Order.order_id)
                     .where(Order.valid_date == valid_date)
+                    .where(Order.execution_domain == execution_domain)
                     .where(Order.fetched_at.is_not(None))
                 ).all()
             }
 
-    def _clear_for_date(self, valid_date: str) -> dict[str, int]:
+    def _clear_for_date(
+        self, valid_date: str, execution_domain: ExecutionDomain = "paper",
+    ) -> dict[str, int]:
         """清除指定 valid_date 的 raw_signals + orders + order_signal_map。
 
         order_signal_map 通过 raw_signals 的 signal_id 反查删除。
@@ -636,7 +724,12 @@ class StrategyPipeline:
                 for r in session.execute(
                     select(Order.order_id)
                     .where(Order.valid_date == valid_date)
-                    .where(Order.order_id.in_(select(Trade.order_id)))
+                    .where(Order.execution_domain == execution_domain)
+                    .where(Order.order_id.in_(
+                        select(Trade.order_id).where(
+                            Trade.execution_domain == execution_domain
+                        )
+                    ))
                 ).all()
             }
             protected_sig_ids: set[str] = set()
@@ -652,11 +745,19 @@ class StrategyPipeline:
             # 本日全部 signal 用子查询表达（不物化成 Python 列表 → 不撞 SQLite IN 上限）。
             # 必须先删 OSM（其 WHERE 引用 raw_signals），再删 raw_signals。
             date_sig_ids = select(RawSignal.signal_id).where(
-                RawSignal.valid_date == valid_date)
+                RawSignal.valid_date == valid_date,
+                RawSignal.execution_domain == execution_domain,
+            )
             osm_stmt = delete(OrderSignalMap).where(
                 OrderSignalMap.signal_id.in_(date_sig_ids))
-            sig_stmt = delete(RawSignal).where(RawSignal.valid_date == valid_date)
-            order_stmt = delete(Order).where(Order.valid_date == valid_date)
+            sig_stmt = delete(RawSignal).where(
+                RawSignal.valid_date == valid_date,
+                RawSignal.execution_domain == execution_domain,
+            )
+            order_stmt = delete(Order).where(
+                Order.valid_date == valid_date,
+                Order.execution_domain == execution_domain,
+            )
             if protected_sig_ids:
                 osm_stmt = osm_stmt.where(
                     OrderSignalMap.signal_id.notin_(protected_sig_ids))
@@ -675,16 +776,23 @@ class StrategyPipeline:
             "preserved_settled": len(settled_order_ids),
         }
 
-    def reset_instance_states(self) -> dict[str, dict]:
+    def reset_instance_states(
+        self, execution_domain: ExecutionDomain = "paper",
+    ) -> dict[str, dict]:
         """把所有 instance_state 的 virtual_cash 还原成 strategies.yaml 初始值，
         virtual_positions 清空。配合 /admin/clear-state?include_instance_state=true。
         """
-        instances = self._load_instances()
+        execution_domain = normalize_execution_domain(execution_domain)
+        instances = self._load_instances(execution_domain=execution_domain)
         result = {}
         with self.session_factory() as session:
             existing = {
                 row.instance_id: row
-                for row in session.execute(select(InstanceState)).scalars().all()
+                for row in session.execute(
+                    select(InstanceState).where(
+                        InstanceState.execution_domain == execution_domain
+                    )
+                ).scalars().all()
             }
             for inst in instances:
                 instance_id = inst["instance_id"]

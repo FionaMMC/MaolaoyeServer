@@ -11,6 +11,10 @@ class InstanceState(Base):
     __tablename__ = "instance_state"
 
     instance_id: Mapped[str] = mapped_column(String, primary_key=True)
+    execution_domain: Mapped[str] = mapped_column(
+        String, nullable=False, default="paper", server_default="paper", index=True,
+    )
+    account_alias: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     virtual_cash: Mapped[float] = mapped_column(nullable=False)
     virtual_positions: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     last_update: Mapped[str] = mapped_column(String, nullable=False)

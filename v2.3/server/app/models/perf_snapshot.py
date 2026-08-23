@@ -12,6 +12,9 @@ class PerfSnapshot(Base):
 
     instance_id: Mapped[str] = mapped_column(String, primary_key=True)
     date: Mapped[str] = mapped_column(String, primary_key=True)
+    execution_domain: Mapped[str] = mapped_column(
+        String, nullable=False, default="paper", server_default="paper", index=True,
+    )
     nav: Mapped[float] = mapped_column(Float, nullable=False)
     daily_return: Mapped[float | None] = mapped_column(Float, nullable=True)
     positions_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)

@@ -148,6 +148,16 @@ class ReconcileService:
                 raise InstanceNotFound(
                     f"instance_id={snapshot.instance_id} 不存在于 instance_state 表"
                 )
+            if inst.execution_domain != snapshot.execution_domain:
+                raise ReconcileGuardTripped(
+                    "snapshot execution_domain 与 instance_state 不一致"
+                )
+            if snapshot.account_alias is not None and inst.account_alias not in (
+                None, snapshot.account_alias,
+            ):
+                raise ReconcileGuardTripped(
+                    "snapshot account_alias 与 instance_state 不一致"
+                )
 
             _, account_has_shared_ledger = self._configured_account_policy(
                 snapshot.instance_id, snapshot.qmt_account_id,
@@ -168,6 +178,8 @@ class ReconcileService:
             if my_owned is None:
                 for other in session.execute(select(InstanceState)).scalars().all():
                     if other.instance_id == snapshot.instance_id:
+                        continue
+                    if other.execution_domain != snapshot.execution_domain:
                         continue
                     if other.owned_symbols:
                         others_owned.update(other.owned_symbols)
@@ -341,7 +353,12 @@ class ReconcileService:
                         )
                     all_owned[s] = inst.instance_id
 
-    def reconcile_cash_total(self, qmt_total_cash: float, tolerance: float = 0.05) -> bool:
+    def reconcile_cash_total(
+        self,
+        qmt_total_cash: float,
+        tolerance: float = 0.05,
+        execution_domain: str = "paper",
+    ) -> bool:
         """检查 Σ(virtual_cash) ≈ QMT total cash。仅报警，不修改 state。
 
         返回 True = OK，False = 偏差超阈值（已记 warning，调用方决定是否触发 alert）。
@@ -349,7 +366,11 @@ class ReconcileService:
         Task 23 deploy 会把此方法接入 scheduler 定时检查。
         """
         with self.session_factory() as session:
-            instances = session.execute(select(InstanceState)).scalars().all()
+            instances = session.execute(
+                select(InstanceState).where(
+                    InstanceState.execution_domain == execution_domain
+                )
+            ).scalars().all()
             total_virtual = sum(float(inst.virtual_cash) for inst in instances)
             if total_virtual <= 0:
                 return True
@@ -362,14 +383,24 @@ class ReconcileService:
                 return False
             return True
 
-    def reconcile_total(self, qmt_positions: dict[str, int], qmt_cash: float,
-                        snapshot_time: str, cash_tolerance: float = 0.05):
+    def reconcile_total(
+        self,
+        qmt_positions: dict[str, int],
+        qmt_cash: float,
+        snapshot_time: str,
+        cash_tolerance: float = 0.05,
+        execution_domain: str = "paper",
+    ):
         """Portfolio 级总量对账：对每个 symbol 断言 Σ_i virtual_positions[X] == QMT[X]。
         只报警、绝不改账（归属由 settlement 血缘维护）。多个 instance 可共同持有同一
         symbol（如 v53 + v79 都持 511260.SH），本方法只校验其和。"""
         from app.schemas.reconcile import TotalReconcileResult
         with self.session_factory() as session:
-            instances = session.execute(select(InstanceState)).scalars().all()
+            instances = session.execute(
+                select(InstanceState).where(
+                    InstanceState.execution_domain == execution_domain
+                )
+            ).scalars().all()
             ledger_sum: dict[str, int] = {}
             per_instance: dict[str, dict[str, int]] = {}
             cash_total = 0.0
@@ -414,12 +445,22 @@ class ReconcileService:
                         "(ledger_cash=%.0f <= qmt_cash=%.0f)", len(all_syms), cash_total, qmt_cash)
         return result
 
-    def shadow_compare(self, qmt_positions: dict[str, int], qmt_cash: float,
-                       snapshot_time: str) -> dict:
+    def shadow_compare(
+        self,
+        qmt_positions: dict[str, int],
+        qmt_cash: float,
+        snapshot_time: str,
+        execution_domain: str = "paper",
+    ) -> dict:
         """影子对比：跑 reconcile_total，返回 {consistent: bool, total: TotalReconcileResult}。
         consistent = 台账之和逐 symbol == QMT 且 cash 在容差内。切权前每日 log，
         连续 N 天 True 才允许把 total 变权威。"""
-        total = self.reconcile_total(qmt_positions, qmt_cash, snapshot_time)
+        total = self.reconcile_total(
+            qmt_positions,
+            qmt_cash,
+            snapshot_time,
+            execution_domain=execution_domain,
+        )
         consistent = (total.n_mismatched == 0 and total.cash_ok)
         logger.info("shadow_compare: consistent=%s (mismatched=%d cash_ok=%s)",
                     consistent, total.n_mismatched, total.cash_ok)

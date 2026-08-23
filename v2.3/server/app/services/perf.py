@@ -18,7 +18,7 @@ class PerfService:
         self.session_factory = session_factory
         self.store = parquet_store
 
-    def snapshot_all(self, trade_date: int) -> int:
+    def snapshot_all(self, trade_date: int, execution_domain: str = "paper") -> int:
         """对所有 instance 生成当日快照。返回写入条数。
 
         nav = virtual_cash + Σ(position[symbol] × close_price[symbol])
@@ -28,7 +28,11 @@ class PerfService:
         """
         date_str = str(trade_date)
         with self.session_factory() as session:
-            instances = session.execute(select(InstanceState)).scalars().all()
+            instances = session.execute(
+                select(InstanceState).where(
+                    InstanceState.execution_domain == execution_domain
+                )
+            ).scalars().all()
             written = 0
             for inst in instances:
                 nav = self._compute_nav(inst, trade_date)
@@ -39,7 +43,7 @@ class PerfService:
                     PerfSnapshot, (inst.instance_id, date_str)
                 )
                 daily_return = self._compute_daily_return(
-                    session, inst.instance_id, date_str, nav,
+                    session, inst.instance_id, date_str, nav, execution_domain,
                 )
                 if existing:
                     existing.nav = nav
@@ -49,6 +53,7 @@ class PerfService:
                     session.add(PerfSnapshot(
                         instance_id=inst.instance_id,
                         date=date_str,
+                        execution_domain=execution_domain,
                         nav=nav,
                         daily_return=daily_return,
                         positions_snapshot=positions_json,
@@ -81,12 +86,18 @@ class PerfService:
         return None
 
     def _compute_daily_return(
-        self, session, instance_id: str, date_str: str, today_nav: float,
+        self,
+        session,
+        instance_id: str,
+        date_str: str,
+        today_nav: float,
+        execution_domain: str = "paper",
     ) -> float | None:
         """跟昨日（数据库里上一条快照）算日收益率。无昨日返回 None。"""
         prev = session.execute(
             select(PerfSnapshot)
             .where(PerfSnapshot.instance_id == instance_id)
+            .where(PerfSnapshot.execution_domain == execution_domain)
             .where(PerfSnapshot.date < date_str)
             .order_by(PerfSnapshot.date.desc())
             .limit(1)

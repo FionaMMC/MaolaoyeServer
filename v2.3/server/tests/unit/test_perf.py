@@ -167,3 +167,26 @@ def test_snapshot_no_instances_returns_zero(tmp_path: Path):
     sf, store = _setup(tmp_path)
     svc = PerfService(session_factory=sf, parquet_store=store)
     assert svc.snapshot_all(20260430) == 0
+
+
+def test_snapshot_never_crosses_execution_domain(tmp_path: Path):
+    sf, store = _setup(tmp_path)
+    with sf() as s:
+        s.add_all([
+            InstanceState(
+                instance_id="paper-i", execution_domain="paper",
+                virtual_cash=100.0, virtual_positions={}, last_update=_now(),
+            ),
+            InstanceState(
+                instance_id="live-i", execution_domain="live",
+                virtual_cash=200.0, virtual_positions={}, last_update=_now(),
+            ),
+        ])
+        s.commit()
+    svc = PerfService(session_factory=sf, parquet_store=store)
+    assert svc.snapshot_all(20260430, execution_domain="live") == 1
+    with sf() as s:
+        assert s.get(PerfSnapshot, ("paper-i", "20260430")) is None
+        live = s.get(PerfSnapshot, ("live-i", "20260430"))
+        assert live.execution_domain == "live"
+        assert live.nav == 200.0
