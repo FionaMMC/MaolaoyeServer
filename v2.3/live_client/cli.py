@@ -72,9 +72,14 @@ def submit(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> d
         if snapshot.account_id != cfg.account_id:
             raise RuntimeError("QMT account_id 二次校验失败")
         _require_server_reconciled(server, cfg, snapshot)
-        validate_account_capacity(
-            fresh_batch, snapshot.available_cash, snapshot.sellable_positions,
+        risk_snapshot = validate_account_capacity(
+            fresh_batch,
+            snapshot.available_cash,
+            snapshot.sellable_positions,
+            cfg,
+            snapshot.total_asset,
         )
+        state.record_risk_check(fresh_batch.batch_sha256, risk_snapshot)
         submitted = rejected = 0
         for order in sorted(
             fresh_batch.orders,

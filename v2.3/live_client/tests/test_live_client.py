@@ -33,7 +33,10 @@ def _cfg(tmp_path: Path, **changes) -> LiveClientConfig:
         "task_prefix": "HydraLiveTest",
         "trading_enabled": True,
         "allow_insecure_http": False,
-        "allowed_symbols": frozenset({"510300.SH", "159915.SZ"}),
+        "allowed_symbols": frozenset({
+            "510300.SH", "159915.SZ", "511260.SH", "518880.SH", "159981.SZ",
+            "159985.SZ", "159930.SZ", "513500.SH", "513100.SH",
+        }),
         "max_daily_orders": 5,
         "max_single_order_notional": 1_000_000,
         "max_daily_buy_notional": 2_000_000,
@@ -138,9 +141,41 @@ def test_account_capacity_is_sell_first_but_never_oversells(tmp_path):
         row["batch_sha256"] = sha
         row["batch_id"] = f"hb_{sha}"
     batch = validate_order_batch(orders, "20260803", cfg)
-    validate_account_capacity(batch, cash=300, positions={"159915.SZ": 100})
+    validate_account_capacity(
+        batch, cash=300, positions={"159915.SZ": 100},
+        cfg=cfg, total_asset=1000,
+    )
     with pytest.raises(ValueError, match="可卖持仓不足"):
-        validate_account_capacity(batch, cash=300, positions={})
+        validate_account_capacity(
+            batch, cash=300, positions={}, cfg=cfg, total_asset=1000,
+        )
+
+
+def test_auto_risk_uses_qmt_nav_and_records_immutable_snapshot(tmp_path):
+    cfg = _cfg(
+        tmp_path,
+        risk_mode="auto",
+        max_daily_orders=0,
+        max_single_order_notional=0,
+        max_daily_buy_notional=0,
+        max_daily_sell_notional=0,
+        max_daily_turnover_notional=0,
+        max_price_offset_bps=0,
+        auto_max_daily_orders=10,
+        auto_buffer_bps=100,
+    )
+    batch = validate_order_batch(_orders(), "20260803", cfg)
+    snapshot = validate_account_capacity(
+        batch, cash=10_000, positions={}, cfg=cfg, total_asset=10_000,
+    )
+    assert snapshot["mode"] == "auto"
+    assert snapshot["max_single_order_notional"] == 10_100
+    assert snapshot["max_price_offset_bps"] == 50
+    store = LiveStateStore(cfg.state_db)
+    assert store.record_risk_check(batch.batch_sha256, snapshot) is True
+    assert store.record_risk_check(batch.batch_sha256, snapshot) is False
+    with pytest.raises(RuntimeError, match="风控快照已变化"):
+        store.record_risk_check(batch.batch_sha256, {**snapshot, "qmt_total_asset": 1})
 
 
 def test_mock_qmt_full_query_submit_settle_cycle(tmp_path, monkeypatch):

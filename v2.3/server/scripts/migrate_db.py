@@ -142,6 +142,7 @@ def main(argv: list[str] | None = None) -> int:
             "posttrade_reconciliation_sha256": "VARCHAR",
             "reconciled_cash": "FLOAT",
             "reconciled_positions": "JSON",
+            "risk_snapshot": "JSON",
         }
         for col, sql_type in attempt_columns.items():
             if not column_exists(con, "hydra_execution_attempts", col):
@@ -151,6 +152,10 @@ def main(argv: list[str] | None = None) -> int:
                 ))
             else:
                 print(f"[migrate] hydra_execution_attempts.{col} already exists, skip")
+        con.execute(text(
+            "UPDATE hydra_execution_attempts SET risk_snapshot = '{}' "
+            "WHERE risk_snapshot IS NULL"
+        ))
 
         if not column_exists(con, "hydra_targets", "research_input_hashes"):
             print("[migrate] ALTER TABLE hydra_targets ADD research_input_hashes")

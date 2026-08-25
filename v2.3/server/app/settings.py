@@ -7,6 +7,11 @@ from pathlib import Path
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+HYDRA_LIVE_EXECUTABLE_SYMBOLS = {
+    "510300.SH", "159915.SZ", "511260.SH", "518880.SH", "159981.SZ",
+    "159985.SZ", "159930.SZ", "513500.SH", "513100.SH",
+}
+
 
 class Settings(BaseSettings):
     """所有 server 端配置集中在此类。
@@ -43,18 +48,22 @@ class Settings(BaseSettings):
     live_account_initialization_enabled: bool = False
     live_qmt_account_sha256: str = ""
 
-    # Hydra live relay allowlists / limits。0 或空值代表“未获业务批准”，live fail-closed。
+    # Hydra live relay allowlists / limits。risk_mode 默认 disabled；只有显式选择
+    # static/auto 且打开生成闸门后才能产出 live 订单。
     hydra_allowed_symbols_csv: str = (
         "510300.SH,159915.SZ,511260.SH,518880.SH,159981.SZ,"
         "159985.SZ,159930.SZ,513500.SH,513100.SH"
     )
     hydra_allowed_publisher_commits_csv: str = ""
+    hydra_live_risk_mode: str = "disabled"
     live_max_daily_orders: int = 0
     live_max_single_order_notional: float = 0.0
     live_max_daily_buy_notional: float = 0.0
     live_max_daily_sell_notional: float = 0.0
     live_max_daily_turnover_notional: float = 0.0
     live_max_price_offset_bps: float = 0.0
+    live_auto_max_daily_orders: int = 100
+    live_auto_buffer_bps: float = 100.0
 
     # 业务数据
     db_url: str = "sqlite:///./pipeline-server.db"
@@ -92,6 +101,15 @@ class Settings(BaseSettings):
         paper_key = self.paper_api_key or self.api_key
         if paper_key and self.live_api_key and paper_key == self.live_api_key:
             raise ValueError("paper_api_key 与 live_api_key 必须不同")
+        if self.hydra_live_risk_mode not in {"disabled", "static", "auto"}:
+            raise ValueError("hydra_live_risk_mode 必须是 disabled/static/auto")
+        configured_symbols = {
+            value.strip()
+            for value in self.hydra_allowed_symbols_csv.split(",")
+            if value.strip()
+        }
+        if configured_symbols != HYDRA_LIVE_EXECUTABLE_SYMBOLS:
+            raise ValueError("Hydra live 白名单必须恰好是已批准的 9 只 ETF")
         return self
 
 

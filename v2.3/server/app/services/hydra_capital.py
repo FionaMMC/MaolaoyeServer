@@ -42,7 +42,7 @@ def analyze_capital(
     prices: dict[str, float],
     capital: float,
     *,
-    cash_buffer: float = 0.01,
+    cash_buffer: float = 0.0,
     lot_size: int = 100,
 ) -> CapitalPreflightResult:
     validate_inputs(weights, prices, cash_buffer)
@@ -80,7 +80,7 @@ def minimum_capital_for_name_coverage(
     prices: dict[str, float],
     coverage: float,
     *,
-    cash_buffer: float = 0.01,
+    cash_buffer: float = 0.0,
     lot_size: int = 100,
 ) -> float:
     validate_inputs(weights, prices, cash_buffer)

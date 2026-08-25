@@ -60,6 +60,26 @@ def test_install_and_load_content_addressed_batch(tmp_path):
     assert manifest.adjustment == "none"
 
 
+def test_manifest_preserves_research_universe_and_future_audit_fields(tmp_path):
+    body = _parquet_bytes(_prices())
+    manifest = _manifest(
+        body,
+        stream="hydra_model_hfq",
+        adjustment="back",
+        symbols=["510300.SH", "159915.SZ"],
+        executable_symbols=["510300.SH"],
+        research_only_symbols=["159915.SZ"],
+        notes=["research bridge only"],
+        future_audit_field={"source": "qmt"},
+    )
+    installed = HydraDataStore(tmp_path).install(body, manifest)
+    _, loaded = HydraDataStore(tmp_path).load(
+        "hydra_model_hfq", installed.file_sha256,
+    )
+    assert loaded.research_only_symbols == ["159915.SZ"]
+    assert loaded.model_extra["future_audit_field"] == {"source": "qmt"}
+
+
 def test_execution_raw_rejects_back_adjustment(tmp_path):
     body = _parquet_bytes(_prices())
     with pytest.raises(ValueError, match="adjustment 必须是 none"):

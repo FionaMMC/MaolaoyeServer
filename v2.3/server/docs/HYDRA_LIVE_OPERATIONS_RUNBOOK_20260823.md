@@ -4,8 +4,8 @@
 
 **NO-GO for real orders.** The repository-side foundation is implemented, but
 production remains unchanged and every live switch defaults to off. Real enablement
-still requires private credentials/account paths, approved numeric limits, an
-approved publisher commit, production data snapshots, Windows/MiniQMT deployment,
+still requires private credentials/account paths, approved risk mode, an approved
+publisher commit, the formal 2026-08-31 snapshot, Windows/MiniQMT deployment,
 mock and dedicated-paper evidence, and written business acceptance.
 
 No real QMT account id, API key, userdata path or password belongs in Git. Server
@@ -27,6 +27,12 @@ checked through a private SHA-256 fingerprint.
 - The relay validates target weights, ETF allowlist, publisher SHA, dual-data dates,
   hashes, suspension, 100-unit buy lots, ¥0.001 tick rounding, cash feasibility and
   server risk limits.
+- Manifest audit fields and the executable/research-only universe survive staging;
+  research bridge `511010.SH` is accepted only in HFQ and rejected from raw prices,
+  targets and orders.
+- Live risk has explicit `disabled/static/auto` modes. The default is `disabled`.
+  `auto` derives notional limits from reconciled QMT NAV, cash and sellable holdings,
+  retains the 50bp protection, and persists its computed snapshot.
 - Monthly idempotency is split into immutable target, rebalance and daily attempt.
   A retry cannot be created until the previous attempt is terminal and post-trade
   reconciliation records an actual residual.
@@ -102,6 +108,10 @@ python -m scripts.build_hydra_target_request \
 First run it in paper/mock. Only an approved operator may later change the request to
 `live` and POST it to `/hydra/targets/stage` with the live token.
 
+The strategy cash-buffer default is `0`. For live sizing, the relay independently
+reserves the worst permitted buy-price offset plus 0.1% execution-cost headroom;
+this is an execution solvency control, not a change to Hydra target weights.
+
 ## Capital preflight
 
 Run the current month, not only a historical threshold:
@@ -109,19 +119,20 @@ Run the current month, not only a historical threshold:
 ```bash
 python -m scripts.hydra_capital_preflight \
   --target Hydra_latest.parquet --execution-raw data.parquet \
-  --as-of YYYYMMDD --capital 100000 --capital 700000 --capital 1500000
+  --as-of YYYYMMDD --capital 100000 --capital 200000 --capital 700000
 ```
 
-Historical replay found approximately ¥100k as a technical floor, ¥700k as the
-preferred pilot scale (worst historical single-ETF error near 2 percentage points),
-and ¥1.5m for roughly 1-point fidelity. Lot rounding is saw-toothed, so the current
-month report is an approval artifact, not an informational dashboard.
+Historical replay found approximately ¥100k as a technical floor and ¥700k as the
+higher-fidelity scale (worst historical single-ETF error near 2 percentage points).
+The resolved first pilot is **¥200,000**: usable for grey release but explicitly not
+high-fidelity (historical worst single-ETF deviation about 6.2–6.4pp). Lot rounding
+is saw-toothed, so the formal 2026-08-31 report at ¥200k is an approval artifact.
 
 ## Required order-day sequence
 
 1. T close: freeze HFQ/raw/actions/calendar and hashes; produce and validate target.
 2. T evening: stage T+1 attempt; run capital/risk preflight; live client `query`.
-3. T+1 09:15: live client `submit` re-fetches the server batch, reads QMT total and
+3. T+1 09:10: live client `submit` re-fetches the server batch, reads QMT total and
    sellable positions separately, requires a clean server reconciliation, checks
    cash and client limits, then submits SELL before BUY.
 4. T+1 close: `settle` sends cumulative fills and execution-quality evidence.
@@ -139,6 +150,11 @@ month report is an approval artifact, not an informational dashboard.
    `COMPLETE` only when there is no residual; otherwise it records `RESIDUAL`.
 7. A next-day retry is staged through `/hydra/rebalances/retry`; it references the
    same target/rebalance and cannot run while an earlier order is unresolved.
+
+Windows Task Scheduler uses the agreed MiniQMT-only sequence: 15:10 QMT status
+collection, 15:30 terminal settlement/reconciliation, 16:00 eligible residual
+staging, 18:00 audit/export, and T+1 09:10 re-fetch/hash/account checks plus submit.
+No large-QMT adapter or transition path is required.
 
 ## Slippage, premium and month-end evidence
 
@@ -172,7 +188,8 @@ attempts, orders, trades, execution quality, cash flows and month-end state.
 
 ## GO gate requiring external action
 
-- [ ] Business supplies and approves all non-zero server and client risk limits.
+- [x] Business selected dynamic `auto` technical risk; code defaults to disabled and
+      no static business amount cap is interpreted as unlimited.
 - [ ] Private live token/client id/account alias/fingerprint and isolated paths installed.
 - [ ] New Hydra publisher commit and dual-data producer commit reviewed and allowlisted.
 - [ ] 81-month HFQ-vs-raw/corporate-action differential audit signed off.
@@ -180,3 +197,17 @@ attempts, orders, trades, execution quality, cash flows and month-end state.
 - [ ] Dedicated paper account completes one full month-end/month-start cycle.
 - [ ] Recovery drill covers partial fill, residual retry, emergency stop and audit export.
 - [ ] Business gives written approval for a capped live pilot.
+
+## 2026-08-25 delivery intake
+
+- `HYDRA_QMT_SNAPSHOT_20260821-r1.zip` and its `(1)` copy are byte-identical
+  (`c95211c0becf2df73af0c9c8395e3bcd392a64691858dfe8814cbec3db624e0e`).
+  The archive is path-safe and all four immutable stream hashes, row counts,
+  schemas, dates and symbol coverage validate. It is accepted for smoke/research.
+- It is **not** a formal month-end package: `as_of_date=20260821`, so it cannot
+  publish the 2026-09 target. Formal freeze remains 2026-08-31 and execution date
+  2026-09-01, subject to the frozen calendar.
+- Research branch `codex/hydra-live-baseline-20260823` is still remotely visible at
+  `aa6b60deef44b244764385e7b6bd681429b9b362`. Referenced month-end guard commit
+  `4941029` and `research_delivery/audit_20260821` were not reachable on the remote
+  during intake, so they cannot yet be merged or allowlisted.

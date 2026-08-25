@@ -2,10 +2,16 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
+
+HYDRA_LIVE_EXECUTABLE_SYMBOLS = frozenset({
+    "510300.SH", "159915.SZ", "511260.SH", "518880.SH", "159981.SZ",
+    "159985.SZ", "159930.SZ", "513500.SH", "513100.SH",
+})
 
 
 def _bool(name: str, default: bool = False) -> bool:
@@ -19,8 +25,8 @@ def _bool(name: str, default: bool = False) -> bool:
     raise ValueError(f"{name} 必须是 true/false")
 
 
-def _positive_int(name: str) -> int:
-    value = int(os.environ.get(name, "0"))
+def _positive_int(name: str, default: int = 0) -> int:
+    value = int(os.environ.get(name, str(default)))
     if value <= 0:
         raise ValueError(f"{name} 必须为正数")
     return value
@@ -30,6 +36,20 @@ def _positive_float(name: str) -> float:
     value = float(os.environ.get(name, "0"))
     if value <= 0:
         raise ValueError(f"{name} 必须为正数")
+    return value
+
+
+def _nonnegative_int(name: str) -> int:
+    value = int(os.environ.get(name, "0"))
+    if value < 0:
+        raise ValueError(f"{name} 不得为负数")
+    return value
+
+
+def _nonnegative_float(name: str, default: float = 0.0) -> float:
+    value = float(os.environ.get(name, str(default)))
+    if value < 0:
+        raise ValueError(f"{name} 不得为负数")
     return value
 
 
@@ -64,9 +84,16 @@ class LiveClientConfig:
     max_daily_sell_notional: float
     max_daily_turnover_notional: float
     max_price_offset_bps: float
+    risk_mode: str = "static"
+    auto_max_daily_orders: int = 100
+    auto_buffer_bps: float = 100.0
 
     @classmethod
     def from_env(cls) -> "LiveClientConfig":
+        risk_mode = os.environ.get(
+            "HYDRA_LIVE_RISK_MODE", "disabled"
+        ).strip().lower()
+        static = risk_mode == "static"
         cfg = cls(
             mode=os.environ.get("HYDRA_LIVE_MODE", "mock_qmt").strip().lower(),
             execution_domain=_required("HYDRA_LIVE_EXECUTION_DOMAIN"),
@@ -88,22 +115,35 @@ class LiveClientConfig:
                 for value in _required("HYDRA_LIVE_ALLOWED_SYMBOLS").split(",")
                 if value.strip()
             ),
-            max_daily_orders=_positive_int("HYDRA_LIVE_MAX_DAILY_ORDERS"),
-            max_single_order_notional=_positive_float(
-                "HYDRA_LIVE_MAX_SINGLE_ORDER_NOTIONAL"
+            max_daily_orders=(
+                _positive_int("HYDRA_LIVE_MAX_DAILY_ORDERS")
+                if static else _nonnegative_int("HYDRA_LIVE_MAX_DAILY_ORDERS")
             ),
-            max_daily_buy_notional=_positive_float(
-                "HYDRA_LIVE_MAX_DAILY_BUY_NOTIONAL"
+            max_single_order_notional=(
+                _positive_float("HYDRA_LIVE_MAX_SINGLE_ORDER_NOTIONAL")
+                if static else _nonnegative_float("HYDRA_LIVE_MAX_SINGLE_ORDER_NOTIONAL")
             ),
-            max_daily_sell_notional=_positive_float(
-                "HYDRA_LIVE_MAX_DAILY_SELL_NOTIONAL"
+            max_daily_buy_notional=(
+                _positive_float("HYDRA_LIVE_MAX_DAILY_BUY_NOTIONAL")
+                if static else _nonnegative_float("HYDRA_LIVE_MAX_DAILY_BUY_NOTIONAL")
             ),
-            max_daily_turnover_notional=_positive_float(
-                "HYDRA_LIVE_MAX_DAILY_TURNOVER_NOTIONAL"
+            max_daily_sell_notional=(
+                _positive_float("HYDRA_LIVE_MAX_DAILY_SELL_NOTIONAL")
+                if static else _nonnegative_float("HYDRA_LIVE_MAX_DAILY_SELL_NOTIONAL")
             ),
-            max_price_offset_bps=_positive_float(
-                "HYDRA_LIVE_MAX_PRICE_OFFSET_BPS"
+            max_daily_turnover_notional=(
+                _positive_float("HYDRA_LIVE_MAX_DAILY_TURNOVER_NOTIONAL")
+                if static else _nonnegative_float("HYDRA_LIVE_MAX_DAILY_TURNOVER_NOTIONAL")
             ),
+            max_price_offset_bps=(
+                _positive_float("HYDRA_LIVE_MAX_PRICE_OFFSET_BPS")
+                if static else _nonnegative_float("HYDRA_LIVE_MAX_PRICE_OFFSET_BPS")
+            ),
+            risk_mode=risk_mode,
+            auto_max_daily_orders=_positive_int(
+                "HYDRA_LIVE_AUTO_MAX_DAILY_ORDERS", 100,
+            ),
+            auto_buffer_bps=_nonnegative_float("HYDRA_LIVE_AUTO_BUFFER_BPS", 100),
         )
         cfg.validate_startup()
         return cfg
@@ -125,9 +165,29 @@ class LiveClientConfig:
             raise ValueError("实盘模式必须显式配置 paper account denylist")
         if self.account_id in paper_ids:
             raise ValueError("live account 出现在 paper account denylist")
-        if not self.allowed_symbols:
-            raise ValueError("Hydra ETF 白名单不能为空")
-        if self.max_price_offset_bps > 50:
+        if self.allowed_symbols != HYDRA_LIVE_EXECUTABLE_SYMBOLS:
+            raise ValueError("Hydra live 白名单必须恰好是已批准的 9 只 ETF")
+        if self.risk_mode not in {"disabled", "static", "auto"}:
+            raise ValueError("HYDRA_LIVE_RISK_MODE 必须是 disabled/static/auto")
+        if self.risk_mode == "static" and any(
+            not math.isfinite(value) or value <= 0 for value in (
+            self.max_daily_orders,
+            self.max_single_order_notional,
+            self.max_daily_buy_notional,
+            self.max_daily_sell_notional,
+            self.max_daily_turnover_notional,
+            self.max_price_offset_bps,
+        )):
+            raise ValueError("static 风控限额必须全部为正数")
+        if self.risk_mode == "auto":
+            if self.auto_max_daily_orders <= 0:
+                raise ValueError("auto 风控订单数上限必须为正数")
+            if (
+                not math.isfinite(self.auto_buffer_bps)
+                or not 0 <= self.auto_buffer_bps <= 500
+            ):
+                raise ValueError("auto 风控缓冲必须在 0..500bps")
+        if self.effective_price_offset_bps > 50:
             raise ValueError("client 价格偏移上限不能超过 50bps")
         if self.state_db.resolve() == (self.log_dir / "pipeline.db").resolve():
             raise ValueError("live SQLite 与日志目录配置异常")
@@ -172,3 +232,9 @@ class LiveClientConfig:
     def require_submission_enabled(self) -> None:
         if not self.trading_enabled:
             raise RuntimeError("HYDRA_LIVE_TRADING_ENABLED=false，客户端紧急开关关闭")
+        if self.risk_mode == "disabled":
+            raise RuntimeError("HYDRA_LIVE_RISK_MODE=disabled，客户端风控闸门关闭")
+
+    @property
+    def effective_price_offset_bps(self) -> float:
+        return 50.0 if self.risk_mode == "auto" else self.max_price_offset_bps

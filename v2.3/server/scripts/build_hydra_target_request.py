@@ -38,7 +38,7 @@ def main() -> None:
     parser.add_argument("--execution-domain", choices=("paper", "live"), required=True)
     parser.add_argument("--account-alias", required=True)
     parser.add_argument("--instance-id", required=True)
-    parser.add_argument("--cash-buffer", type=float, default=0.01)
+    parser.add_argument("--cash-buffer", type=float, default=0.0)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 

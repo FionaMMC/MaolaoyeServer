@@ -60,7 +60,7 @@ class HydraDataStore:
             raise ValueError(f"Hydra 数据不是有效 parquet: {exc}") from exc
         self._validate_frame(frame, manifest)
 
-        manifest_payload = manifest.model_dump(mode="json")
+        manifest_payload = manifest.model_dump(mode="json", exclude_none=True)
         manifest_sha = hashlib.sha256(_canonical_json(manifest_payload)).hexdigest()
         batch_dir = self.root / manifest.stream / manifest.file_sha256
         data_path = batch_dir / "data.parquet"
@@ -215,6 +215,10 @@ class HydraDataStore:
             raise ValueError("Hydra batch 包含非法 QMT ETF code")
         if symbols.nunique() != manifest.symbol_count:
             raise ValueError("manifest symbol_count 与 parquet 不一致")
+        if manifest.symbols is not None and set(symbols) != set(manifest.symbols):
+            raise ValueError("manifest symbols 与 parquet 不一致")
+        if manifest.research_only_symbols and manifest.stream != "hydra_model_hfq":
+            raise ValueError("仅 hydra_model_hfq 可声明 research_only_symbols")
         dates = frame[date_col].astype(str).str.replace("-", "", regex=False)
         if not dates.str.fullmatch(r"\d{8}").all():
             raise ValueError(f"{date_col} 必须是 YYYYMMDD")

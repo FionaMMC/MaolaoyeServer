@@ -23,7 +23,7 @@ def main() -> None:
     parser.add_argument("--execution-raw", type=Path, required=True)
     parser.add_argument("--as-of", required=True)
     parser.add_argument("--capital", type=float, action="append", required=True)
-    parser.add_argument("--cash-buffer", type=float, default=0.01)
+    parser.add_argument("--cash-buffer", type=float, default=0.0)
     parser.add_argument("--lot-size", type=int, default=100)
     args = parser.parse_args()
 

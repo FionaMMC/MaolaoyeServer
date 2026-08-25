@@ -72,6 +72,7 @@ class HydraExecutionAttempt(Base):
     posttrade_reconciliation_sha256: Mapped[str | None] = mapped_column(String, nullable=True)
     reconciled_cash: Mapped[float | None] = mapped_column(Float, nullable=True)
     reconciled_positions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    risk_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     batch_id: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
     batch_sha256: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False)

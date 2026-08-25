@@ -48,6 +48,11 @@ class LiveStateStore:
                     pushed_at TEXT NOT NULL,
                     PRIMARY KEY (trade_date, payload_sha256)
                 );
+                CREATE TABLE IF NOT EXISTS risk_checks (
+                    batch_sha256 TEXT PRIMARY KEY,
+                    payload_json TEXT NOT NULL,
+                    checked_at TEXT NOT NULL
+                );
             """)
             columns = {
                 row[1] for row in conn.execute("PRAGMA table_info(submissions)").fetchall()
@@ -90,6 +95,24 @@ class LiveStateStore:
         local = self.load_batch(batch.trade_date)
         if local["batch_sha256"] != batch.batch_sha256 or local != batch.as_payload():
             raise RuntimeError("下单前服务器批次与本地快照不一致，停止下单")
+
+    def record_risk_check(self, batch_sha256: str, payload: dict) -> bool:
+        body = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT payload_json FROM risk_checks WHERE batch_sha256 = ?",
+                (batch_sha256,),
+            ).fetchone()
+            if existing:
+                if existing[0] != body:
+                    raise RuntimeError("同一批次的 QMT 风控快照已变化，拒绝下单")
+                return False
+            conn.execute(
+                "INSERT INTO risk_checks VALUES (?, ?, ?)",
+                (batch_sha256, body, _now_iso()),
+            )
+            conn.commit()
+        return True
 
     def record_submission(
         self, order_id: str, batch_sha256: str, local_order_id: str | None,

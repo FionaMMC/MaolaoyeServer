@@ -87,13 +87,15 @@ def hydra_basket_hash(target: HydraTargetRequest | dict) -> str:
             [
                 {
                     "code": item["code"] if isinstance(item, dict) else item.code,
-                    "weight": item["weight"] if isinstance(item, dict) else item.weight,
+                    "weight": float(
+                        item["weight"] if isinstance(item, dict) else item.weight
+                    ),
                 }
                 for item in payload["weights"]
             ],
             key=lambda item: item["code"],
         ),
-        "cash_buffer_weight": payload["cash_buffer_weight"],
+        "cash_buffer_weight": float(payload["cash_buffer_weight"]),
     }
     body = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(body).hexdigest()

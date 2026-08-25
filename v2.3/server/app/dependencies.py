@@ -116,6 +116,9 @@ def get_hydra_relay_service(
             max_daily_sell_notional=settings.live_max_daily_sell_notional,
             max_daily_turnover_notional=settings.live_max_daily_turnover_notional,
             max_price_offset_bps=settings.live_max_price_offset_bps,
+            mode=settings.hydra_live_risk_mode,
+            auto_max_daily_orders=settings.live_auto_max_daily_orders,
+            auto_buffer_bps=settings.live_auto_buffer_bps,
         ),
         blacklist_service=blacklist,
     )

@@ -14,6 +14,9 @@ logs, API key and Windows Task Scheduler names.
 - Real mode requires HTTPS unless a separately audited private network explicitly
   opts into insecure HTTP.
 - `HYDRA_LIVE_TRADING_ENABLED=false` blocks submit, including mock submit.
+- `HYDRA_LIVE_RISK_MODE=disabled` independently blocks every live batch. `auto`
+  computes limits from the current QMT total asset, available cash and sellable
+  holdings; its snapshot is written once per batch before the first submission.
 - Every server batch is independently re-hashed. A network failure, mixed domain,
   wrong account alias, changed batch, missing lineage field or risk-limit breach
   aborts submission.
@@ -49,11 +52,17 @@ commands that access QMT. Query still calls the domain-scoped server API.
 Suggested distinct Windows task names:
 
 - `HydraLive-TargetQuery` — month-end evening after the server stages T+1 orders.
-- `HydraLive-OrderSubmit` — T+1 09:15.
-- `HydraLive-TradeSettle` — T+1 after close.
+- `HydraLive-OrderSubmit` — T+1 09:10.
+- `HydraLive-QMTStatus` — 15:10.
+- `HydraLive-TradeSettle` — 15:30 after QMT reports terminal status.
+- `HydraLive-ResidualStage` — 16:00 only after clean reconciliation.
+- `HydraLive-AuditExport` — 18:00.
 - `HydraLive-CashFlowJournal` — daily after verified dividend/fund-flow evidence.
 - `HydraLive-ReconcileClose` — after settlement and external cash-flow ingestion.
 - `HydraLive-DataFreeze` — month-end after QMT daily data is complete.
+
+These tasks connect directly to MiniQMT through `xtquant`; there is no large-QMT
+transition adapter in this release.
 
 Do not create these tasks until the mock and dedicated-paper acceptance gates in
 the server runbook have passed.

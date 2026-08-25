@@ -10,6 +10,11 @@
 > retained as the original audit finding; see
 > `HYDRA_LIVE_OPERATIONS_RUNBOOK_20260823.md` for delivered controls and the current
 > external GO gate. Production is still unchanged and remains NO-GO.
+>
+> 2026-08-25 addendum: the 2026-08-21-r1 ZIP passed immutable data-contract smoke
+> validation, including the HFQ-only `511010.SH` research bridge. It is not a month-end
+> release. The formal 2026-08-31 target and the remotely missing month-end-guard commit
+> remain external blockers. Direct MiniQMT is the selected execution path.
 
 实盘首要工作不是开启策略，而是建立不可绕过的 paper/live 分域、两条价格数据链、
 独立 live client、外部现金流账本和残余目标补单状态机。生产服务器在这些门禁完成前
@@ -187,7 +192,7 @@ lot-rounding preflight，不能仅依赖一个静态最低金额。
 - [x] 冻结生产 server 与 Hydra publisher。
 - [x] 选择性吸收缺失开盘价修复。
 - [x] 公司行动 ledger 改为 fail-closed 并补核心测试。
-- [ ] 产出经过 hash 固定的后复权/原价/公司行动候选数据包。
+- [x] 产出并核验 2026-08-21-r1 后复权/原价/公司行动/日历 smoke 数据包。
 - [ ] 对新旧 81 月权重、NAV、换手和公司行动逐事件差异审计。
 
 ### Phase 1 — Server 分域地基
@@ -212,7 +217,7 @@ lot-rounding preflight，不能仅依赖一个静态最低金额。
 ### Phase 3 — 独立 live client
 
 - [x] 独立目录、入口、配置、数据库、日志、session、userdata 和任务命名规范。
-- [x] 双重 emergency stop、日/单/组合硬限额（数值默认 0，待业务批准）。
+- [x] 双重 emergency stop，以及默认关闭、可审计的 static/auto 技术风控。
 - [x] 批次复核及账户/domain fail-closed。
 - [x] QMT 委托、累计成交、残余补单、滑点与审计包；撤单仍只允许显式 broker 流程。
 - [x] 下单前 QMT 总持仓/可卖持仓分离，并强制实时 server 对账；活动/未知委托状态

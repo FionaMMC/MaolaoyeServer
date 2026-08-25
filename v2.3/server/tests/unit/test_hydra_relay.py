@@ -79,7 +79,9 @@ def _install_calendar(store):
     return store.install(body, manifest).file_sha256
 
 
-def _setup(tmp_path, *, live_enabled=False, state_domain="paper"):
+def _setup(
+    tmp_path, *, live_enabled=False, state_domain="paper", risk_mode="static",
+):
     engine = make_engine(f"sqlite:///{tmp_path}/relay.db")
     init_db(engine)
     sf = make_session_factory(engine)
@@ -113,11 +115,14 @@ def _setup(tmp_path, *, live_enabled=False, state_domain="paper"):
         live_enabled=live_enabled,
         live_limits=HydraRiskLimits(
             max_daily_orders=10,
-            max_single_order_notional=1_000_000,
-            max_daily_buy_notional=2_000_000,
-            max_daily_sell_notional=2_000_000,
-            max_daily_turnover_notional=3_000_000,
-            max_price_offset_bps=50,
+            max_single_order_notional=(1_000_000 if risk_mode == "static" else 0),
+            max_daily_buy_notional=(2_000_000 if risk_mode == "static" else 0),
+            max_daily_sell_notional=(2_000_000 if risk_mode == "static" else 0),
+            max_daily_turnover_notional=(3_000_000 if risk_mode == "static" else 0),
+            max_price_offset_bps=(50 if risk_mode == "static" else 0),
+            mode=risk_mode,
+            auto_max_daily_orders=10,
+            auto_buffer_bps=100,
         ),
     )
     return service, sf, store, model_sha, raw_sha, actions_sha, calendar_sha
@@ -172,6 +177,46 @@ def test_stage_initial_is_content_idempotent_and_auditable(tmp_path):
         assert all(order.execution_reference_price in {2.0, 4.0} for order in orders)
         # 买入限价按 0.001 tick 向下保守舍入。
         assert {order.limit_price for order in orders} == {2.01, 4.02}
+
+
+def test_live_auto_risk_allows_zero_static_caps_and_persists_nav_snapshot(tmp_path):
+    service, sf, _, model_sha, raw_sha, actions_sha, calendar_sha = _setup(
+        tmp_path, live_enabled=True, state_domain="live", risk_mode="auto",
+    )
+    req = _target(
+        model_sha,
+        raw_sha,
+        actions_sha,
+        calendar_sha,
+        execution_domain="live",
+        account_alias="hydra-live",
+        instance_id="live_hydra",
+        cash_buffer_weight=0.0,
+    )
+    response = service.stage_initial(req)
+    with sf() as session:
+        attempt = session.get(HydraExecutionAttempt, response.attempt_id)
+        assert attempt.risk_snapshot["mode"] == "auto"
+        assert attempt.risk_snapshot["nav"] == 1_000_000
+        assert attempt.risk_snapshot["max_single_order_notional"] == 1_010_000
+        assert attempt.risk_snapshot["max_price_offset_bps"] == 50
+
+
+def test_stage_rejects_research_bridge_from_execution_raw(tmp_path):
+    service, _, store, model_sha, _, actions_sha, calendar_sha = _setup(tmp_path)
+    raw = pd.concat([
+        _price_frame(),
+        pd.DataFrame([{
+            "symbol": "511010.SH", "trade_date": "20260731",
+            "open": 100.0, "high": 100.1, "low": 99.9, "close": 100.0,
+            "volume": 1000, "amount": 100_000.0, "suspendFlag": 0,
+        }]),
+    ], ignore_index=True)
+    raw_sha = _install(store, "hydra_execution_raw", raw, "none")
+    with pytest.raises(APIError, match="execution_raw 与 live 白名单不一致"):
+        service.stage_initial(_target(
+            model_sha, raw_sha, actions_sha, calendar_sha,
+        ))
 
 
 def test_retry_reuses_target_shares_and_only_orders_residual(tmp_path):
