@@ -8,15 +8,17 @@
 > is now preserved and enforced; dynamic `auto` risk is implemented on both server
 > and MiniQMT client with immutable per-batch snapshots; strategy cash buffer defaults
 > to zero while live share sizing separately reserves 50bp plus 0.1% cost headroom.
-> The supplied 2026-08-21-r1 ZIP passed smoke validation only. Research commit
-> `4941029` and `research_delivery/audit_20260821` were not reachable on the remote,
-> so the formal 2026-08-31 delivery remains the controlling external blocker.
+> The supplied 2026-08-21-r1 ZIP passed smoke validation only. The unavailable
+> `4941029` object was replaced by the independently tested commit
+> `8ebfd21a159c74b73397ffb3847878a597d055df`; both research candidate branches now
+> point to it. The pushed audit manifest explicitly lists nine referenced artifacts
+> that were not received, so the formal 2026-08-31 delivery remains the blocker.
 
 ## 1. 基线与范围
 
 | 项目 | 已确认方案 |
 |---|---|
-| Hydra 研究基线 | `magicboom1/permenant_portfolio` 分支 `codex/hydra-live-baseline-20260823`，提交 `aa6b60deef44b244764385e7b6bd681429b9b362` |
+| Hydra 研究基线 | `magicboom1/permenant_portfolio` 分支 `codex/hydra-live-baseline-20260823`，提交 `8ebfd21a159c74b73397ffb3847878a597d055df` |
 | Server 实盘基线 | `FionaMMC/MaolaoyeServer` 分支 `codex/hydra-live-foundation-20260823`，提交 `c9cb69b938b42ca3bf05f7fa69e592f88b70697f` |
 | 首期灰度资金 | ¥200,000 |
 | 当前阶段 | mock / dedicated paper 验证；禁止真实 QMT 账户操作 |
@@ -157,7 +159,7 @@
 - 同一冻结 QMT HFQ 输入下，旧版 `49c16dadc298d6a51470bd5c2f931ecc36f65460` 与新版 `aa6b60deef44b244764385e7b6bd681429b9b362` 的 82 个权重行逐项一致；新版的实质改进是输入路径可配置、数据新鲜度检查及执行账本保护。
 - 用同一 QMT raw、公司行动和 ¥1,000,000 初始资金运行 81 个月账本：新版比旧版最终 NAV 高 ¥34,204.16（218.47bp）。差异来自对 `513100.SH` 5 倍、`513500.SH` 2 倍份额调整的正确处理，以及 stale-close 显式记录。
 - QMT HFQ 与独立 Tushare 总回报/因子数据存在不可混用差异；模型数据源继续冻结为 QMT HFQ，独立源仅用于监控。
-- 正式 target 增加真实月末保护，研究端提交 `4941029`：只有冻结日历证明下一交易日已进入下一个自然月才允许发布。
+- 正式 target 增加真实月末保护；原 `4941029` 对象未交付，已由远端提交 `8ebfd21a159c74b73397ffb3847878a597d055df` 等价重建：只有冻结日历证明下一交易日已进入下一个自然月才允许发布。
 
 研究端可签结论：**模型权重等价，且新版 raw 执行账本更完整，可进入 mock/paper 验证。**
 
@@ -175,7 +177,8 @@
 
 ### Server 与 QMT client
 
-- [ ] 将尚未在远端出现的 `4941029` 合并到正式 Hydra 发布分支；正式 publisher allowlist 仍待 8 月 31 日书面批准。
+- [x] 以可验证替代提交 `8ebfd21a159c74b73397ffb3847878a597d055df` fast-forward 研究候选分支并推送现有审计材料。
+- [ ] 正式 publisher allowlist 仍待 8 月 31 日完整交付与书面批准。
 - [x] 9 只 ETF 白名单双端固定校验，`511010.SH` 从 raw、target 与订单硬拒绝。
 - [x] 实现 target / rebalance / attempt / order-trade 四层持久状态，QMT `trade_result` 为订单终态唯一依据。
 - [x] 实现动态 `auto` 风控；执行前仍强制可用现金、可卖持仓与 50bp 保护限价三项硬约束。

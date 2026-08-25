@@ -13,8 +13,10 @@
 >
 > 2026-08-25 addendum: the 2026-08-21-r1 ZIP passed immutable data-contract smoke
 > validation, including the HFQ-only `511010.SH` research bridge. It is not a month-end
-> release. The formal 2026-08-31 target and the remotely missing month-end-guard commit
-> remain external blockers. Direct MiniQMT is the selected execution path.
+> release. The missing month-end-guard object was replaced and pushed as full commit
+> `8ebfd21a159c74b73397ffb3847878a597d055df`; the formal 2026-08-31 target and nine
+> audit artifacts explicitly marked not received remain blockers. Direct MiniQMT is
+> the selected execution path.
 
 实盘首要工作不是开启策略，而是建立不可绕过的 paper/live 分域、两条价格数据链、
 独立 live client、外部现金流账本和残余目标补单状态机。生产服务器在这些门禁完成前
@@ -28,7 +30,8 @@
 - 当前生产 Hydra source version：
   `v48.1-RB@49c16dadc298d6a51470bd5c2f931ecc36f65460`。
 - 实盘候选 Hydra 基座分支：`codex/hydra-live-baseline-20260823`。
-- 实盘候选 Hydra HEAD：`aa6b60d`；它包含：
+- 2026-08-25 实盘候选 Hydra HEAD：`8ebfd21a159c74b73397ffb3847878a597d055df`；
+  它在 `aa6b60d` 之上增加月末发布保护和现有审计收件目录。`aa6b60d` 包含：
   - 未持有、非目标 ETF 缺失开盘价不再污染 NAV；
   - ETF 拆分/合并份额调整的 fail-closed 校验和独立审计日志；
   - 拆分、合并、非法因子、重复事件、未知代码、非交易日、事件日缺价和同日分红测试。

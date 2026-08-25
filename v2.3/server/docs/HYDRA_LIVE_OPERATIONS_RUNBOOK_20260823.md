@@ -207,7 +207,11 @@ attempts, orders, trades, execution quality, cash flows and month-end state.
 - It is **not** a formal month-end package: `as_of_date=20260821`, so it cannot
   publish the 2026-09 target. Formal freeze remains 2026-08-31 and execution date
   2026-09-01, subject to the frozen calendar.
-- Research branch `codex/hydra-live-baseline-20260823` is still remotely visible at
-  `aa6b60deef44b244764385e7b6bd681429b9b362`. Referenced month-end guard commit
-  `4941029` and `research_delivery/audit_20260821` were not reachable on the remote
-  during intake, so they cannot yet be merged or allowlisted.
+- The referenced `4941029` object was absent locally and remotely, so it was not
+  represented as an existing commit. Its documented month-end guard was independently
+  rebuilt, tested and pushed as `8ebfd21a159c74b73397ffb3847878a597d055df`;
+  both research candidate branches now point to that full SHA.
+- `research_delivery/audit_20260821` is now present remotely with every artifact
+  actually received plus an immutable receipt manifest. The manifest lists nine
+  referenced-but-not-received files, so this remains partial smoke evidence and
+  cannot authorize formal publisher allowlisting.
