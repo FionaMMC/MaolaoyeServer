@@ -7,17 +7,33 @@ import json
 import os
 import re
 import tempfile
+import zipfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 
-from live_client.config import LiveClientConfig
-
 PRICE_COLUMNS = [
     "symbol", "trade_date", "open", "high", "low", "close",
     "volume", "amount", "suspendFlag",
 ]
+EXECUTABLE_SYMBOLS = frozenset({
+    "510300.SH", "159915.SZ", "511260.SH", "518880.SH", "159981.SZ",
+    "159985.SZ", "159930.SZ", "513500.SH", "513100.SH",
+})
+RESEARCH_ONLY_SYMBOLS = frozenset({"511010.SH"})
+
+
+@dataclass(frozen=True)
+class ResearchDataConfig:
+    """Read-only market-data configuration; deliberately has no account fields."""
+
+    userdata_dir: Path
+
+    def validate(self) -> None:
+        if not self.userdata_dir.is_dir():
+            raise ValueError("研究数据 QMT userdata 目录不存在")
 
 
 def _normalize_market_frame(symbol: str, frame: pd.DataFrame) -> pd.DataFrame:
@@ -43,6 +59,8 @@ def _write_bundle(
     adjustment: str,
     as_of_date: str,
     producer_commit: str,
+    executable_symbols: list[str] | None = None,
+    research_only_symbols: list[str] | None = None,
     source: str = "qmt",
 ) -> dict:
     if frame.empty and stream != "hydra_corporate_actions":
@@ -97,6 +115,10 @@ def _write_bundle(
         "row_count": len(frame),
         "symbol_count": 0 if stream == "hydra_trading_calendar" else frame["symbol"].nunique(),
     }
+    if executable_symbols is not None:
+        manifest["executable_symbols"] = executable_symbols
+    if research_only_symbols:
+        manifest["research_only_symbols"] = research_only_symbols
     (destination / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -104,15 +126,21 @@ def _write_bundle(
     return manifest
 
 
-def collect_prices(cfg: LiveClientConfig, as_of_date: str) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
+def collect_prices(
+    cfg: ResearchDataConfig, as_of_date: str,
+) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
     from xtquant import xtdata
 
     xtdata.data_dir = str(cfg.userdata_dir)
-    symbols = sorted(cfg.allowed_symbols)
-    xtdata.download_history_data2(symbols, "1d", "", as_of_date)
+    executable = sorted(EXECUTABLE_SYMBOLS)
+    model_symbols = sorted(EXECUTABLE_SYMBOLS | RESEARCH_ONLY_SYMBOLS)
+    xtdata.download_history_data2(model_symbols, "1d", "", as_of_date)
     fields = ["open", "high", "low", "close", "volume", "amount", "suspendFlag"]
     frames = {}
-    for stream, adjustment in (("hfq", "back"), ("raw", "none")):
+    for stream, adjustment, symbols in (
+        ("hfq", "back", model_symbols),
+        ("raw", "none", executable),
+    ):
         payload = xtdata.get_market_data_ex(
             fields, symbols, "1d", "", as_of_date,
             dividend_type=adjustment, fill_data=False,
@@ -134,58 +162,99 @@ def collect_prices(cfg: LiveClientConfig, as_of_date: str) -> tuple[pd.DataFrame
     return frames["hfq"], frames["raw"], list(calendar)
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_zip(source: Path, destination: Path) -> None:
+    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for item in sorted(source.rglob("*")):
+            if item.is_file():
+                archive.write(item, item.relative_to(source.parent))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--as-of", required=True)
     parser.add_argument("--producer-commit", required=True)
     parser.add_argument("--corporate-actions", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--userdata-dir", type=Path, required=True)
+    parser.add_argument("--zip", type=Path, default=None)
     args = parser.parse_args()
     if not re.fullmatch(r"[0-9a-f]{40}", args.producer_commit):
         raise ValueError("producer-commit 必须是 full Git SHA")
-    cfg = LiveClientConfig.from_env()
-    if args.output.exists():
-        raise RuntimeError("output 已存在，拒绝覆盖数据冻结包")
-    args.output.mkdir(parents=True)
-    hfq, raw, calendar = collect_prices(cfg, args.as_of)
-    actions = pd.read_parquet(args.corporate_actions)
-    manifests = {
-        "model_hfq": _write_bundle(
-            hfq, args.output / "model_hfq", stream="hydra_model_hfq",
-            adjustment="back", as_of_date=args.as_of,
-            producer_commit=args.producer_commit,
-        ),
-        "execution_raw": _write_bundle(
-            raw, args.output / "execution_raw", stream="hydra_execution_raw",
-            adjustment="none", as_of_date=args.as_of,
-            producer_commit=args.producer_commit,
-        ),
-        "corporate_actions": _write_bundle(
-            actions, args.output / "corporate_actions",
-            stream="hydra_corporate_actions", adjustment="corporate_actions",
-            as_of_date=args.as_of, producer_commit=args.producer_commit,
-        ),
-        "trading_calendar": _write_bundle(
-            pd.DataFrame({"trade_date": calendar}),
-            args.output / "trading_calendar",
-            stream="hydra_trading_calendar", adjustment="calendar",
-            as_of_date=args.as_of, producer_commit=args.producer_commit,
-        ),
-    }
-    calendar_body = (
-        json.dumps(calendar, ensure_ascii=False, separators=(",", ":")) + "\n"
-    ).encode()
-    (args.output / "trading_calendar.json").write_bytes(calendar_body)
-    result = {
-        "as_of_date": args.as_of,
-        "manifests": manifests,
-        "trading_calendar_sha256": manifests["trading_calendar"]["file_sha256"],
-    }
-    (args.output / "snapshot.json").write_text(
-        json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    cfg = ResearchDataConfig(args.userdata_dir)
+    cfg.validate()
+    archive = args.zip or args.output.parent / f"HYDRA_QMT_SNAPSHOT_{args.as_of}.zip"
+    receipt = archive.with_suffix(".manifest.json")
+    if args.output.exists() or archive.exists() or receipt.exists():
+        raise RuntimeError("冻结输出、ZIP 或总 manifest 已存在，拒绝覆盖")
+    if not args.corporate_actions.is_file():
+        raise FileNotFoundError(f"corporate actions 不存在: {args.corporate_actions}")
+    # Creating the explicitly requested parent is safe; the snapshot, archive and
+    # receipt themselves remain write-once and are checked above.
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=str(args.output.parent)) as temporary:
+        staged_root = Path(temporary) / args.output.name
+        staged_root.mkdir()
+        hfq, raw, calendar = collect_prices(cfg, args.as_of)
+        actions = pd.read_parquet(args.corporate_actions)
+        manifests = {
+            "model_hfq": _write_bundle(
+                hfq, staged_root / "model_hfq", stream="hydra_model_hfq",
+                adjustment="back", as_of_date=args.as_of, producer_commit=args.producer_commit,
+                executable_symbols=sorted(EXECUTABLE_SYMBOLS),
+                research_only_symbols=sorted(RESEARCH_ONLY_SYMBOLS), source="qmt_xtdata",
+            ),
+            "execution_raw": _write_bundle(
+                raw, staged_root / "execution_raw", stream="hydra_execution_raw",
+                adjustment="none", as_of_date=args.as_of, producer_commit=args.producer_commit,
+                executable_symbols=sorted(EXECUTABLE_SYMBOLS), source="qmt_xtdata",
+            ),
+            "corporate_actions": _write_bundle(
+                actions, staged_root / "corporate_actions", stream="hydra_corporate_actions",
+                adjustment="corporate_actions", as_of_date=args.as_of,
+                producer_commit=args.producer_commit, source="qmt_xtdata",
+            ),
+            "trading_calendar": _write_bundle(
+                pd.DataFrame({"trade_date": calendar}), staged_root / "trading_calendar",
+                stream="hydra_trading_calendar", adjustment="calendar", as_of_date=args.as_of,
+                producer_commit=args.producer_commit, source="qmt_xtdata",
+            ),
+        }
+        (staged_root / "trading_calendar.json").write_text(
+            json.dumps(calendar, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8"
+        )
+        result = {
+            "as_of_date": args.as_of,
+            "manifests": manifests,
+            "trading_calendar_sha256": manifests["trading_calendar"]["file_sha256"],
+        }
+        (staged_root / "snapshot.json").write_text(
+            json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        staged_archive = Path(temporary) / archive.name
+        _write_zip(staged_root, staged_archive)
+        archive_sha = _sha256(staged_archive)
+        receipt_body = {
+            "schema_version": 1, "as_of_date": args.as_of,
+            "snapshot_manifest": result, "zip_filename": archive.name,
+            "zip_sha256": archive_sha, "zip_bytes": staged_archive.stat().st_size,
+        }
+        staged_receipt = Path(temporary) / receipt.name
+        staged_receipt.write_text(
+            json.dumps(receipt_body, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        os.replace(staged_root, args.output)
+        os.replace(staged_archive, archive)
+        os.replace(staged_receipt, receipt)
+    print(json.dumps(receipt_body, ensure_ascii=False, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

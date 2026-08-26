@@ -46,6 +46,27 @@ python -m live_client.cli cash-flow --date YYYYMMDD --type DIVIDEND `
 python -m live_client.cli reconcile-close --attempt-id <attempt_id> --evidence-sha256 <sha256>
 ```
 
+## Research data freeze (read-only)
+
+The data freezer is deliberately separate from the trading configuration: it
+accepts only a QMT `userdata` path and never reads an account id, API key,
+session id or live-client `.env`.  It writes four date-consistent bundles plus
+one write-once ZIP and an external SHA-256 receipt.  The model HFQ bundle has
+the nine executable ETFs and research-only `511010.SH`; the raw execution
+bundle has only the nine executable ETFs.
+
+```powershell
+python -m live_client.data_snapshot --as-of YYYYMMDD `
+  --producer-commit <full-40-char-hydra-sha> `
+  --userdata-dir C:\private\qmt\userdata `
+  --corporate-actions C:\private\hydra\corporate_actions.parquet `
+  --output C:\private\hydra\HYDRA_QMT_SNAPSHOT_YYYYMMDD
+```
+
+It refuses to overwrite a pre-existing output directory, ZIP, or receipt. Run
+it only after the QMT daily bars are complete; it is a market-data operation,
+not an account query or an order operation.
+
 For mock runs, append `--mock-state C:\private\hydra-live\mock-state.json` to
 commands that access QMT. Query still calls the domain-scoped server API.
 
