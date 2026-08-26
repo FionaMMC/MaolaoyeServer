@@ -23,6 +23,11 @@ EXECUTABLE_SYMBOLS = frozenset({
     "159985.SZ", "159930.SZ", "513500.SH", "513100.SH",
 })
 RESEARCH_ONLY_SYMBOLS = frozenset({"511010.SH"})
+CORPORATE_ACTION_COLUMNS = [
+    "symbol", "event_date", "event_type", "cash_per_share", "share_factor",
+    "source_event_id", "interest", "stockBonus", "stockGift", "allotNum",
+    "allotPrice", "gugai", "dr",
+]
 
 
 @dataclass(frozen=True)
@@ -162,6 +167,57 @@ def collect_prices(
     return frames["hfq"], frames["raw"], list(calendar)
 
 
+def _factor_date(value: object) -> str:
+    timestamp = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(timestamp):
+        raise ValueError(f"QMT 公司行动缺少 time: {value!r}")
+    unit = "ms" if timestamp > 1e10 else "s"
+    return pd.to_datetime(timestamp, unit=unit).strftime("%Y%m%d")
+
+
+def _numeric_or_zero(value: object) -> float:
+    number = pd.to_numeric(value, errors="coerce")
+    return 0.0 if pd.isna(number) else float(number)
+
+
+def collect_corporate_actions(cfg: ResearchDataConfig, as_of_date: str) -> pd.DataFrame:
+    """Freeze QMT dividend factors for executable ETFs into the relay schema."""
+    from xtquant import xtdata
+
+    xtdata.data_dir = str(cfg.userdata_dir)
+    rows: list[dict] = []
+    factor_columns = ("interest", "stockBonus", "stockGift", "allotNum", "allotPrice", "gugai", "dr")
+    for symbol in sorted(EXECUTABLE_SYMBOLS):
+        raw = xtdata.get_divid_factors(symbol)
+        if raw is None:
+            continue
+        factors = raw if isinstance(raw, pd.DataFrame) else pd.DataFrame(raw)
+        if factors.empty:
+            continue
+        for event in factors.to_dict("records"):
+            event_date = _factor_date(event.get("time"))
+            if event_date > as_of_date:
+                continue
+            values = {name: _numeric_or_zero(event.get(name)) for name in factor_columns}
+            interest = values["interest"]
+            share_factor = 1.0 + values["stockBonus"] + values["stockGift"] + values["allotNum"]
+            common = {"symbol": symbol, "event_date": event_date, **values}
+            if interest:
+                rows.append({
+                    **common, "event_type": "CASH_DIVIDEND", "cash_per_share": interest,
+                    "share_factor": 1.0, "source_event_id": f"qmt:{symbol}:{event_date}:cash",
+                })
+            if abs(share_factor - 1.0) > 1e-12:
+                rows.append({
+                    **common, "event_type": "SHARE_ADJUSTMENT", "cash_per_share": 0.0,
+                    "share_factor": share_factor, "source_event_id": f"qmt:{symbol}:{event_date}:shares",
+                })
+    actions = pd.DataFrame(rows, columns=CORPORATE_ACTION_COLUMNS)
+    if actions["source_event_id"].duplicated().any():
+        raise ValueError("QMT 公司行动存在重复 source_event_id")
+    return actions.sort_values(["event_date", "symbol", "event_type"]).reset_index(drop=True)
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -181,7 +237,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--as-of", required=True)
     parser.add_argument("--producer-commit", required=True)
-    parser.add_argument("--corporate-actions", type=Path, required=True)
+    parser.add_argument("--corporate-actions", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--userdata-dir", type=Path, required=True)
     parser.add_argument("--zip", type=Path, default=None)
@@ -194,7 +250,7 @@ def main() -> None:
     receipt = archive.with_suffix(".manifest.json")
     if args.output.exists() or archive.exists() or receipt.exists():
         raise RuntimeError("冻结输出、ZIP 或总 manifest 已存在，拒绝覆盖")
-    if not args.corporate_actions.is_file():
+    if args.corporate_actions is not None and not args.corporate_actions.is_file():
         raise FileNotFoundError(f"corporate actions 不存在: {args.corporate_actions}")
     # Creating the explicitly requested parent is safe; the snapshot, archive and
     # receipt themselves remain write-once and are checked above.
@@ -204,7 +260,11 @@ def main() -> None:
         staged_root = Path(temporary) / args.output.name
         staged_root.mkdir()
         hfq, raw, calendar = collect_prices(cfg, args.as_of)
-        actions = pd.read_parquet(args.corporate_actions)
+        actions = (
+            pd.read_parquet(args.corporate_actions)
+            if args.corporate_actions is not None
+            else collect_corporate_actions(cfg, args.as_of)
+        )
         manifests = {
             "model_hfq": _write_bundle(
                 hfq, staged_root / "model_hfq", stream="hydra_model_hfq",
@@ -220,7 +280,8 @@ def main() -> None:
             "corporate_actions": _write_bundle(
                 actions, staged_root / "corporate_actions", stream="hydra_corporate_actions",
                 adjustment="corporate_actions", as_of_date=args.as_of,
-                producer_commit=args.producer_commit, source="qmt_xtdata",
+                producer_commit=args.producer_commit,
+                source="qmt_xtdata" if args.corporate_actions is None else "qmt_xtdata_import",
             ),
             "trading_calendar": _write_bundle(
                 pd.DataFrame({"trade_date": calendar}), staged_root / "trading_calendar",

@@ -59,9 +59,12 @@ bundle has only the nine executable ETFs.
 python -m live_client.data_snapshot --as-of YYYYMMDD `
   --producer-commit <full-40-char-hydra-sha> `
   --userdata-dir C:\private\qmt\userdata `
-  --corporate-actions C:\private\hydra\corporate_actions.parquet `
   --output C:\private\hydra\HYDRA_QMT_SNAPSHOT_YYYYMMDD
 ```
+
+By default it queries QMT dividend factors for the nine executable ETFs and
+freezes them into the corporate-actions bundle. `--corporate-actions <parquet>`
+is an optional, separately audited import override.
 
 It refuses to overwrite a pre-existing output directory, ZIP, or receipt. Run
 it only after the QMT daily bars are complete; it is a market-data operation,
