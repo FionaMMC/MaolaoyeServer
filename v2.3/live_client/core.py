@@ -47,8 +47,8 @@ def validate_order_batch(
         if None in values or "" in values or len(values) != 1:
             raise ValueError(f"订单批次 {field} 缺失或混合")
     first = orders[0]
-    if first["execution_domain"] != "live":
-        raise ValueError("live client 收到非 live 订单")
+    if first["execution_domain"] != cfg.execution_domain:
+        raise ValueError("server order execution_domain 与 client 不一致")
     if first["qmt_account_alias"] != cfg.account_alias:
         raise ValueError("server order account_alias 与 live client 不一致")
     canonical_orders = []

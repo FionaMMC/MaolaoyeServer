@@ -96,3 +96,20 @@ QMT HFQ → Hydra 4.8 target → 执行影子账本 → 实盘账本
 
 验证结论应回答：在当前资金规模下，影子层相对策略层的偏差是否稳定可解释；实盘层相对
 影子层的偏差是否由可解释的市场执行因素造成；若不是，则不得用收益表现掩盖执行或数据问题。
+
+## 隔离联调冒烟脚本
+
+`server/scripts/run_hydra_mock_smoke.py` 是 server/client 合约的隔离冒烟器。它只接受
+已冻结的四包，创建临时 SQLite、虚拟 paper 账户与 `mock_qmt`，不会导入 `xtquant`、连接
+MiniQMT 或访问真实账户。它覆盖全部成交、部分成交、即时拒单与活动/未知订单的 fail-closed
+保护；每次输出目录必须是新的。
+
+```powershell
+python server/scripts/run_hydra_mock_smoke.py `
+  --snapshot C:\parttime\data\hydra_snapshots\20260828-smoke `
+  --output C:\parttime\data\hydra_smoke\20260828 `
+  --as-of 20260828 --execution-date 20260831
+```
+
+它使用 `TEST_ONLY` 的等权 9 ETF basket 来验证 server/client 接口，不生成或冒充正式
+Hydra target。正式月末 target、执行影子账本和真实账户预检仍须按运行单独立执行。

@@ -5,10 +5,14 @@ import requests
 
 
 class LiveServerClient:
-    def __init__(self, base_url: str, api_key: str, timeout: int = 30):
+    def __init__(
+        self, base_url: str, api_key: str, timeout: int = 30,
+        execution_domain: str = "live",
+    ):
         self.base_url = base_url.rstrip("/")
         self.headers = {"Authorization": f"Bearer {api_key}"}
         self.timeout = timeout
+        self.execution_domain = execution_domain
 
     def fetch_orders(self, trade_date: str) -> list[dict]:
         response = requests.get(
@@ -28,7 +32,7 @@ class LiveServerClient:
             f"{self.base_url}/trade-result",
             json={
                 "trade_date": trade_date,
-                "execution_domain": "live",
+                "execution_domain": self.execution_domain,
                 "results": results,
             },
             headers={**self.headers, "Content-Type": "application/json"},

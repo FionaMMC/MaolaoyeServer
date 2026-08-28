@@ -43,7 +43,9 @@ def _gateway(cfg: LiveClientConfig, mock_state: Path | None):
 
 
 def query(cfg: LiveClientConfig, trade_date: str) -> dict:
-    server = LiveServerClient(cfg.server_base_url, cfg.api_key)
+    server = LiveServerClient(
+        cfg.server_base_url, cfg.api_key, execution_domain=cfg.execution_domain,
+    )
     orders = server.fetch_orders(trade_date)
     if not orders:
         return {"trade_date": trade_date, "orders": 0, "status": "NO_ORDERS"}
@@ -59,7 +61,9 @@ def query(cfg: LiveClientConfig, trade_date: str) -> dict:
 
 def submit(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> dict:
     cfg.require_submission_enabled()
-    server = LiveServerClient(cfg.server_base_url, cfg.api_key)
+    server = LiveServerClient(
+        cfg.server_base_url, cfg.api_key, execution_domain=cfg.execution_domain,
+    )
     # 网络失败、非 0 响应或空批次都会抛出；绝不沿用本地旧快照继续。
     fresh_orders = server.fetch_orders(trade_date)
     fresh_batch = validate_order_batch(fresh_orders, trade_date, cfg)
@@ -81,6 +85,7 @@ def submit(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> d
         )
         state.record_risk_check(fresh_batch.batch_sha256, risk_snapshot)
         submitted = rejected = 0
+        immediate_rejections: list[dict] = []
         for order in sorted(
             fresh_batch.orders,
             key=lambda item: (item["direction"] != "SELL", item["symbol"]),
@@ -98,6 +103,20 @@ def submit(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> d
                 submitted += 1
             else:
                 rejected += 1
+                # A broker-side immediate rejection is an authoritative terminal
+                # result, not a local-only note.  Report it now so the server does
+                # not retain a false PENDING order until the 15:10 collection.
+                immediate_rejections.append({
+                    "order_id": order["order_id"],
+                    "filled_quantity": 0,
+                    "filled_price": 0.0,
+                    "status": "REJECTED",
+                    "symbol": order["symbol"],
+                    "direction": order["direction"],
+                    **dict(result.execution_meta or {}),
+                })
+        if immediate_rejections:
+            server.push_trade_results(trade_date, immediate_rejections)
         return {
             "trade_date": trade_date,
             "batch_sha256": fresh_batch.batch_sha256,
@@ -120,7 +139,9 @@ def settle(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> d
         results = gateway.settlement_results(submitted)
     finally:
         gateway.close()
-    data = LiveServerClient(cfg.server_base_url, cfg.api_key).push_trade_results(
+    data = LiveServerClient(
+        cfg.server_base_url, cfg.api_key, execution_domain=cfg.execution_domain,
+    ).push_trade_results(
         trade_date, results,
     )
     return {"trade_date": trade_date, "results": len(results), "server": data}
@@ -135,8 +156,10 @@ def initialize_account(
         snapshot = gateway.account_snapshot()
     finally:
         gateway.close()
-    return LiveServerClient(cfg.server_base_url, cfg.api_key).initialize_account({
-        "execution_domain": "live",
+    return LiveServerClient(
+        cfg.server_base_url, cfg.api_key, execution_domain=cfg.execution_domain,
+    ).initialize_account({
+        "execution_domain": cfg.execution_domain,
         "account_alias": cfg.account_alias,
         "qmt_account_id": snapshot.account_id,
         "instance_id": cfg.instance_id,
@@ -160,8 +183,10 @@ def journal_cash_flow(
     evidence_sha256: str,
     description: str | None,
 ) -> dict:
-    return LiveServerClient(cfg.server_base_url, cfg.api_key).post_cash_flow({
-        "execution_domain": "live",
+    return LiveServerClient(
+        cfg.server_base_url, cfg.api_key, execution_domain=cfg.execution_domain,
+    ).post_cash_flow({
+        "execution_domain": cfg.execution_domain,
         "account_alias": cfg.account_alias,
         "instance_id": cfg.instance_id,
         "event_date": event_date,
@@ -177,7 +202,7 @@ def journal_cash_flow(
 
 def _require_server_reconciled(server, cfg, snapshot) -> dict:
     reconciliation = server.reconcile({
-        "execution_domain": "live",
+        "execution_domain": cfg.execution_domain,
         "account_alias": cfg.account_alias,
         "instance_id": cfg.instance_id,
         "qmt_account_id": snapshot.account_id,
@@ -210,7 +235,9 @@ def reconcile_and_close(
         snapshot = gateway.account_snapshot()
     finally:
         gateway.close()
-    server = LiveServerClient(cfg.server_base_url, cfg.api_key)
+    server = LiveServerClient(
+        cfg.server_base_url, cfg.api_key, execution_domain=cfg.execution_domain,
+    )
     reconciliation = _require_server_reconciled(server, cfg, snapshot)
     closed = server.close_attempt({
         "execution_domain": "live",

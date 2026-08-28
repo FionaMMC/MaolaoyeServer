@@ -151,8 +151,12 @@ class LiveClientConfig:
     def validate_startup(self) -> None:
         if self.mode not in {"mock_qmt", "live"}:
             raise ValueError("HYDRA_LIVE_MODE 必须是 mock_qmt/live")
-        if self.execution_domain != "live":
-            raise ValueError("live client execution_domain 必须固定为 live")
+        if self.execution_domain not in {"paper", "live"}:
+            raise ValueError("execution_domain 必须是 paper/live")
+        if self.mode == "live" and self.execution_domain != "live":
+            raise ValueError("真实 MiniQMT 模式必须固定使用 live 域")
+        if self.execution_domain == "paper" and self.mode != "mock_qmt":
+            raise ValueError("paper 域仅允许 mock_qmt 联调，禁止连接真实 MiniQMT")
         account_hash = hashlib.sha256(self.account_id.encode()).hexdigest()
         if account_hash != self.expected_account_sha256:
             raise ValueError("QMT account fingerprint 不匹配")
