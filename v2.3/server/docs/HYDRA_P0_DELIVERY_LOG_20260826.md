@@ -39,3 +39,6 @@ paper 消费；不连接、不查询真实 QMT 账户，也不发出委托。
 本交付不生成正式 target，也不构成 mock/paper 或真实交易批准。8 月 31 日收盘后
 仍须按正式运行单重新冻结四包、验证跨月交易日、生成 target/sidecar、shadow ledger
 和书面结论。
+
+小资金实盘的三层账本、成交偏差、整手残余、风险贡献和相关性监控口径，见
+`HYDRA_SMALL_CAPITAL_MONITORING_SPEC.md`。
