@@ -374,7 +374,7 @@ def _validate_plan_for_action(
     if plan["account"]["instance_id"] != cfg.instance_id:
         raise RuntimeError("canary plan instance_id 与当前配置不一致")
     local = current.astimezone(SHANGHAI)
-    if plan["trade_date"] != local.strftime("%Y%m%d"):
+    if require_fresh and plan["trade_date"] != local.strftime("%Y%m%d"):
         raise RuntimeError("canary plan 不是当前中国交易日")
     if require_fresh:
         _require_canary_window(local)
@@ -541,6 +541,33 @@ def stage_server_canary(
     })
 
 
+def prepare_weekend_plan(cfg: LiveClientConfig, *, symbol: str, execution_date: str,
+                         reference_price: float, limit_price: float, output: Path) -> dict:
+    """Create an immutable T+1 canary intent without QMT access or submission."""
+    _require_real_mode(cfg)
+    if symbol not in CANARY_SYMBOLS or symbol not in cfg.allowed_symbols:
+        raise ValueError("canary symbol not allowed")
+    if not execution_date.isdigit() or len(execution_date) != 8:
+        raise ValueError("execution_date 必须为 YYYYMMDD")
+    if reference_price <= 0 or limit_price <= 0 or limit_price * 100 > HARD_MAX_NOTIONAL_CNY:
+        raise ValueError("canary price/notional invalid")
+    if abs(limit_price / reference_price - 1) * 10_000 > 50.01:
+        raise ValueError("canary price offset exceeds 50bps")
+    output = _require_evidence_path(cfg, output)
+    plan = {"schema": SCHEMA, "created_at": _now_shanghai().isoformat(),
+        "expires_at": None, "trade_date": execution_date,
+        "account": {"account_fingerprint_sha256": cfg.expected_account_sha256,
+                    "account_alias": cfg.account_alias, "instance_id": cfg.instance_id},
+        "order": {"direction": "BUY", "symbol": symbol, "quantity": 100,
+                  "limit_price": round(limit_price, 6), "remark": f"HC|{secrets.token_hex(10)}"},
+        "quote": {"ask1": round(reference_price, 6)},
+        "checks": {"notional_cny": round(limit_price * 100, 3)},
+        "scope": "HYDRA_TPLUS1_SERVER_CANARY"}
+    plan["plan_sha256"] = _sha256(plan)
+    _write_exclusive(output, plan)
+    return plan
+
+
 def cancel_canary(
     cfg: LiveClientConfig,
     *,
@@ -594,6 +621,12 @@ def main() -> None:
         description="Hydra one-lot real MiniQMT canary (not a server order)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
+    prepare = sub.add_parser("prepare-tplus1", help="offline T+1 canary intent")
+    prepare.add_argument("--symbol", required=True, choices=sorted(CANARY_SYMBOLS))
+    prepare.add_argument("--execution-date", required=True)
+    prepare.add_argument("--reference-price", required=True, type=float)
+    prepare.add_argument("--limit-price", required=True, type=float)
+    prepare.add_argument("--output", required=True, type=Path)
     plan = sub.add_parser("plan", help="read-only plan; trading switches must be off")
     plan.add_argument("--symbol", required=True, choices=sorted(CANARY_SYMBOLS))
     plan.add_argument("--output", required=True, type=Path)
@@ -606,7 +639,10 @@ def main() -> None:
             command_parser.add_argument("--execution-date", required=True)
     args = parser.parse_args()
     cfg = LiveClientConfig.from_env()
-    if args.command == "plan":
+    if args.command == "prepare-tplus1":
+        result = prepare_weekend_plan(cfg, symbol=args.symbol, execution_date=args.execution_date,
+                                      reference_price=args.reference_price, limit_price=args.limit_price, output=args.output)
+    elif args.command == "plan":
         result = plan_canary(
             cfg,
             symbol=args.symbol,
