@@ -41,13 +41,21 @@ async def verify_api_key(
     """检查 Bearer token，并把身份绑定到 paper 或 live 执行域。"""
     paper_key = settings.paper_api_key or settings.api_key
     live_key = settings.live_api_key
-    if not paper_key and not live_key:
+    backup_key = settings.live_data_backup_api_key
+    if not paper_key and not live_key and not backup_key:
         raise APIError(ErrorCode.AUTH_FAILED, "server API key 未配置", http_status=401)
 
     if not authorization or not authorization.startswith("Bearer "):
         raise APIError(ErrorCode.AUTH_FAILED, "缺少 Bearer token", http_status=401)
 
     provided = authorization[len("Bearer "):]
+    if backup_key and hmac.compare_digest(provided, backup_key):
+        if request.url.path != "/live-qmt-backups/market-data":
+            raise APIError(ErrorCode.AUTH_FAILED, "backup token 无权访问该路由", http_status=403)
+        sources = _aliases(settings.live_data_backup_source_ids_csv)
+        if not sources:
+            raise APIError(ErrorCode.AUTH_FAILED, "backup source scope 未配置", http_status=401)
+        return AuthContext(execution_domain="live", client_id="live-qmt-backup", allowed_account_aliases=sources)
     if paper_key and hmac.compare_digest(provided, paper_key):
         context = AuthContext(
             execution_domain="paper",

@@ -144,6 +144,8 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
 
     app.include_router(health.router, tags=["health"])
     app.include_router(market_data.router, tags=["market-data"])
+    from app.api import live_qmt_backup
+    app.include_router(live_qmt_backup.router, tags=["live-qmt-backup"])
     app.include_router(orders.router, tags=["orders"])
     app.include_router(trade_result.router, tags=["trade-result"])
     app.include_router(cash_flow.router, tags=["cash-flow"])

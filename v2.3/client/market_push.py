@@ -3,6 +3,7 @@
 mock_qmt 模式：跳过 QMT 下载，直接读取 mock_data/market_payload_mock.json 并推送。
 """
 
+import argparse
 import os
 import threading
 import time
@@ -171,9 +172,19 @@ def _build_payload(trade_date, stocks_raw, etfs_raw, indexes_raw) -> dict:
     return {"trade_date": trade_date, "stocks": stocks, "indexes": indexes, "etfs": etfs}
 
 
-def _push_to_server(payload: dict) -> bool:
-    url     = config.SERVER_BASE_URL.rstrip("/") + "/market-data"
-    headers = {"Authorization": f"Bearer {config.API_KEY}", "Content-Type": "application/json"}
+def _push_to_server(payload: dict, *, live_backup: bool = False) -> bool:
+    if live_backup:
+        base_url = os.environ.get("HYDRA_LIVE_SERVER_BASE_URL", "").rstrip("/")
+        api_key = os.environ.get("HYDRA_LIVE_DATA_BACKUP_API_KEY", "")
+        source_id = os.environ.get("HYDRA_LIVE_ACCOUNT_ALIAS", "")
+        if not base_url or not api_key or not source_id:
+            log.error("live backup 缺少 server URL、backup token 或 source_id")
+            return False
+        url = base_url + "/live-qmt-backups/market-data"
+        payload = {**payload, "source_id": source_id}
+    else:
+        url, api_key = config.SERVER_BASE_URL.rstrip("/") + "/market-data", config.API_KEY
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     try:
         resp = requests.post(url, json=payload, headers=headers, timeout=120)
         body = resp.json()
@@ -193,7 +204,13 @@ def _push_to_server(payload: dict) -> bool:
         return False
 
 
-def _push(payload: dict, trade_date: str) -> None:
+def _push(payload: dict, trade_date: str, *, live_backup: bool = False) -> None:
+    if live_backup:
+        if _push_to_server(payload, live_backup=True):
+            _wechat_notify(f"实盘 QMT 行情备份成功 {trade_date}")
+        else:
+            _wechat_alert(f"实盘 QMT 行情备份失败 {trade_date}")
+        return
     if config.PUSH_MODE in ("local", "mock_qmt"):
         filename = f"market_data_{trade_date}.json"
         config.save_local_push(filename, payload)
@@ -216,6 +233,9 @@ def _push(payload: dict, trade_date: str) -> None:
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--live-backup", action="store_true", help="upload diagnostic backup only; never writes /market-data")
+    args = parser.parse_args()
     log.info("=== market_push 启动（v2.2）===")
     startup_check()
 
@@ -263,7 +283,7 @@ def main():
         _wechat_alert(f"清洗后股票数据为空（trade_date={trade_date}）")
         return
 
-    _push(payload, trade_date)
+    _push(payload, trade_date, live_backup=args.live_backup)
     log.info("=== market_push 完成 ===")
 
 
