@@ -229,7 +229,10 @@ class LiveClientConfig:
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("HYDRA_LIVE_SERVER_BASE_URL 非法")
         if self.mode == "live" and parsed.scheme != "https" and not self.allow_insecure_http:
-            raise ValueError("实盘模式默认要求 HTTPS")
+            raise ValueError(
+                "live HTTP 尚未显式批准；如业务接受明文传输，设置 "
+                "HYDRA_LIVE_ALLOW_INSECURE_HTTP=true"
+            )
         if self.mode == "live" and not self.userdata_dir.is_dir():
             raise ValueError("实盘 QMT userdata 目录不存在")
 

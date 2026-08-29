@@ -191,3 +191,22 @@
 - [ ] 专用模拟账户完成完整月末/月初闭环，并演练部分成交、拒单、未决订单、收盘 residual、次日补单、急停及审计导出。
 - [ ] 取得带实际支付日的公司行动来源，完成 cash-flow journal 与真实现金 P&L 对账。
 - [ ] 书面批准后，才可用 ¥200,000 进入小规模实盘灰度；首次完整月度调仓后复盘成交质量、跟踪误差、现金流和对账，再决定是否增资。
+
+## 14. 2026-08-29 Server 传输决定
+
+Owner 明确批准当前 Windows live client 与 Server 之间继续使用 HTTP，不把
+HTTPS 作为上线前置条件。当前批准地址为：
+
+`http://120.26.138.82:8000`
+
+实施口径：
+
+- Windows 私有 live 配置显式设置
+  `HYDRA_LIVE_ALLOW_INSECURE_HTTP=true`；代码与通用模板仍默认 `false`，避免
+  其他环境静默继承该决定。
+- HTTP 例外只放宽传输协议，不取消 Bearer token、live execution domain、账户
+  alias、API 路由白名单、批次 hash、双交易开关或任何下单风控。
+- `HYDRA_LIVE_SERVER_BASE_URL` 固定为上述地址；地址变化必须重新核对服务身份和
+  配置，不自动跟随重定向或其他主机。
+- Owner 已知 HTTP 本身不提供传输加密；该风险不再作为当前上线阻塞项，但 key、
+  账户标识和真实配置仍不得提交 Git。

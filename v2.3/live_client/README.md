@@ -11,8 +11,11 @@ logs, API key and Windows Task Scheduler names.
   appear in the private paper-account denylist.
 - Real mode requires non-empty paper account/session/path/task-prefix denylists;
   the live values must not overlap any of them.
-- Real mode requires HTTPS unless a separately audited private network explicitly
-  opts into insecure HTTP.
+- Real mode requires an explicit transport decision. HTTPS remains the generic
+  default; the current owner-approved deployment may use
+  `http://120.26.138.82:8000` only when its private Windows configuration sets
+  `HYDRA_LIVE_ALLOW_INSECURE_HTTP=true`. This is an acknowledgement switch, not
+  encryption, and it does not relax Bearer authentication or any trading gate.
 - `HYDRA_LIVE_TRADING_ENABLED=false` blocks submit, including mock submit.
 - `HYDRA_LIVE_RISK_MODE=disabled` independently blocks every live batch. `auto`
   computes limits from the current QMT total asset, available cash and sellable

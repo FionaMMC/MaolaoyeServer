@@ -258,6 +258,36 @@ def test_real_mode_requires_explicit_paper_isolation_evidence(tmp_path, monkeypa
         cfg.validate_startup()
 
 
+def test_real_mode_http_requires_and_accepts_explicit_business_approval(
+    tmp_path, monkeypatch,
+):
+    for name, value in {
+        "HYDRA_PAPER_QMT_ACCOUNT_IDS": "PAPER_ACCOUNT",
+        "HYDRA_PAPER_WRITABLE_PATHS": str(tmp_path / "paper"),
+        "HYDRA_PAPER_QMT_SESSION_IDS": "123456",
+        "HYDRA_PAPER_TASK_PREFIXES": "HydraPaper",
+    }.items():
+        monkeypatch.setenv(name, value)
+    blocked = _cfg(
+        tmp_path,
+        mode="live",
+        server_base_url="http://120.26.138.82:8000",
+        userdata_dir=tmp_path,
+        allow_insecure_http=False,
+    )
+    with pytest.raises(ValueError, match="HTTP 尚未显式批准"):
+        blocked.validate_startup()
+
+    approved = _cfg(
+        tmp_path,
+        mode="live",
+        server_base_url="http://120.26.138.82:8000",
+        userdata_dir=tmp_path,
+        allow_insecure_http=True,
+    )
+    approved.validate_startup()
+
+
 def test_submit_requires_live_qmt_snapshot_to_match_server_ledger(
     tmp_path, monkeypatch,
 ):
