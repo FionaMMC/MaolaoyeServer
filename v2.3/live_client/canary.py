@@ -521,15 +521,21 @@ def status_canary(
         gateway.close()
 
 
-def stage_server_canary(cfg: LiveClientConfig, *, plan_path: Path) -> dict:
-    """Stage the immutable plan as one isolated server order; no QMT action."""
+def stage_server_canary(
+    cfg: LiveClientConfig, *, plan_path: Path, execution_date: str,
+) -> dict:
+    """Stage a frozen plan for a later trading date; no QMT action."""
     plan_path = _require_evidence_path(cfg, plan_path)
     plan = _load_plan(plan_path)
-    _validate_plan_for_action(cfg, plan, _now_shanghai(), require_fresh=True)
+    # Formal Hydra orders are deliberately staged before T+1.  Unlike the
+    # direct broker-only canary, server staging never chases/reprices a plan.
+    _validate_plan_for_action(cfg, plan, _now_shanghai(), require_fresh=False)
+    if not execution_date.isdigit() or len(execution_date) != 8:
+        raise ValueError("execution_date 必须为 YYYYMMDD")
     order, quote = plan["order"], plan["quote"]
     return LiveServerClient(cfg.server_base_url, cfg.api_key, execution_domain="live").stage_canary({
         "execution_domain": "live", "account_alias": cfg.account_alias,
-        "trade_date": plan["trade_date"], "plan_sha256": plan["plan_sha256"],
+        "trade_date": execution_date, "plan_sha256": plan["plan_sha256"],
         "symbol": order["symbol"], "quantity": order["quantity"],
         "reference_price": quote["ask1"], "limit_price": order["limit_price"],
     })
@@ -594,7 +600,10 @@ def main() -> None:
     plan.add_argument("--iopv", type=float)
     plan.add_argument("--iopv-source")
     for command in ("stage-server", "submit", "status", "cancel"):
-        sub.add_parser(command).add_argument("--plan", required=True, type=Path)
+        command_parser = sub.add_parser(command)
+        command_parser.add_argument("--plan", required=True, type=Path)
+        if command == "stage-server":
+            command_parser.add_argument("--execution-date", required=True)
     args = parser.parse_args()
     cfg = LiveClientConfig.from_env()
     if args.command == "plan":
@@ -606,7 +615,9 @@ def main() -> None:
             supplied_iopv_source=args.iopv_source,
         )
     elif args.command == "stage-server":
-        result = stage_server_canary(cfg, plan_path=args.plan)
+        result = stage_server_canary(
+            cfg, plan_path=args.plan, execution_date=args.execution_date,
+        )
     elif args.command == "submit":
         result = submit_canary(cfg, plan_path=args.plan)
     elif args.command == "status":
