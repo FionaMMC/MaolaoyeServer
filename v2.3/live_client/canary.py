@@ -26,6 +26,7 @@ from live_client.gateway import (
     XtQMTGateway,
     classify_qmt_settlement_status,
 )
+from live_client.http_client import LiveServerClient
 
 SCHEMA = "hydra-miniqmt-live-canary/v1"
 CANARY_SYMBOLS = frozenset({"510300.SH", "159915.SZ"})
@@ -520,6 +521,20 @@ def status_canary(
         gateway.close()
 
 
+def stage_server_canary(cfg: LiveClientConfig, *, plan_path: Path) -> dict:
+    """Stage the immutable plan as one isolated server order; no QMT action."""
+    plan_path = _require_evidence_path(cfg, plan_path)
+    plan = _load_plan(plan_path)
+    _validate_plan_for_action(cfg, plan, _now_shanghai(), require_fresh=True)
+    order, quote = plan["order"], plan["quote"]
+    return LiveServerClient(cfg.server_base_url, cfg.api_key, execution_domain="live").stage_canary({
+        "execution_domain": "live", "account_alias": cfg.account_alias,
+        "trade_date": plan["trade_date"], "plan_sha256": plan["plan_sha256"],
+        "symbol": order["symbol"], "quantity": order["quantity"],
+        "reference_price": quote["ask1"], "limit_price": order["limit_price"],
+    })
+
+
 def cancel_canary(
     cfg: LiveClientConfig,
     *,
@@ -578,7 +593,7 @@ def main() -> None:
     plan.add_argument("--output", required=True, type=Path)
     plan.add_argument("--iopv", type=float)
     plan.add_argument("--iopv-source")
-    for command in ("submit", "status", "cancel"):
+    for command in ("stage-server", "submit", "status", "cancel"):
         sub.add_parser(command).add_argument("--plan", required=True, type=Path)
     args = parser.parse_args()
     cfg = LiveClientConfig.from_env()
@@ -590,6 +605,8 @@ def main() -> None:
             supplied_iopv=args.iopv,
             supplied_iopv_source=args.iopv_source,
         )
+    elif args.command == "stage-server":
+        result = stage_server_canary(cfg, plan_path=args.plan)
     elif args.command == "submit":
         result = submit_canary(cfg, plan_path=args.plan)
     elif args.command == "status":

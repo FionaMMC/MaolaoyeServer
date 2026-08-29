@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     live_order_delivery_enabled: bool = False
     live_cash_flow_ingest_enabled: bool = False
     live_account_initialization_enabled: bool = False
+    live_canary_staging_enabled: bool = False
     live_qmt_account_sha256: str = ""
 
     # Hydra live relay allowlists / limits。risk_mode 默认 disabled；只有显式选择

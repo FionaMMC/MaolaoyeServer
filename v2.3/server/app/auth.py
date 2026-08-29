@@ -80,6 +80,7 @@ async def verify_api_key(
             "/hydra/targets/stage",
             "/hydra/rebalances/retry",
             "/hydra/attempts/close",
+            "/hydra/canary/stage",
         }
         if path not in live_exact_paths:
             raise APIError(

@@ -27,6 +27,9 @@ class LiveServerClient:
             raise RuntimeError(f"GET /orders 失败: {body}")
         return body.get("data", {}).get("orders") or []
 
+    def stage_canary(self, payload: dict) -> dict:
+        return self._post("/hydra/canary/stage", payload)
+
     def push_trade_results(self, trade_date: str, results: list[dict]) -> dict:
         response = requests.post(
             f"{self.base_url}/trade-result",
