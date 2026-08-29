@@ -397,13 +397,26 @@ def test_xt_gateway_canary_uses_exact_limit_order_contract(tmp_path):
         def cancel_order_stock(self, _account, order_id):
             return 0 if order_id == 12345 else -1
 
+    class ArrayLike:
+        def __init__(self, values):
+            self.values = values
+
+        def __len__(self):
+            return len(self.values)
+
+        def __getitem__(self, index):
+            return self.values[index]
+
+        def __bool__(self):
+            raise ValueError("array truth value is ambiguous")
+
     class Data:
         @staticmethod
         def get_full_tick(_symbols):
             return {"510300.SH": {
                 "lastPrice": 4.0,
-                "bidPrice": [3.999],
-                "askPrice": [4.0],
+                "bidPrice": ArrayLike([3.999]),
+                "askPrice": ArrayLike([4.0]),
                 "time": int(NOW.timestamp() * 1000),
                 "iopv": 4.0,
             }}

@@ -72,6 +72,14 @@ def _first_positive(value: Any) -> float | None:
     return number if number > 0 else None
 
 
+def _first_present(payload: dict, *keys: str) -> Any:
+    for key in keys:
+        value = payload.get(key)
+        if value is not None:
+            return value
+    return None
+
+
 def _tick_time(value: Any) -> datetime:
     try:
         number = float(value)
@@ -311,25 +319,20 @@ class XtQMTGateway:
         detail = self.xtdata.get_instrument_detail(symbol)
         if not isinstance(detail, dict):
             raise RuntimeError(f"QMT 合约信息缺失: {symbol}")
-        last = _first_positive(
-            tick.get("lastPrice") or tick.get("last_price") or tick.get("open")
-        )
-        bid1 = _first_positive(tick.get("bidPrice") or tick.get("bid_price"))
-        ask1 = _first_positive(tick.get("askPrice") or tick.get("ask_price"))
+        last = _first_positive(_first_present(tick, "lastPrice", "last_price", "open"))
+        bid1 = _first_positive(_first_present(tick, "bidPrice", "bid_price"))
+        ask1 = _first_positive(_first_present(tick, "askPrice", "ask_price"))
         if last is None or bid1 is None or ask1 is None:
             raise RuntimeError(f"QMT 最新价/一档盘口非法: {symbol}")
         iopv = _first_positive(
-            tick.get("iopv")
-            or tick.get("IOPV")
-            or tick.get("fundIOPV")
-            or tick.get("fund_iopv")
+            _first_present(tick, "iopv", "IOPV", "fundIOPV", "fund_iopv")
         )
         price_tick = _first_positive(detail.get("PriceTick"))
         up_limit = _first_positive(detail.get("UpStopPrice"))
         down_limit = _first_positive(detail.get("DownStopPrice"))
         if price_tick is None or up_limit is None or down_limit is None:
             raise RuntimeError(f"QMT 价格档位/涨跌停信息非法: {symbol}")
-        source_time = _tick_time(tick.get("time") or tick.get("timetag"))
+        source_time = _tick_time(_first_present(tick, "time", "timetag"))
         return MarketQuote(
             symbol=symbol,
             last_price=last,
