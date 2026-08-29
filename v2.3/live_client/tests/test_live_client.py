@@ -258,6 +258,26 @@ def test_real_mode_requires_explicit_paper_isolation_evidence(tmp_path, monkeypa
         cfg.validate_startup()
 
 
+def test_cross_device_real_mode_does_not_require_local_paper_denylists(
+    tmp_path, monkeypatch,
+):
+    cfg = _cfg(
+        tmp_path,
+        mode="live",
+        userdata_dir=tmp_path,
+        paper_client_colocated=False,
+    )
+    for name in (
+        "HYDRA_PAPER_QMT_ACCOUNT_IDS",
+        "HYDRA_PAPER_WRITABLE_PATHS",
+        "HYDRA_PAPER_QMT_SESSION_IDS",
+        "HYDRA_PAPER_TASK_PREFIXES",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    cfg.validate_startup()
+
+
 def test_real_mode_http_requires_and_accepts_explicit_business_approval(
     tmp_path, monkeypatch,
 ):

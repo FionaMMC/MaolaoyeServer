@@ -87,6 +87,9 @@ class LiveClientConfig:
     risk_mode: str = "static"
     auto_max_daily_orders: int = 100
     auto_buffer_bps: float = 100.0
+    # Same-machine is the conservative default.  A separate Windows host has
+    # no shared QMT account/session/filesystem/Task Scheduler namespace.
+    paper_client_colocated: bool = True
 
     @classmethod
     def from_env(cls) -> "LiveClientConfig":
@@ -144,6 +147,9 @@ class LiveClientConfig:
                 "HYDRA_LIVE_AUTO_MAX_DAILY_ORDERS", 100,
             ),
             auto_buffer_bps=_nonnegative_float("HYDRA_LIVE_AUTO_BUFFER_BPS", 100),
+            paper_client_colocated=_bool(
+                "HYDRA_LIVE_PAPER_CLIENT_COLOCATED", True,
+            ),
         )
         cfg.validate_startup()
         return cfg
@@ -165,9 +171,9 @@ class LiveClientConfig:
             for value in os.environ.get("HYDRA_PAPER_QMT_ACCOUNT_IDS", "").split(",")
             if value.strip()
         }
-        if self.mode == "live" and not paper_ids:
-            raise ValueError("实盘模式必须显式配置 paper account denylist")
-        if self.account_id in paper_ids:
+        if self.mode == "live" and self.paper_client_colocated and not paper_ids:
+            raise ValueError("同机部署必须配置 paper account denylist")
+        if self.paper_client_colocated and self.account_id in paper_ids:
             raise ValueError("live account 出现在 paper account denylist")
         if self.allowed_symbols != HYDRA_LIVE_EXECUTABLE_SYMBOLS:
             raise ValueError("Hydra live 白名单必须恰好是已批准的 9 只 ETF")
@@ -200,30 +206,30 @@ class LiveClientConfig:
             for value in os.environ.get("HYDRA_PAPER_WRITABLE_PATHS", "").split(os.pathsep)
             if value.strip()
         }
-        if self.mode == "live" and not paper_paths:
-            raise ValueError("实盘模式必须显式配置 paper writable-path denylist")
+        if self.mode == "live" and self.paper_client_colocated and not paper_paths:
+            raise ValueError("同机部署必须配置 paper writable-path denylist")
         live_paths = {
             self.userdata_dir.resolve(), self.state_db.resolve(), self.log_dir.resolve(),
         }
-        if live_paths & paper_paths:
+        if self.paper_client_colocated and live_paths & paper_paths:
             raise ValueError("live client 可写路径与 paper client 重叠")
         paper_sessions = {
             int(value.strip())
             for value in os.environ.get("HYDRA_PAPER_QMT_SESSION_IDS", "").split(",")
             if value.strip()
         }
-        if self.mode == "live" and not paper_sessions:
-            raise ValueError("实盘模式必须显式配置 paper session denylist")
-        if self.session_id in paper_sessions:
+        if self.mode == "live" and self.paper_client_colocated and not paper_sessions:
+            raise ValueError("同机部署必须配置 paper session denylist")
+        if self.paper_client_colocated and self.session_id in paper_sessions:
             raise ValueError("live QMT session_id 与 paper client 冲突")
         paper_task_prefixes = {
             value.strip()
             for value in os.environ.get("HYDRA_PAPER_TASK_PREFIXES", "").split(",")
             if value.strip()
         }
-        if self.mode == "live" and not paper_task_prefixes:
-            raise ValueError("实盘模式必须显式配置 paper task-prefix denylist")
-        if self.task_prefix in paper_task_prefixes:
+        if self.mode == "live" and self.paper_client_colocated and not paper_task_prefixes:
+            raise ValueError("同机部署必须配置 paper task-prefix denylist")
+        if self.paper_client_colocated and self.task_prefix in paper_task_prefixes:
             raise ValueError("live Windows task prefix 与 paper client 冲突")
         parsed = urlparse(self.server_base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:

@@ -9,8 +9,11 @@ logs, API key and Windows Task Scheduler names.
 - `HYDRA_LIVE_EXECUTION_DOMAIN` must be exactly `live`.
 - The configured QMT account must match a private SHA-256 fingerprint and must not
   appear in the private paper-account denylist.
-- Real mode requires non-empty paper account/session/path/task-prefix denylists;
-  the live values must not overlap any of them.
+- When paper and live clients share a Windows device (the safe default), real
+  mode requires non-empty paper account/session/path/task-prefix denylists and
+  rejects overlap. For separate Windows devices, set
+  `HYDRA_LIVE_PAPER_CLIENT_COLOCATED=false`; server-side paper/live domain and
+  account-alias isolation remain mandatory.
 - Real mode requires an explicit transport decision. HTTPS remains the generic
   default; the current owner-approved deployment may use
   `http://120.26.138.82:8000` only when its private Windows configuration sets
