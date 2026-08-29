@@ -90,3 +90,16 @@ transition adapter in this release.
 
 Do not create these tasks until the mock and dedicated-paper acceptance gates in
 the server runbook have passed.
+
+## One-lot real MiniQMT canary
+
+`python -m live_client.canary` is a deliberately separate broker-path test.  It
+does not fetch, slice or settle a Hydra server batch because doing so would leave
+a false partial batch in the production ledger.  It is restricted to one BUY of
+100 units of `510300.SH` or `159915.SZ`, a CNY 2,000 hard notional ceiling, a
+fresh limit-price plan, and independent plan-hash and kill-switch confirmation.
+
+The canary can create a real-money order.  Follow
+[`MINIQMT_LIVE_CANARY_RUNBOOK.md`](MINIQMT_LIVE_CANARY_RUNBOOK.md) exactly.  Any
+fill changes the real account and must be captured by a new account
+initialization/reconciliation before the formal Hydra target is staged.

@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from live_client.config import LiveClientConfig
 
@@ -24,6 +25,82 @@ class SubmissionResult:
     status: str
     detail: str | None = None
     execution_meta: dict | None = None
+
+
+@dataclass(frozen=True)
+class MarketQuote:
+    symbol: str
+    last_price: float
+    bid1: float
+    ask1: float
+    source_time: datetime
+    captured_at: datetime
+    price_tick: float
+    up_limit: float
+    down_limit: float
+    is_trading: bool
+    iopv: float | None = None
+
+
+@dataclass(frozen=True)
+class BrokerOrderSnapshot:
+    account_id: str
+    stock_code: str
+    order_id: int
+    order_sysid: str
+    order_time: int
+    order_volume: int
+    price: float
+    traded_volume: int
+    traded_price: float
+    order_status: int
+    status_msg: str
+    strategy_name: str
+    order_remark: str
+
+
+def _first_positive(value: Any) -> float | None:
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else None
+    # numpy arrays are intentionally handled without importing numpy.
+    elif hasattr(value, "__len__") and not isinstance(value, (str, bytes, dict)):
+        value = value[0] if len(value) else None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _tick_time(value: Any) -> datetime:
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("QMT tick 缺少可验证的行情时间") from exc
+    if number > 10_000_000_000:
+        number /= 1000
+    try:
+        return datetime.fromtimestamp(number, tz=timezone.utc).astimezone()
+    except (OSError, OverflowError, ValueError) as exc:
+        raise RuntimeError("QMT tick 行情时间非法") from exc
+
+
+def _broker_order_snapshot(order: Any) -> BrokerOrderSnapshot:
+    return BrokerOrderSnapshot(
+        account_id=str(getattr(order, "account_id", "")),
+        stock_code=str(getattr(order, "stock_code", "")),
+        order_id=int(getattr(order, "order_id")),
+        order_sysid=str(getattr(order, "order_sysid", "") or ""),
+        order_time=int(getattr(order, "order_time", 0) or 0),
+        order_volume=int(getattr(order, "order_volume", 0) or 0),
+        price=float(getattr(order, "price", 0) or 0),
+        traded_volume=int(getattr(order, "traded_volume", 0) or 0),
+        traded_price=float(getattr(order, "traded_price", 0) or 0),
+        order_status=int(getattr(order, "order_status")),
+        status_msg=str(getattr(order, "status_msg", "") or ""),
+        strategy_name=str(getattr(order, "strategy_name", "") or ""),
+        order_remark=str(getattr(order, "order_remark", "") or ""),
+    )
 
 
 def classify_qmt_settlement_status(
@@ -223,6 +300,113 @@ class XtQMTGateway:
         return AccountSnapshot(
             account_id, float(cash), float(total_asset), mapped, sellable,
         )
+
+    def market_quote(self, symbol: str) -> MarketQuote:
+        if self.xtdata is None:
+            raise RuntimeError("QMT 尚未连接")
+        ticks = self.xtdata.get_full_tick([symbol])
+        tick = (ticks or {}).get(symbol)
+        if not isinstance(tick, dict):
+            raise RuntimeError(f"QMT 实时行情缺失: {symbol}")
+        detail = self.xtdata.get_instrument_detail(symbol)
+        if not isinstance(detail, dict):
+            raise RuntimeError(f"QMT 合约信息缺失: {symbol}")
+        last = _first_positive(
+            tick.get("lastPrice") or tick.get("last_price") or tick.get("open")
+        )
+        bid1 = _first_positive(tick.get("bidPrice") or tick.get("bid_price"))
+        ask1 = _first_positive(tick.get("askPrice") or tick.get("ask_price"))
+        if last is None or bid1 is None or ask1 is None:
+            raise RuntimeError(f"QMT 最新价/一档盘口非法: {symbol}")
+        iopv = _first_positive(
+            tick.get("iopv")
+            or tick.get("IOPV")
+            or tick.get("fundIOPV")
+            or tick.get("fund_iopv")
+        )
+        price_tick = _first_positive(detail.get("PriceTick"))
+        up_limit = _first_positive(detail.get("UpStopPrice"))
+        down_limit = _first_positive(detail.get("DownStopPrice"))
+        if price_tick is None or up_limit is None or down_limit is None:
+            raise RuntimeError(f"QMT 价格档位/涨跌停信息非法: {symbol}")
+        source_time = _tick_time(tick.get("time") or tick.get("timetag"))
+        return MarketQuote(
+            symbol=symbol,
+            last_price=last,
+            bid1=bid1,
+            ask1=ask1,
+            source_time=source_time,
+            captured_at=datetime.now(timezone.utc).astimezone(),
+            price_tick=price_tick,
+            up_limit=up_limit,
+            down_limit=down_limit,
+            is_trading=bool(detail.get("IsTrading")),
+            iopv=iopv,
+        )
+
+    def cancelable_orders(self) -> list[BrokerOrderSnapshot]:
+        if self.trader is None or self.account is None:
+            raise RuntimeError("QMT 尚未连接")
+        orders = self.trader.query_stock_orders(self.account, True)
+        if orders is None:
+            raise RuntimeError("QMT 可撤委托查询返回空值，无法区分失败与空列表")
+        return [_broker_order_snapshot(order) for order in orders]
+
+    def orders_by_remark(self, remark: str) -> list[BrokerOrderSnapshot]:
+        if self.trader is None or self.account is None:
+            raise RuntimeError("QMT 尚未连接")
+        orders = self.trader.query_stock_orders(self.account, False)
+        if orders is None:
+            raise RuntimeError("QMT 当日委托查询返回空值，无法区分失败与空列表")
+        return [
+            _broker_order_snapshot(order)
+            for order in orders
+            if str(getattr(order, "order_remark", "") or "") == remark
+        ]
+
+    def canary_orders(self) -> list[BrokerOrderSnapshot]:
+        if self.trader is None or self.account is None:
+            raise RuntimeError("QMT 尚未连接")
+        orders = self.trader.query_stock_orders(self.account, False)
+        if orders is None:
+            raise RuntimeError("QMT 当日委托查询返回空值，无法区分失败与空列表")
+        return [
+            _broker_order_snapshot(order)
+            for order in orders
+            if str(getattr(order, "strategy_name", "") or "") == "hydra_canary"
+        ]
+
+    def query_order(self, order_id: int) -> BrokerOrderSnapshot | None:
+        if self.trader is None or self.account is None:
+            raise RuntimeError("QMT 尚未连接")
+        order = self.trader.query_stock_order(self.account, int(order_id))
+        return _broker_order_snapshot(order) if order is not None else None
+
+    def submit_canary(
+        self, *, symbol: str, quantity: int, limit_price: float, remark: str,
+    ) -> int:
+        if self.trader is None or self.account is None or self.xtconstant is None:
+            raise RuntimeError("QMT 尚未连接")
+        order_id = self.trader.order_stock(
+            self.account,
+            symbol,
+            self.xtconstant.STOCK_BUY,
+            int(quantity),
+            self.xtconstant.FIX_PRICE,
+            float(limit_price),
+            "hydra_canary",
+            remark,
+        )
+        if order_id is None or int(order_id) <= 0:
+            raise RuntimeError(f"QMT canary order_stock 返回失败: {order_id}")
+        return int(order_id)
+
+    def cancel_order(self, order_id: int) -> None:
+        if self.trader is None or self.account is None:
+            raise RuntimeError("QMT 尚未连接")
+        result = self.trader.cancel_order_stock(self.account, int(order_id))
+        if result != 0:
+            raise RuntimeError(f"QMT canary 撤单指令失败: {result}")
 
     def submit(self, order: dict) -> SubmissionResult:
         if (

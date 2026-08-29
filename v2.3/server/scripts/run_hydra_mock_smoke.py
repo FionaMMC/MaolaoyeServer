@@ -1,10 +1,10 @@
 """Run the isolated Hydra four-scenario smoke chain; never touches MiniQMT."""
+# ruff: noqa: E402
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
-import shutil
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,7 +21,6 @@ from fastapi.testclient import TestClient
 
 from app.dependencies import _engine_for_url
 from app.main import create_app
-from app.models import Order
 from app.schemas.hydra_data import HydraDataManifest
 from app.schemas.hydra_relay import hydra_basket_hash
 from app.services.hydra_data import HydraDataStore
@@ -74,7 +73,10 @@ class _TestServerClient:
 
     test_client: TestClient
 
-    def __init__(self, _base_url: str, _api_key: str, timeout: int = 30, execution_domain: str = "paper"):
+    def __init__(
+        self, _base_url: str, _api_key: str, timeout: int = 30,
+        execution_domain: str = "paper",
+    ):
         del timeout
         self.execution_domain = execution_domain
 
