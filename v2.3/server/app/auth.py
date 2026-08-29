@@ -41,14 +41,23 @@ async def verify_api_key(
     """检查 Bearer token，并把身份绑定到 paper 或 live 执行域。"""
     paper_key = settings.paper_api_key or settings.api_key
     live_key = settings.live_api_key
+    trigger_key = settings.live_trigger_api_key
     backup_key = settings.live_data_backup_api_key
-    if not paper_key and not live_key and not backup_key:
+    if not paper_key and not live_key and not trigger_key and not backup_key:
         raise APIError(ErrorCode.AUTH_FAILED, "server API key 未配置", http_status=401)
 
     if not authorization or not authorization.startswith("Bearer "):
         raise APIError(ErrorCode.AUTH_FAILED, "缺少 Bearer token", http_status=401)
 
     provided = authorization[len("Bearer "):]
+    if trigger_key and hmac.compare_digest(provided, trigger_key):
+        if request.url.path != "/hydra/live/trigger":
+            raise APIError(ErrorCode.AUTH_FAILED, "live trigger token 无权访问该路由", http_status=403)
+        return AuthContext(
+            execution_domain="live",
+            client_id="live-trigger",
+            allowed_account_aliases=(),
+        )
     if backup_key and hmac.compare_digest(provided, backup_key):
         if request.url.path != "/live-qmt-backups/market-data":
             raise APIError(ErrorCode.AUTH_FAILED, "backup token 无权访问该路由", http_status=403)

@@ -1,7 +1,8 @@
 """
 模块六：触发服务器算下一交易日信号
 
-调 POST /admin/run-pipeline 让服务器把 strategies.yaml 里所有策略实例
+调 POST /admin/run-pipeline（模拟盘）或 /hydra/live/trigger（实盘）让服务器
+把 strategies.yaml 里对应执行域的策略实例
 （real_A_buy_on_dip_example + paper_v20h_v20h_v1_3 等）跑一遍，
 产出的 RawSignal 经过预检 + 归集，落到 orders 表，供 order_query 拉取。
 
@@ -9,9 +10,11 @@
     python trigger_pipeline.py                  # 自动找下一交易日
     python trigger_pipeline.py --date 20260507  # 强制指定日期
     python trigger_pipeline.py --today          # 用今天（仅供调试，正常生产用下一交易日）
+    python trigger_pipeline.py --live           # 实盘专用入口，固定写入 live 域
 
 依赖:
-    PUSH_MODE=server，SERVER_BASE_URL + API_KEY 配好
+    模拟盘：PUSH_MODE=server，SERVER_BASE_URL + API_KEY 配好
+    实  盘：HYDRA_LIVE_SERVER_BASE_URL + HYDRA_LIVE_TRIGGER_API_KEY 配好
     QMT 客户端运行（用 xtdata 查交易日历）
 """
 
@@ -30,8 +33,24 @@ _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config
 
-xtdata.data_dir = config.QMT_USERDATA_DIR
 log = config.setup_logger("trigger_pipeline")
+
+
+def _live_value(name: str) -> str:
+    return os.environ.get(name, "").strip()
+
+
+def _connection(live: bool) -> tuple[str, str]:
+    if live:
+        return (
+            _live_value("HYDRA_LIVE_SERVER_BASE_URL").rstrip("/"),
+            _live_value("HYDRA_LIVE_TRIGGER_API_KEY"),
+        )
+    return config.SERVER_BASE_URL.rstrip("/"), config.API_KEY
+
+
+def _userdata_dir(live: bool) -> str:
+    return _live_value("HYDRA_LIVE_QMT_USERDATA_DIR") if live else config.QMT_USERDATA_DIR
 
 
 def _wechat_alert(msg: str) -> None:
@@ -45,21 +64,37 @@ def _wechat_notify(msg: str) -> None:
         log.error(f"[微信通知] 推送失败：{msg}")
 
 
-def startup_check() -> None:
+def startup_check(live: bool) -> None:
+    base_url, api_key = _connection(live)
+    userdata_dir = _userdata_dir(live)
+    if live:
+        if not base_url:
+            log.error("HYDRA_LIVE_SERVER_BASE_URL 未配置")
+            sys.exit(2)
+        if not api_key:
+            log.error("HYDRA_LIVE_TRIGGER_API_KEY 未配置")
+            sys.exit(2)
+        if not os.path.exists(userdata_dir):
+            log.error(f"QMT 数据目录不存在: {userdata_dir}")
+            sys.exit(2)
+        xtdata.data_dir = userdata_dir
+        log.info(f"LIVE trigger → {base_url}（仅可触发 live 域）")
+        return
     if config.PUSH_MODE != "server":
         log.error(f"PUSH_MODE={config.PUSH_MODE}，本脚本只在 server 模式下有意义；")
         log.error("    检查环境变量 QMT_PIPELINE_PUSH_MODE 或 v2.3/config.py")
         sys.exit(2)
-    if not config.SERVER_BASE_URL:
+    if not base_url:
         log.error("SERVER_BASE_URL 未配置（环境变量 QMT_PIPELINE_BASE_URL）")
         sys.exit(2)
-    if not config.API_KEY:
+    if not api_key:
         log.error("API_KEY 未配置（环境变量 QMT_PIPELINE_API_KEY）")
         sys.exit(2)
-    if not os.path.exists(config.QMT_USERDATA_DIR):
-        log.error(f"QMT 数据目录不存在: {config.QMT_USERDATA_DIR}")
+    if not os.path.exists(userdata_dir):
+        log.error(f"QMT 数据目录不存在: {userdata_dir}")
         sys.exit(2)
-    log.info(f"PUSH_MODE={config.PUSH_MODE} → {config.SERVER_BASE_URL}")
+    xtdata.data_dir = userdata_dir
+    log.info(f"PUSH_MODE={config.PUSH_MODE} → {base_url}")
 
 
 def _get_next_trading_day(today_str: str) -> str | None:
@@ -71,9 +106,10 @@ def _get_next_trading_day(today_str: str) -> str | None:
     return future[0] if future else None
 
 
-def trigger(trade_date: str) -> dict | None:
-    url = config.SERVER_BASE_URL.rstrip("/") + "/admin/run-pipeline"
-    headers = {"Authorization": f"Bearer {config.API_KEY}"}
+def trigger(trade_date: str, live: bool = False) -> dict | None:
+    base_url, api_key = _connection(live)
+    url = base_url + ("/hydra/live/trigger" if live else "/admin/run-pipeline")
+    headers = {"Authorization": f"Bearer {api_key}"}
     log.info(f"POST {url}?trade_date={trade_date}")
     try:
         r = requests.post(url, params={"trade_date": trade_date}, headers=headers, timeout=180)
@@ -115,12 +151,14 @@ def main():
     parser.add_argument("--date", help="trade_date YYYYMMDD（默认下一交易日）")
     parser.add_argument("--today", action="store_true",
                         help="用今天作为 trade_date（仅调试，生产用默认下一交易日）")
+    parser.add_argument("--live", action="store_true",
+                        help="调用实盘专用 trigger；订单只写入 live 域")
     args = parser.parse_args()
 
     log.info("=" * 60)
     log.info("trigger_pipeline 启动")
     log.info("=" * 60)
-    startup_check()
+    startup_check(args.live)
 
     today = datetime.now().strftime("%Y%m%d")
     if args.date:
@@ -136,7 +174,7 @@ def main():
             sys.exit(1)
         log.info(f"今天 {today} → 下一交易日 {trade_date}")
 
-    data = trigger(trade_date)
+    data = trigger(trade_date, live=args.live)
     if data is None:
         _wechat_alert(f"trigger_pipeline 失败 trade_date={trade_date}")
         sys.exit(1)
@@ -159,7 +197,8 @@ def main():
         _wechat_notify(f"trigger_pipeline {trade_date}：信号 0，请检查上游 pred")
     else:
         # 拉取订单明细按账户/方向汇总
-        breakdown = _fetch_order_breakdown(trade_date)
+        # 实盘 trigger token 无订单读取权限；18:00 仍由 order_query 用实盘执行 token 拉取。
+        breakdown = {} if args.live else _fetch_order_breakdown(trade_date)
         if breakdown:
             parts = []
             for acct in sorted(breakdown.keys()):

@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     api_key: str = ""
     paper_api_key: str = ""
     live_api_key: str = ""
+    # 16:00 实盘信号生成专用 token。它不能查询/领取订单，也不能调用 admin。
+    live_trigger_api_key: str = ""
     live_data_backup_api_key: str = ""
     live_data_backup_source_ids_csv: str = ""
     paper_client_id: str = "legacy-paper-client"
@@ -104,10 +106,17 @@ class Settings(BaseSettings):
         paper_key = self.paper_api_key or self.api_key
         if paper_key and self.live_api_key and paper_key == self.live_api_key:
             raise ValueError("paper_api_key 与 live_api_key 必须不同")
-        if self.live_data_backup_api_key and self.live_data_backup_api_key in {
-            paper_key, self.live_api_key,
+        scoped_live_keys = {
+            value for value in (
+                paper_key, self.live_api_key, self.live_trigger_api_key,
+            ) if value
+        }
+        if self.live_data_backup_api_key and self.live_data_backup_api_key in scoped_live_keys:
+            raise ValueError("live_data_backup_api_key 必须与 paper/live/trigger token 不同")
+        if self.live_trigger_api_key and self.live_trigger_api_key in {
+            value for value in (paper_key, self.live_api_key) if value
         }:
-            raise ValueError("live_data_backup_api_key 必须与 paper/live 执行 token 不同")
+            raise ValueError("live_trigger_api_key 必须与 paper/live 执行 token 不同")
         if self.hydra_live_risk_mode not in {"disabled", "static", "auto"}:
             raise ValueError("hydra_live_risk_mode 必须是 disabled/static/auto")
         configured_symbols = {
