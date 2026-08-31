@@ -161,17 +161,146 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     .dot.bad { background: #f87171; }
     .stale   { color: #fbbf24; }
     .crit    { color: #f87171; }
+
+    /* 2026 live-operations renovation: dense, restrained, terminal-first. */
+    :root {
+      --bg: #070a0f; --surface: #0e141c; --surface-2: #121a24;
+      --line: #202b39; --text: #eef4fb; --muted: #687789;
+      --accent: #51c8f2; --positive: #40d6a0; --negative: #ff647c;
+      --warning: #f6bd58; --mono: "SFMono-Regular", Consolas, monospace;
+    }
+    body {
+      max-width: 1720px; margin: 0 auto; padding: 0 24px 44px;
+      background: radial-gradient(circle at 72% -30%, rgba(54,111,142,.13), transparent 38%), var(--bg);
+      color: var(--text); font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+      font-size: 14px;
+    }
+    .header {
+      position: sticky; top: 0; z-index: 30; min-height: 76px; margin: 0 -24px;
+      padding: 13px 24px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0;
+      background: rgba(7,10,15,.92); backdrop-filter: blur(18px);
+    }
+    .header h1 { font-size: 1.12em; letter-spacing: .03em; font-weight: 680; }
+    .header .meta { color: var(--muted); font: 10px/1.4 var(--mono); margin-top: 6px; }
+    .brand-kicker { color: var(--accent); font: 9px/1 var(--mono); letter-spacing: .18em; margin-bottom: 7px; }
+    .toolbar select, .toolbar button {
+      height: 34px; border-radius: 7px; border-color: #263444; background: #0d131b;
+      color: #cdd9e6; font-size: .78em; padding: 0 10px;
+    }
+    .toolbar button.primary { background: var(--accent); border-color: var(--accent); color: #061017; font-weight: 750; }
+    .toolbar button.primary:hover { background: #75d7f8; }
+    #health-strip {
+      margin: 0 -24px 14px; min-height: 36px; padding: 0 24px; border-width: 0 0 1px;
+      border-radius: 0; background: #090d13; color: var(--muted); gap: 22px; font: 10px var(--mono);
+      overflow-x: auto; white-space: nowrap;
+    }
+    #health-strip b { color: #d8e3ee; }
+    .tabs {
+      position: sticky; top: 76px; z-index: 25; gap: 2px; margin: 0 -24px 18px; padding: 7px 24px;
+      border-radius: 0; border-bottom: 1px solid var(--line); background: rgba(9,13,19,.94);
+      backdrop-filter: blur(14px); overflow-x: auto;
+    }
+    .tabs, #health-strip { scrollbar-width: none; }
+    .tabs::-webkit-scrollbar, #health-strip::-webkit-scrollbar { display: none; }
+    .tab { white-space: nowrap; padding: 8px 12px; border: 1px solid transparent; border-radius: 7px; font-size: .78em; }
+    .tab:hover { background: #111923; }
+    .tab.active { background: rgba(81,200,242,.09); border-color: rgba(81,200,242,.22); color: #e9f9ff; font-weight: 620; }
+    .tab .icon { color: var(--accent); font: 9px var(--mono); margin-right: 7px; }
+    .grid, .grid-4 { gap: 10px; }
+    .grid-4 { grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); }
+    .card {
+      min-width: 0;
+      border: 1px solid var(--line); border-radius: 11px; background: var(--surface);
+      padding: 15px; box-shadow: 0 10px 35px rgba(0,0,0,.12);
+    }
+    .card h2 {
+      min-height: 30px; margin: -3px 0 12px; padding: 0 0 10px; color: #cdd9e5;
+      border-color: rgba(135,157,184,.13); font-size: .74em; letter-spacing: .07em;
+      font-family: var(--mono); text-transform: uppercase;
+    }
+    .card h2 .hint { color: var(--muted); text-transform: none; letter-spacing: 0; }
+    .kpi {
+      min-height: 107px; padding: 14px; border: 1px solid var(--line); border-left: 1px solid var(--line);
+      border-radius: 10px; background: linear-gradient(145deg, #101720, #0d131b); position: relative; overflow: hidden;
+    }
+    .kpi::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: #253341; }
+    .kpi:has(.kpi-value.pos)::after { background: var(--positive); }
+    .kpi:has(.kpi-value.neg)::after { background: var(--negative); }
+    .kpi:has(.kpi-value.warn)::after { background: var(--warning); }
+    .kpi-label { color: #718196; font: 9px/1.3 var(--mono); letter-spacing: .09em; }
+    .kpi-value { margin-top: 13px; font: 22px/1 var(--mono); letter-spacing: -.04em; }
+    .kpi-value.pos, .num.pos { color: var(--positive); }
+    .kpi-value.neg, .num.neg { color: var(--negative); }
+    .kpi-value.warn { color: var(--warning); }
+    .kpi-sub { margin-top: 10px; color: #5e6e81; font: 9px/1.25 var(--mono); }
+    table { font-size: .72em; }
+    table th { height: 34px; color: #5c6b7e; background: #0b1017; font: 9px var(--mono); }
+    table td { height: 38px; color: #aebbc9; }
+    table th, table td { padding: 0 11px; border-color: rgba(135,157,184,.11); }
+    table tr:hover { background: rgba(81,200,242,.025); }
+    .badge { border-radius: 4px; font-family: var(--mono); }
+    .chart-container { height: 270px; }
+    .chart-container.tall { height: 330px; }
+    .live-heading { display: flex; justify-content: space-between; align-items: end; gap: 16px; margin: 3px 0 15px; }
+    .live-heading h2 { margin: 0; font-size: 1.08em; letter-spacing: -.01em; }
+    .live-heading p { margin: 5px 0 0; color: var(--muted); font-size: .72em; }
+    .live-asof { color: var(--muted); font: 9px var(--mono); }
+    .live-main-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(300px, .78fr); gap: 10px; margin-top: 10px; }
+    .live-three-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 10px; }
+    .control-list { display: grid; gap: 1px; margin: -15px; background: rgba(135,157,184,.1); }
+    .control-row { padding: 11px 14px; background: var(--surface); display: grid; grid-template-columns: 9px minmax(0,1fr) auto; gap: 10px; align-items: center; }
+    .control-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+    .control-dot.ok { background: var(--positive); }
+    .control-dot.warn { background: var(--warning); }
+    .control-dot.bad { background: var(--negative); }
+    .control-name { color: #c4d0dc; font-size: .74em; }
+    .control-desc { color: var(--muted); font: 9px/1.4 var(--mono); margin-top: 3px; }
+    .control-value { color: #cdd9e6; font: 9px var(--mono); text-align: right; }
+    .metric-list { display: grid; gap: 12px; }
+    .metric-line { display: grid; grid-template-columns: 105px minmax(0,1fr) 58px; gap: 10px; align-items: center; }
+    .metric-name { color: #aebbc9; font: 9px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .metric-track { height: 5px; border-radius: 9px; background: #1d2834; overflow: hidden; }
+    .metric-track i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg,#4d86ef,var(--accent)); }
+    .metric-value { text-align: right; color: #c5d0dc; font: 9px var(--mono); }
+    .coverage-list { display: grid; gap: 7px; }
+    .coverage-item { padding: 9px 10px; border: 1px solid rgba(135,157,184,.13); border-radius: 7px; background: #0b1118; }
+    .coverage-top { display: flex; justify-content: space-between; gap: 8px; color: #c8d3df; font-size: .7em; }
+    .coverage-next { margin-top: 5px; color: var(--muted); font: 8px/1.45 var(--mono); }
+    .empty-state { min-height: 76px; display: grid; place-items: center; color: var(--muted); font: 9px/1.5 var(--mono); text-align: center; }
+    .alert-stack { display: grid; gap: 7px; }
+    .alert-item { padding: 9px 10px; border: 1px solid rgba(135,157,184,.13); border-left: 3px solid #73a6ff; border-radius: 7px; background: #0b1118; }
+    .alert-item.critical { border-left-color: var(--negative); }
+    .alert-item.warn { border-left-color: var(--warning); }
+    .alert-title { color: #c7d2de; font-size: .72em; line-height: 1.45; }
+    .alert-meta { margin-top: 4px; color: var(--muted); font: 8px var(--mono); }
+    .live-note { margin-top: 13px; padding-top: 10px; border-top: 1px solid rgba(135,157,184,.13); color: var(--muted); font: 8px/1.45 var(--mono); }
+    #live-orders { overflow-x: auto; }
+    .modal-box { border-radius: 13px; background: #0d131b; border-color: #293847; box-shadow: 0 30px 100px rgba(0,0,0,.55); }
+    .modal-box input { border-radius: 7px; background: #080d13; border-color: #2b3a49; }
+    .modal-box button { border-radius: 7px; background: var(--accent); color: #061017; font-weight: 750; }
+    @media (max-width: 1100px) {
+      .live-three-grid { grid-template-columns: 1fr; }
+      .live-three-grid > .card { grid-column: auto !important; }
+    }
+    @media (max-width: 820px) {
+      body { padding: 0 13px 30px; }
+      .header, #health-strip, .tabs { margin-left: -13px; margin-right: -13px; padding-left: 13px; padding-right: 13px; }
+      .header { position: relative; align-items: flex-start; }
+      .tabs { top: 0; }
+      .live-main-grid { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
   <div id="login-modal">
     <div class="modal-box">
-      <h3>🔐 V20H Quant Dashboard</h3>
+      <div class="brand-kicker">AURORA QUANT / READ ONLY</div>
+      <h3>Live Operations Control</h3>
       <p style="color:#8a93a0; font-size:0.9em; margin-bottom:12px;">
-        请输入 API Key（仅存浏览器 localStorage）:
+        API Key 仅保存在当前浏览器 localStorage，不写入页面或 URL。
       </p>
       <input type="password" id="api-key-input"
-             placeholder="pipeline-v23-shared-secret-2026"
+             placeholder="API Key"
              onkeypress="if(event.key==='Enter') saveKey()">
       <button onclick="saveKey()">登录</button>
     </div>
@@ -179,7 +308,8 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 
   <div class="header">
     <div>
-      <h1>📊 QMT Multi-Strategy Dashboard</h1>
+      <div class="brand-kicker">AURORA QUANT / LIVE CONTROL</div>
+      <h1>实盘运营与风险监控</h1>
       <div class="meta" id="meta">Loading...</div>
     </div>
     <div class="toolbar">
@@ -204,28 +334,72 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
   <div id="health-strip"><span style="color:#8a93a0">加载中…</span></div>
 
   <div class="tabs">
-    <div class="tab active" data-view="overview" onclick="showTab('overview')">
-      <span class="icon">📌</span>概览
+    <div class="tab active" data-view="live" onclick="showTab('live')">
+      <span class="icon">L1</span>实盘总控
+    </div>
+    <div class="tab" data-view="overview" onclick="showTab('overview')">
+      <span class="icon">PF</span>组合概览
     </div>
     <div class="tab" data-view="returns" onclick="showTab('returns')">
-      <span class="icon">📈</span>收益分析
+      <span class="icon">PN</span>绩效归因
     </div>
     <div class="tab" data-view="risk" onclick="showTab('risk')">
-      <span class="icon">📉</span>风险分析
+      <span class="icon">RK</span>风险分析
     </div>
     <div class="tab" data-view="strategy" onclick="showTab('strategy')">
-      <span class="icon">⚙️</span>策略内部
+      <span class="icon">ST</span>策略状态
     </div>
     <div class="tab" data-view="trades" onclick="showTab('trades')">
-      <span class="icon">💼</span>交易分析
+      <span class="icon">EX</span>执行分析
     </div>
     <div class="tab" data-view="ops" onclick="showTab('ops')">
-      <span class="icon">🛠</span>运营与对账
+      <span class="icon">OP</span>运营审计
+    </div>
+  </div>
+
+  <!-- 24h 实盘总控：只展示真实可观测数据，缺失遥测显式暴露。 -->
+  <div class="view active" id="view-live">
+    <div class="live-heading">
+      <div><h2>Live Command Center</h2><p>风险、执行、对账和数据链路的一屏式值守视图</p></div>
+      <div class="live-asof" id="live-asof">—</div>
+    </div>
+    <div class="grid-4" id="live-kpis"><div class="loading">读取实盘快照…</div></div>
+    <div class="live-main-grid">
+      <div class="card tall">
+        <h2>NAV / CAPITAL TRAJECTORY <span class="hint" id="live-nav-hint">—</span></h2>
+        <div class="chart-container"><canvas id="live-nav-chart"></canvas></div>
+      </div>
+      <div class="card tall">
+        <h2>CONTROL LEDGER <span class="hint">read only</span></h2>
+        <div class="control-list" id="live-controls"><div class="loading">检查控制项…</div></div>
+      </div>
+    </div>
+    <div class="live-three-grid">
+      <div class="card">
+        <h2>EXECUTION FUNNEL · 30D <span class="hint" id="execution-scope">—</span></h2>
+        <div id="execution-funnel"><div class="loading">读取订单…</div></div>
+      </div>
+      <div class="card">
+        <h2>POSITION INVENTORY <span class="hint">数量口径</span></h2>
+        <div id="position-inventory"><div class="loading">读取持仓…</div></div>
+      </div>
+      <div class="card">
+        <h2>TELEMETRY COVERAGE <span class="hint">P0 / P1 gaps</span></h2>
+        <div id="telemetry-coverage"><div class="loading">检查覆盖率…</div></div>
+      </div>
+      <div class="card" style="grid-column:span 2">
+        <h2>RECENT ORDER LIFECYCLE <span class="hint">最新 12 笔</span></h2>
+        <div id="live-orders"><div class="loading">读取订单生命周期…</div></div>
+      </div>
+      <div class="card">
+        <h2>ACTIONABLE ALERTS <span class="hint">critical first</span></h2>
+        <div id="live-alerts"><div class="loading">运行告警检查…</div></div>
+      </div>
     </div>
   </div>
 
   <!-- 概览 -->
-  <div class="view active" id="view-overview">
+  <div class="view" id="view-overview">
     <div class="grid-4" id="kpis-overview"><div class="loading">Loading...</div></div>
     <div style="height:12px"></div>
     <div class="grid">
@@ -355,7 +529,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
   <script>
     const API_BASE = window.location.origin;
     let API_KEY = localStorage.getItem('qmt_api_key') || '';
-    let currentTab = 'overview';
+    let currentTab = 'live';
     let charts = {};
 
     async function saveKey() {
@@ -394,6 +568,15 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     function fmtNum(x){ return x==null?'—':Number(x).toLocaleString(); }
     function fmtPct(x){ return x==null?'—':(x*100).toFixed(2)+'%'; }
     function staleClass(lagDays){ if(lagDays==null) return ''; return lagDays>5?'crit':(lagDays>1?'stale':''); }
+    function esc(x){ return String(x ?? '—').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+    function fmtLiveBps(x){ return x==null?'—':Number(x).toFixed(1)+' bp'; }
+    function ageText(seconds){
+      if(seconds==null) return '—';
+      if(seconds<60) return Math.round(seconds)+'s';
+      if(seconds<3600) return Math.floor(seconds/60)+'m';
+      if(seconds<86400) return Math.floor(seconds/3600)+'h';
+      return Math.floor(seconds/86400)+'d';
+    }
 
     let META = null, LAST_VERSION = null;
 
@@ -456,8 +639,8 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       const sign = opts.sign && n > 0 ? '+' : '';
       if (opts.pct) return sign + (n * 100).toFixed(2) + '%';
       if (opts.bps) return sign + (n * 10000).toFixed(0) + 'bps';
-      if (opts.cur) return '¥' + n.toLocaleString('en-US', {maximumFractionDigits: 0});
-      if (opts.curMM) return '¥' + (n/1e6).toFixed(2) + 'M';
+      if (opts.cur) return (n < 0 ? '-¥' : '¥') + Math.abs(n).toLocaleString('en-US', {maximumFractionDigits: 0});
+      if (opts.curMM) return (n < 0 ? '-¥' : '¥') + (Math.abs(n)/1e6).toFixed(2) + 'M';
       if (opts.dec !== undefined) return sign + n.toFixed(opts.dec);
       return sign + n.toString();
     }
@@ -506,6 +689,130 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === name));
       document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
       refreshAll();
+    }
+
+    // ── 24h 实盘总控 ────────────────────────────────────────────
+    function liveControlRows(snapshot) {
+      const c = snapshot.controls || {}, fr = snapshot.freshness || {};
+      const rows = [
+        ['账本一致性', c.bookkeeping_divergences === 0 ? 'ok' : 'bad',
+         c.bookkeeping_divergences === 0 ? '无分叉' : `${c.bookkeeping_divergences} 项`,
+         '真实成交 ↔ 策略账本'],
+        ['僵尸挂单', c.stale_pending_orders === 0 ? 'ok' : 'bad',
+         String(c.stale_pending_orders ?? '—'), 'PENDING > 2 days'],
+        ['价格保护', c.price_protection_utilization == null ? 'warn' :
+         (c.price_protection_utilization <= 1 ? 'ok' : 'bad'),
+         fmtLiveBps(c.max_price_offset_bps_observed), `硬约束 ${c.price_protection_limit_bps ?? '—'} bp`],
+        ['快照完整性', c.snapshot_integrity_issues === 0 ? 'ok' : 'warn',
+         c.snapshot_integrity_issues === 0 ? '通过' : `${c.snapshot_integrity_issues} 项`,
+         'NAV freeze / gap'],
+        ['隔夜仓位', c.overnight_position_anomalies === 0 ? 'ok' : 'bad',
+         c.overnight_position_anomalies === 0 ? '正常' : `${c.overnight_position_anomalies} 项`,
+         '单标的变化 > 50%'],
+        ['行情 EOD', fr.market_lag_days == null ? 'warn' :
+         (fr.market_lag_days <= 1 ? 'ok' : (fr.market_lag_days <= 3 ? 'warn' : 'bad')),
+         fr.market_latest || '未接入', fr.market_lag_days == null ? '无探针' : `lag ${fr.market_lag_days}d`],
+      ];
+      return rows.map(([name,status,value,desc]) => `<div class="control-row">
+        <i class="control-dot ${status}"></i><div><div class="control-name">${esc(name)}</div>
+        <div class="control-desc">${esc(desc)}</div></div><div class="control-value">${esc(value)}</div>
+      </div>`).join('');
+    }
+
+    function renderExecutionFunnel(execution) {
+      const statuses = execution.status_counts || {};
+      const total = Math.max(execution.orders_total || 0, 1);
+      const metrics = [
+        ['Submitted', execution.orders_total || 0, 100],
+        ['Filled / Partial', (statuses.FILLED||0)+(statuses.PARTIAL||0),
+         ((statuses.FILLED||0)+(statuses.PARTIAL||0))/total*100],
+        ['Pending', statuses.PENDING||0, (statuses.PENDING||0)/total*100],
+        ['Rejected', statuses.REJECTED||0, (statuses.REJECTED||0)/total*100],
+      ];
+      document.getElementById('execution-scope').textContent = execution.scope || '—';
+      document.getElementById('execution-funnel').innerHTML = `
+        <div class="metric-list">${metrics.map(m => `<div class="metric-line">
+          <span class="metric-name">${m[0]}</span><span class="metric-track"><i style="width:${Math.max(0,Math.min(100,m[2]))}%"></i></span>
+          <span class="metric-value">${m[1]}</span></div>`).join('')}</div>
+        <div class="live-note">FILLED ${fmt(execution.filled_notional,{curMM:true})} · FEES ${fmt(execution.estimated_fees,{cur:true})}<br>
+          REJECT ${fmt(execution.reject_rate,{pct:true})} · MAX SHORTFALL ${fmtLiveBps(execution.max_abs_shortfall_bps)}</div>`;
+    }
+
+    function renderPositionInventory(items) {
+      const el = document.getElementById('position-inventory');
+      if (!items || !items.length) {
+        el.innerHTML = '<div class="empty-state">暂无持仓，或实例尚未完成账本快照</div>';
+        return;
+      }
+      const top = items.slice(0, 8);
+      const maxQty = Math.max(...top.map(i => Math.abs(i.quantity)), 1);
+      el.innerHTML = `<div class="metric-list">${top.map(i => `<div class="metric-line">
+        <span class="metric-name">${esc(i.symbol)}</span><span class="metric-track"><i style="width:${Math.abs(i.quantity)/maxQty*100}%"></i></span>
+        <span class="metric-value">${fmtNum(i.quantity)}</span></div>`).join('')}</div>
+        <div class="live-note">当前仅有数量，没有 raw mark price；不能据此判断权重、总暴露或集中度。</div>`;
+    }
+
+    function renderTelemetryCoverage(items) {
+      document.getElementById('telemetry-coverage').innerHTML = `<div class="coverage-list">
+        ${(items||[]).map(item => `<div class="coverage-item"><div class="coverage-top">
+          <span>${esc(item.label)}</span>${badge(item.priority, item.priority==='P0'?'danger':'warn')}</div>
+          <div class="coverage-next">${esc(item.next)}</div></div>`).join('')}</div>`;
+    }
+
+    function renderLiveOrders(items) {
+      const el = document.getElementById('live-orders');
+      if (!items || !items.length) {
+        el.innerHTML = '<div class="empty-state">该实例在窗口内没有可映射订单</div>';
+        return;
+      }
+      const statusType = s => s==='FILLED'?'success':(s==='REJECTED'?'danger':(s==='PENDING'?'warn':'info'));
+      el.innerHTML = `<table><tr><th>Time</th><th>Symbol</th><th>Side</th><th class="num">Qty</th>
+        <th class="num">Limit</th><th>Status</th></tr>${items.map(o => `<tr>
+        <td>${esc(o.created_at || o.valid_date)}</td><td>${esc(o.symbol)}</td>
+        <td class="${o.direction==='BUY'?'pos':'neg'}">${esc(o.direction)}</td>
+        <td class="num">${fmtNum(o.quantity)}</td><td class="num">${fmt(o.limit_price,{dec:3})}</td>
+        <td>${badge(o.status,statusType(o.status))}</td></tr>`).join('')}</table>`;
+    }
+
+    function renderLiveAlerts(alerts) {
+      const severity = {critical:0,warn:1,info:2};
+      const sorted = (alerts||[]).slice().sort((a,b)=>(severity[a.severity]??9)-(severity[b.severity]??9));
+      const el = document.getElementById('live-alerts');
+      if (!sorted.length) {
+        el.innerHTML = '<div class="empty-state"><span style="color:var(--positive)">ALL CLEAR</span><br>当前检查未发现可操作告警</div>';
+        return;
+      }
+      el.innerHTML = `<div class="alert-stack">${sorted.map(a => `<div class="alert-item ${esc(a.severity)}">
+        <div class="alert-title">${esc(a.message)}</div><div class="alert-meta">${esc(a.category)} · ${esc(a.as_of)}</div>
+      </div>`).join('')}</div>`;
+    }
+
+    async function renderLive() {
+      try {
+        const [snapshot, alerts, navData] = await Promise.all([
+          api('/admin/ops/live-snapshot?' + selectedQuery({days:30})),
+          api('/admin/alerts'), api(navQuery(getPeriod())),
+        ]);
+        const inst = snapshot.instance || {}, risk = snapshot.risk || {}, execution = snapshot.execution || {};
+        document.getElementById('live-asof').textContent = `AS OF ${snapshot.as_of || '—'}`;
+        document.getElementById('live-kpis').innerHTML = `
+          ${kpiCard('NAV · EOD', fmt(inst.nav,{cur:true}), '', `${inst.nav_date||'—'} · cash ${fmt(inst.cash_ratio,{pct:true})}`)}
+          ${kpiCard('Day P&L · EOD', fmt(risk.daily_pnl,{cur:true}), colorOf(risk.daily_pnl), fmt(risk.daily_return,{pct:true,sign:true}))}
+          ${kpiCard('Current Drawdown', fmt(risk.current_drawdown,{pct:true}), risk.current_drawdown<0?'neg':'pos', 'from high-water mark')}
+          ${kpiCard('20D Ann. Vol', fmt(risk.rolling_volatility_20d,{pct:true}), risk.rolling_volatility_20d==null?'warn':'', `VaR ${fmt(risk.historical_var_95_1d,{pct:true})} · ES ${fmt(risk.expected_shortfall_95_1d,{pct:true})}`)}
+          ${kpiCard('Fill Rate · 30D', fmt(execution.fill_rate,{pct:true}), execution.fill_rate==null?'warn':(execution.fill_rate>=.9?'pos':(execution.fill_rate<.7?'neg':'warn')), `${execution.orders_total||0} orders`)}
+          ${kpiCard('Exec Shortfall', fmtLiveBps(execution.weighted_shortfall_bps), execution.weighted_shortfall_bps==null?'warn':(Math.abs(execution.weighted_shortfall_bps)<=10?'pos':'warn'), 'directional · notional weighted')}`;
+        document.getElementById('live-nav-hint').textContent = `${inst.nav_date||'—'} · ${risk.sample_days||0} risk samples`;
+        document.getElementById('live-controls').innerHTML = liveControlRows(snapshot);
+        renderNavChart('live-nav-chart', navData, '#51c8f2');
+        renderExecutionFunnel(execution);
+        renderPositionInventory(snapshot.positions);
+        renderTelemetryCoverage(snapshot.coverage_gaps);
+        renderLiveOrders(snapshot.recent_orders);
+        renderLiveAlerts(alerts.alerts);
+      } catch (e) {
+        document.getElementById('live-kpis').innerHTML = `<div class="error">${esc(e.message)}</div>`;
+      }
     }
 
     // ── 概览 ────────────────────────────────────────────────────
@@ -578,7 +885,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       </div>`;
     }
 
-    function renderNavChart(canvasId, navData) {
+    function renderNavChart(canvasId, navData, lineColor = '#40d6a0') {
       const items = navData.items.slice().reverse();
       const labels = items.map(i => i.date);
       const navs = items.map(i => i.nav);
@@ -589,7 +896,8 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
           labels,
           datasets: [{
             label: 'NAV', data: navs,
-            borderColor: '#4ade80', backgroundColor: 'rgba(74,222,128,0.1)',
+            borderColor: lineColor,
+            backgroundColor: lineColor === '#51c8f2' ? 'rgba(81,200,242,0.08)' : 'rgba(64,214,160,0.08)',
             fill: true, tension: 0.2, pointRadius: 2, borderWidth: 2,
           }],
         },
@@ -1017,7 +1325,8 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       document.getElementById('meta').textContent =
         `fetching... ${new Date().toLocaleString()} | period=${getPeriod()}`;
       try {
-        if (currentTab === 'overview') await renderOverview();
+        if (currentTab === 'live') await renderLive();
+        else if (currentTab === 'overview') await renderOverview();
         else if (currentTab === 'returns') await renderReturns();
         else if (currentTab === 'risk') await renderRisk();
         else if (currentTab === 'strategy') await renderStrategy();
@@ -1040,7 +1349,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       await refreshAll();
       metaPoll();
       setInterval(metaPoll, 15000);
-      setInterval(refreshAll, 120000);
+      setInterval(refreshAll, 30000);
     }
 
     function renderPortfolioOverview(data) {
