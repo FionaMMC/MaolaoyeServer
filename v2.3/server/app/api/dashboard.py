@@ -272,6 +272,13 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     }
     .trajectory-title p { margin-top: 5px; color: var(--muted); font: 8px/1.35 var(--mono); }
     .trajectory-actions { display: flex; align-items: center; gap: 8px; }
+    .trajectory-modes button { min-width: 54px; }
+    .trajectory-benchmark {
+      height: 31px; padding: 0 26px 0 9px; border: 1px solid #263442; border-radius: 7px;
+      color: #aebfce; background: #090e14; font: 8px var(--mono); letter-spacing: .03em;
+      cursor: pointer;
+    }
+    .trajectory-benchmark:focus { outline: 1px solid rgba(81,200,242,.45); outline-offset: 1px; }
     .trajectory-segmented {
       display: inline-flex; padding: 3px; gap: 2px; border: 1px solid #263442;
       border-radius: 7px; background: #090e14;
@@ -370,6 +377,8 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         width: 100%; display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr);
         gap: 6px; overflow: visible;
       }
+      .trajectory-modes { grid-column: 1 / -1; }
+      .trajectory-benchmark { width: 100%; }
       .trajectory-segmented { min-width: 0; width: 100%; }
       .trajectory-segmented button { min-width: 0; flex: 1 1 0; padding: 0 3px; font-size: 7px; }
       .trajectory-context { min-height: 50px; padding-top: 8px; padding-bottom: 8px; flex-wrap: wrap; white-space: normal; gap: 6px 12px; }
@@ -464,11 +473,16 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
             </div>
           </div>
           <div class="trajectory-actions">
-            <div class="trajectory-segmented" aria-label="曲线指标" role="group">
+            <div class="trajectory-segmented trajectory-modes" aria-label="曲线指标" role="group">
               <button class="active" data-trajectory-mode="capital" onclick="setTrajectoryMode('capital')" aria-pressed="true">CAPITAL</button>
               <button data-trajectory-mode="return" onclick="setTrajectoryMode('return')" aria-pressed="false">RETURN</button>
               <button data-trajectory-mode="drawdown" onclick="setTrajectoryMode('drawdown')" aria-pressed="false">DRAWDOWN</button>
+              <button data-trajectory-mode="exposure" onclick="setTrajectoryMode('exposure')" aria-pressed="false">EXPOSURE</button>
             </div>
+            <select id="trajectory-benchmark" class="trajectory-benchmark" aria-label="对比基准" onchange="onTrajectoryBenchmarkChange()">
+              <option value="000852.SH">CSI 1000</option>
+              <option value="000300.SH">CSI 300</option>
+            </select>
             <div class="trajectory-segmented" aria-label="曲线区间" role="group">
               <button data-trajectory-range="1m" onclick="setTrajectoryRange('1m')" aria-pressed="false">1M</button>
               <button data-trajectory-range="3m" onclick="setTrajectoryRange('3m')" aria-pressed="false">3M</button>
@@ -480,7 +494,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         <div class="trajectory-context" id="trajectory-context">
           <span class="trajectory-feed observed"><i></i>EOD OBSERVED</span>
           <span class="trajectory-feed missing"><i></i>INTRADAY NOT INGESTED</span>
-          <span class="trajectory-feed missing"><i></i>BENCHMARK NOT INGESTED</span>
+          <span class="trajectory-feed"><i></i>BENCHMARK LOADING</span>
         </div>
         <div class="trajectory-stats" id="trajectory-stats"></div>
         <div class="chart-container trajectory-chart"><canvas id="live-nav-chart"></canvas></div>
@@ -500,7 +514,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         <div id="execution-funnel"><div class="loading">读取订单…</div></div>
       </div>
       <div class="card">
-        <h2>POSITION INVENTORY <span class="hint">数量口径</span></h2>
+        <h2>POSITION INVENTORY <span class="hint">EOD 市值 / NAV 权重</span></h2>
         <div id="position-inventory"><div class="loading">读取持仓…</div></div>
       </div>
       <div class="card">
@@ -654,6 +668,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     let LIVE_TRAJECTORY_DATA = null;
     let liveTrajectoryMode = 'capital';
     let liveTrajectoryRange = 'all';
+    let liveBenchmarkSymbol = localStorage.getItem('qmt_dashboard_benchmark') || '000852.SH';
 
     async function saveKey() {
       const k = document.getElementById('api-key-input').value.trim();
@@ -861,18 +876,19 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
           REJECT ${fmt(execution.reject_rate,{pct:true})} · MAX SHORTFALL ${fmtLiveBps(execution.max_abs_shortfall_bps)}</div>`;
     }
 
-    function renderPositionInventory(items) {
+    function renderPositionInventory(items, latestRisk = {}) {
       const el = document.getElementById('position-inventory');
       if (!items || !items.length) {
         el.innerHTML = '<div class="empty-state">暂无持仓，或实例尚未完成账本快照</div>';
         return;
       }
       const top = items.slice(0, 8);
-      const maxQty = Math.max(...top.map(i => Math.abs(i.quantity)), 1);
+      const maxWeight = Math.max(...top.map(i => Math.abs(Number(i.weight) || 0)), .0001);
       el.innerHTML = `<div class="metric-list">${top.map(i => `<div class="metric-line">
-        <span class="metric-name">${esc(i.symbol)}</span><span class="metric-track"><i style="width:${Math.abs(i.quantity)/maxQty*100}%"></i></span>
-        <span class="metric-value">${fmtNum(i.quantity)}</span></div>`).join('')}</div>
-        <div class="live-note">当前仅有数量，没有 raw mark price；不能据此判断权重、总暴露或集中度。</div>`;
+        <span class="metric-name">${esc(i.symbol)}</span><span class="metric-track"><i style="width:${Math.abs(Number(i.weight)||0)/maxWeight*100}%"></i></span>
+        <span class="metric-value ${Number(i.weight)<0?'neg':'pos'}">${fmt(Number(i.weight),{pct:true,sign:true})}</span></div>`).join('')}</div>
+        <div class="live-note">TOP ${top.length} BY |MARKET VALUE| · ${fmt(latestRisk.pricing_coverage,{pct:true})} PRICED<br>
+          ${latestRisk.stale_mark_count||0} STALE · ${latestRisk.missing_mark_count||0} MISSING · EOD CLOSE / LAST CLOSE FALLBACK</div>`;
     }
 
     function renderTelemetryCoverage(items) {
@@ -941,8 +957,9 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       return new Date(Number(raw.slice(0,4)), Number(raw.slice(4,6))-1, Number(raw.slice(6,8)));
     }
 
-    function trajectoryRows(navData) {
-      const ordered = (navData?.items || []).slice().reverse().filter(i => Number.isFinite(Number(i.nav)));
+    function trajectoryRows(riskData) {
+      const ordered = (riskData?.items || []).slice().sort((a,b) => String(a.date).localeCompare(String(b.date)))
+        .filter(i => Number.isFinite(Number(i.nav)));
       const latestDate = trajectoryDateValue(ordered.at(-1)?.date);
       const cutoff = latestDate ? new Date(latestDate) : null;
       if (cutoff && liveTrajectoryRange === '1m') cutoff.setDate(cutoff.getDate() - 31);
@@ -952,19 +969,63 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         const date = trajectoryDateValue(i.date);
         return date && date >= cutoff;
       });
-      let peak = -Infinity;
+      let peak = -Infinity, performancePeak = 1, portfolioGrowth = 1, benchmarkGrowth = 1;
       return filtered.map((item, index) => {
         const nav = Number(item.nav);
         peak = Math.max(peak, nav);
         const previous = index ? Number(filtered[index - 1].nav) : null;
-        const dailyReturn = item.daily_return == null
-          ? (previous ? nav / previous - 1 : null) : Number(item.daily_return);
+        const portfolioReturn = item.portfolio_return == null ? null : Number(item.portfolio_return);
+        const benchmarkReturn = item.benchmark_return == null ? null : Number(item.benchmark_return);
+        if (index && portfolioReturn != null) portfolioGrowth *= 1 + portfolioReturn;
+        if (index && benchmarkReturn != null) benchmarkGrowth *= 1 + benchmarkReturn;
+        performancePeak = Math.max(performancePeak, portfolioGrowth);
+        const portfolioCumulativeReturn = portfolioGrowth - 1;
+        const benchmarkCumulativeReturn = benchmarkGrowth - 1;
         return {
-          date: item.date, nav, peak, dailyReturn,
-          dailyPnl: previous == null ? null : nav - previous,
-          drawdown: peak ? nav / peak - 1 : 0,
+          date: item.date, nav, peak, portfolioReturn, benchmarkReturn,
+          portfolioCumulativeReturn, benchmarkCumulativeReturn,
+          excessCumulativeReturn: portfolioCumulativeReturn - benchmarkCumulativeReturn,
+          externalCashFlow: Number(item.external_cash_flow) || 0,
+          cashFlowStatus: item.cash_flow_status,
+          grossExposure: item.gross_exposure == null ? null : Number(item.gross_exposure),
+          netExposure: item.net_exposure == null ? null : Number(item.net_exposure),
+          cashRatio: item.cash_ratio == null ? null : Number(item.cash_ratio),
+          longMarketValue: Number(item.long_market_value) || 0,
+          shortMarketValue: Number(item.short_market_value) || 0,
+          pricingCoverage: item.pricing_coverage == null ? null : Number(item.pricing_coverage),
+          staleMarkCount: Number(item.stale_mark_count) || 0,
+          missingMarkCount: Number(item.missing_mark_count) || 0,
+          dailyPnl: previous == null ? null : nav - previous - (Number(item.external_cash_flow) || 0),
+          drawdown: performancePeak ? portfolioGrowth / performancePeak - 1 : 0,
         };
       });
+    }
+
+    function trajectoryComparison(rows) {
+      const aligned = rows.slice(1).filter(row => row.portfolioReturn != null && row.benchmarkReturn != null);
+      const p = aligned.map(row => row.portfolioReturn), b = aligned.map(row => row.benchmarkReturn);
+      const mean = values => values.length ? values.reduce((a,c)=>a+c,0)/values.length : null;
+      const sampleVar = values => {
+        if (values.length < 2) return null;
+        const avg = mean(values);
+        return values.reduce((a,c)=>a+(c-avg)**2,0)/(values.length-1);
+      };
+      const pMean = mean(p), bMean = mean(b), bVar = sampleVar(b);
+      const covariance = p.length < 2 ? null : p.reduce((a,c,i)=>a+(c-pMean)*(b[i]-bMean),0)/(p.length-1);
+      const beta = bVar ? covariance / bVar : null;
+      const pVar = sampleVar(p);
+      const correlation = covariance == null || !pVar || !bVar ? null : covariance / Math.sqrt(pVar*bVar);
+      const excess = p.map((value,index)=>value-b[index]);
+      const excessVar = sampleVar(excess), trackingError = excessVar == null ? null : Math.sqrt(excessVar*252);
+      const informationRatio = trackingError ? mean(excess)*252/trackingError : null;
+      const last = rows.at(-1);
+      return {
+        alignedDays: aligned.length,
+        portfolioReturn: last?.portfolioCumulativeReturn ?? null,
+        benchmarkReturn: last?.benchmarkCumulativeReturn ?? null,
+        excessReturn: last?.excessCumulativeReturn ?? null,
+        beta, correlation, trackingError, informationRatio,
+      };
     }
 
     function setTrajectoryMode(mode) {
@@ -987,75 +1048,149 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       renderCapitalTrajectory(LIVE_TRAJECTORY_DATA);
     }
 
+    function onTrajectoryBenchmarkChange() {
+      liveBenchmarkSymbol = document.getElementById('trajectory-benchmark').value;
+      localStorage.setItem('qmt_dashboard_benchmark', liveBenchmarkSymbol);
+      renderLive();
+    }
+
     function trajectoryStat(label, value, cls = '') {
       return `<div class="trajectory-stat"><div class="trajectory-stat-label">${label}</div>
         <div class="trajectory-stat-value ${cls}">${value}</div></div>`;
     }
 
-    function renderCapitalTrajectory(navData) {
-      LIVE_TRAJECTORY_DATA = navData;
-      const rows = trajectoryRows(navData);
+    function renderCapitalTrajectory(riskData) {
+      LIVE_TRAJECTORY_DATA = riskData;
+      const rows = trajectoryRows(riskData);
       const statsEl = document.getElementById('trajectory-stats');
       const subtitle = document.getElementById('trajectory-subtitle');
       if (!rows.length) {
-        statsEl.innerHTML = '<div class="empty-state">当前实例尚无 NAV 快照</div>';
-        subtitle.textContent = 'NO OBSERVED EQUITY DATA';
+        statsEl.innerHTML = '<div class="empty-state">当前实例尚无日终风险快照，请先运行回填</div>';
+        subtitle.textContent = 'NO MATERIALIZED EOD RISK DATA';
         destroyChart('live-nav-chart');
         return;
       }
 
       const first = rows[0], last = rows.at(-1);
-      const pnl = last.nav - first.nav;
-      const totalReturn = first.nav ? last.nav / first.nav - 1 : null;
+      const comparison = trajectoryComparison(rows);
+      const benchmark = riskData?.benchmark || {};
+      const benchmarkAvailable = Boolean(benchmark.available && comparison.alignedDays);
+      if (!benchmarkAvailable) {
+        comparison.benchmarkReturn = null;
+        comparison.excessReturn = null;
+      }
+      const pnl = rows.slice(1).reduce((sum,row)=>sum+(row.dailyPnl||0),0);
       const maxDrawdown = Math.min(...rows.map(row => row.drawdown));
-      subtitle.textContent = `EOD · ${rows.length} OBSERVATIONS · ${trajectoryDate(first.date)} → ${trajectoryDate(last.date)}`;
+      const totalFlow = rows.slice(1).reduce((sum,row)=>sum+row.externalCashFlow,0);
+      subtitle.textContent = `EOD · ${rows.length} OBSERVATIONS · ${trajectoryDate(first.date)} → ${trajectoryDate(last.date)} · ${benchmark.name||benchmark.symbol||'NO BENCHMARK'}`;
+      const flowClass = last.cashFlowStatus === 'observed' ? 'observed' : 'missing';
+      const flowText = last.cashFlowStatus === 'observed'
+        ? `CASH FLOW OBSERVED · ${fmt(totalFlow,{cur:true,sign:true})}`
+        : (last.cashFlowStatus === 'missing_live' ? 'LIVE CASH FLOW JOURNAL MISSING'
+          : (last.cashFlowStatus === 'not_applicable_shadow' ? 'SHADOW CASH LEDGER' : 'PAPER CASH FLOW ASSUMED ZERO'));
       document.getElementById('trajectory-context').innerHTML = `
         <span class="trajectory-feed observed"><i></i>EOD OBSERVED · ${rows.length} SNAPSHOTS</span>
-        <span class="trajectory-feed missing"><i></i>INTRADAY NOT INGESTED</span>
-        <span class="trajectory-feed missing"><i></i>BENCHMARK NOT INGESTED</span>`;
-      statsEl.innerHTML = [
-        trajectoryStat('START NAV', fmt(first.nav,{curMM:true})),
-        trajectoryStat('CURRENT NAV', fmt(last.nav,{curMM:true})),
-        trajectoryStat('NET P&L', fmt(pnl,{cur:true,sign:true}), colorOf(pnl)),
-        trajectoryStat('TOTAL RETURN', fmt(totalReturn,{pct:true,sign:true}), colorOf(totalReturn)),
-        trajectoryStat('HIGH-WATER', fmt(last.peak,{curMM:true})),
-        trajectoryStat('MAX DRAWDOWN', fmt(maxDrawdown,{pct:true}), maxDrawdown < 0 ? 'neg' : ''),
-      ].join('');
+        <span class="trajectory-feed ${benchmarkAvailable?'observed':'missing'}"><i></i>${benchmarkAvailable ? `${benchmark.name} · ${comparison.alignedDays} ALIGNED DAYS` : 'BENCHMARK UNAVAILABLE'}</span>
+        <span class="trajectory-feed ${last.missingMarkCount?'missing':'observed'}"><i></i>PRICED ${fmt(last.pricingCoverage,{pct:true})} · ${last.staleMarkCount} STALE · ${last.missingMarkCount} MISSING</span>
+        <span class="trajectory-feed ${flowClass}"><i></i>${flowText}</span>
+        <span class="trajectory-feed missing"><i></i>INTRADAY NOT INGESTED</span>`;
+
+      let stats;
+      if (liveTrajectoryMode === 'return') {
+        stats = [
+          trajectoryStat('PORTFOLIO', fmt(comparison.portfolioReturn,{pct:true,sign:true}), colorOf(comparison.portfolioReturn)),
+          trajectoryStat(benchmark.name||'BENCHMARK', fmt(comparison.benchmarkReturn,{pct:true,sign:true}), colorOf(comparison.benchmarkReturn)),
+          trajectoryStat('EXCESS RETURN', fmt(comparison.excessReturn,{pct:true,sign:true}), colorOf(comparison.excessReturn)),
+          trajectoryStat('BETA', fmt(comparison.beta,{dec:3})),
+          trajectoryStat('TRACKING ERROR', fmt(comparison.trackingError,{pct:true})),
+          trajectoryStat('INFORMATION RATIO', fmt(comparison.informationRatio,{dec:3}), colorOf(comparison.informationRatio)),
+        ];
+      } else if (liveTrajectoryMode === 'drawdown') {
+        stats = [
+          trajectoryStat('CURRENT DRAWDOWN', fmt(last.drawdown,{pct:true}), last.drawdown<0?'neg':''),
+          trajectoryStat('MAX DRAWDOWN', fmt(maxDrawdown,{pct:true}), maxDrawdown<0?'neg':''),
+          trajectoryStat('HIGH-WATER', fmt(last.peak,{curMM:true})),
+          trajectoryStat('CURRENT NAV', fmt(last.nav,{curMM:true})),
+          trajectoryStat('RANGE RETURN', fmt(comparison.portfolioReturn,{pct:true,sign:true}), colorOf(comparison.portfolioReturn)),
+          trajectoryStat('OBSERVATIONS', String(rows.length)),
+        ];
+      } else if (liveTrajectoryMode === 'exposure') {
+        stats = [
+          trajectoryStat('GROSS EXPOSURE', fmt(last.grossExposure,{pct:true})),
+          trajectoryStat('NET EXPOSURE', fmt(last.netExposure,{pct:true,sign:true}), colorOf(last.netExposure)),
+          trajectoryStat('CASH / NAV', fmt(last.cashRatio,{pct:true,sign:true}), colorOf(last.cashRatio)),
+          trajectoryStat('LONG MARKET VALUE', fmt(last.longMarketValue,{curMM:true})),
+          trajectoryStat('SHORT MARKET VALUE', fmt(last.shortMarketValue,{curMM:true})),
+          trajectoryStat('PRICING COVERAGE', fmt(last.pricingCoverage,{pct:true}), last.pricingCoverage<1?'warn':'pos'),
+        ];
+      } else {
+        stats = [
+          trajectoryStat('START NAV', fmt(first.nav,{curMM:true})),
+          trajectoryStat('CURRENT NAV', fmt(last.nav,{curMM:true})),
+          trajectoryStat('TRADING P&L', fmt(pnl,{cur:true,sign:true}), colorOf(pnl)),
+          trajectoryStat('TOTAL RETURN', fmt(comparison.portfolioReturn,{pct:true,sign:true}), colorOf(comparison.portfolioReturn)),
+          trajectoryStat('HIGH-WATER', fmt(last.peak,{curMM:true})),
+          trajectoryStat('MAX DRAWDOWN', fmt(maxDrawdown,{pct:true}), maxDrawdown < 0 ? 'neg' : ''),
+        ];
+      }
+      statsEl.innerHTML = stats.join('');
 
       const labels = rows.map(row => trajectoryDate(row.date));
-      const startNav = first.nav;
-      let mainLabel = 'Portfolio NAV';
-      let values = rows.map(row => row.nav);
-      let lineColor = '#51c8f2';
-      let fillColor = 'rgba(81,200,242,.10)';
       let tick = value => '¥' + (Number(value)/1e6).toFixed(2) + 'M';
       let legend = '<span><i></i>PORTFOLIO NAV</span><span><i class="hwm"></i>HIGH-WATER MARK</span>';
-      if (liveTrajectoryMode === 'return') {
-        mainLabel = 'Cumulative return';
-        values = rows.map(row => startNav ? (row.nav / startNav - 1) * 100 : 0);
-        lineColor = '#40d6a0'; fillColor = 'rgba(64,214,160,.10)';
-        tick = value => Number(value).toFixed(1) + '%';
-        legend = '<span><i style="background:var(--positive)"></i>CUMULATIVE RETURN</span>';
-      } else if (liveTrajectoryMode === 'drawdown') {
-        mainLabel = 'Drawdown';
-        values = rows.map(row => row.drawdown * 100);
-        lineColor = '#ff647c'; fillColor = 'rgba(255,100,124,.13)';
-        tick = value => Number(value).toFixed(1) + '%';
-        legend = '<span><i style="background:var(--negative)"></i>UNDERWATER CURVE</span>';
-      }
-      document.getElementById('trajectory-legend').innerHTML = legend;
-
-      const datasets = [{
-        label: mainLabel, data: values, borderColor: lineColor, backgroundColor: fillColor,
-        fill: true, tension: .22, pointRadius: 0, pointHoverRadius: 4,
-        pointHoverBackgroundColor: '#e7fbff', pointHoverBorderColor: lineColor,
-        pointHoverBorderWidth: 2, borderWidth: 2,
-      }];
-      if (liveTrajectoryMode === 'capital') datasets.push({
+      let datasets = [{
+        label: 'Portfolio NAV', data: rows.map(row=>row.nav), borderColor: '#51c8f2',
+        backgroundColor: 'rgba(81,200,242,.10)', fill: true, tension: .22,
+        pointRadius: 0, pointHoverRadius: 4, pointHoverBackgroundColor: '#e7fbff',
+        pointHoverBorderColor: '#51c8f2', pointHoverBorderWidth: 2, borderWidth: 2,
+      }, {
         label: 'High-water mark', data: rows.map(row => row.peak), borderColor: 'rgba(147,168,191,.48)',
         backgroundColor: 'transparent', fill: false, tension: 0, pointRadius: 0,
         pointHoverRadius: 0, borderWidth: 1, borderDash: [4,4],
-      });
+      }];
+      if (liveTrajectoryMode === 'return') {
+        tick = value => Number(value).toFixed(1) + '%';
+        datasets = [{
+          label:'Portfolio return', data:rows.map(row=>row.portfolioCumulativeReturn*100),
+          borderColor:'#40d6a0', backgroundColor:'rgba(64,214,160,.07)', fill:true,
+          tension:.2, pointRadius:0, pointHoverRadius:4, borderWidth:2,
+        }];
+        if (benchmarkAvailable) datasets.push({
+          label:benchmark.name, data:rows.map(row=>row.benchmarkCumulativeReturn*100),
+          borderColor:'#8fa5b8', backgroundColor:'transparent', fill:false,
+          tension:.2, pointRadius:0, pointHoverRadius:3, borderWidth:1.3,
+        }, {
+          label:'Excess return', data:rows.map(row=>row.excessCumulativeReturn*100),
+          borderColor:'#f4b860', backgroundColor:'transparent', fill:false,
+          tension:.2, pointRadius:0, pointHoverRadius:3, borderWidth:1.5, borderDash:[5,3],
+        });
+        legend = `<span><i style="background:var(--positive)"></i>PORTFOLIO</span>${benchmarkAvailable?`<span><i style="background:#8fa5b8"></i>${esc(benchmark.name)}</span><span><i style="background:#f4b860"></i>EXCESS</span>`:''}`;
+      } else if (liveTrajectoryMode === 'drawdown') {
+        tick = value => Number(value).toFixed(1) + '%';
+        datasets = [{
+          label:'Drawdown', data:rows.map(row=>row.drawdown*100), borderColor:'#ff647c',
+          backgroundColor:'rgba(255,100,124,.13)', fill:true, tension:.18,
+          pointRadius:0, pointHoverRadius:4, borderWidth:2,
+        }];
+        legend = '<span><i style="background:var(--negative)"></i>UNDERWATER CURVE</span>';
+      } else if (liveTrajectoryMode === 'exposure') {
+        tick = value => Number(value).toFixed(0) + '%';
+        datasets = [{
+          label:'Gross exposure', data:rows.map(row=>row.grossExposure==null?null:row.grossExposure*100),
+          borderColor:'#51c8f2', backgroundColor:'rgba(81,200,242,.06)', fill:true,
+          tension:.18, pointRadius:0, pointHoverRadius:4, borderWidth:2,
+        }, {
+          label:'Net exposure', data:rows.map(row=>row.netExposure==null?null:row.netExposure*100),
+          borderColor:'#40d6a0', backgroundColor:'transparent', fill:false,
+          tension:.18, pointRadius:0, pointHoverRadius:3, borderWidth:1.5,
+        }, {
+          label:'Cash / NAV', data:rows.map(row=>row.cashRatio==null?null:row.cashRatio*100),
+          borderColor:'#f4b860', backgroundColor:'transparent', fill:false,
+          tension:.18, pointRadius:0, pointHoverRadius:3, borderWidth:1.3, borderDash:[5,3],
+        }];
+        legend = '<span><i></i>GROSS</span><span><i style="background:var(--positive)"></i>NET</span><span><i style="background:#f4b860"></i>CASH / NAV</span>';
+      }
+      document.getElementById('trajectory-legend').innerHTML = legend;
 
       destroyChart('live-nav-chart');
       charts['live-nav-chart'] = new Chart(document.getElementById('live-nav-chart'), {
@@ -1104,8 +1239,12 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
                   const row = rows[items[0].dataIndex];
                   return [
                     `Day P&L       ${fmt(row.dailyPnl,{cur:true,sign:true})}`,
-                    `Daily return  ${fmt(row.dailyReturn,{pct:true,sign:true})}`,
+                    `Portfolio     ${fmt(row.portfolioReturn,{pct:true,sign:true})}`,
+                    `${String(benchmark.name||'Benchmark').padEnd(13,' ')}${fmt(row.benchmarkReturn,{pct:true,sign:true})}`,
+                    `Cum. excess   ${fmt(row.excessCumulativeReturn,{pct:true,sign:true})}`,
                     `Drawdown      ${fmt(row.drawdown,{pct:true})}`,
+                    `Gross / Net   ${fmt(row.grossExposure,{pct:true})} / ${fmt(row.netExposure,{pct:true})}`,
+                    `Cash flow     ${fmt(row.externalCashFlow,{cur:true,sign:true})}`,
                   ];
                 },
               },
@@ -1117,23 +1256,28 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 
     async function renderLive() {
       try {
-        const [snapshot, alerts, navData] = await Promise.all([
+        const [snapshot, alerts, dailyRisk] = await Promise.all([
           api('/admin/ops/live-snapshot?' + selectedQuery({days:30})),
-          api('/admin/alerts'), api(navQuery('all')),
+          api('/admin/alerts'),
+          api('/admin/metrics/daily-risk?' + selectedQuery({period:'all', benchmark_symbol:liveBenchmarkSymbol})),
         ]);
         const inst = snapshot.instance || {}, risk = snapshot.risk || {}, execution = snapshot.execution || {};
+        const latestRisk = dailyRisk.summary?.latest || {};
+        const comparison = dailyRisk.summary || {};
         document.getElementById('live-asof').textContent = `AS OF ${snapshot.as_of || '—'}`;
         document.getElementById('live-kpis').innerHTML = `
           ${kpiCard('NAV · EOD', fmt(inst.nav,{cur:true}), '', `${inst.nav_date||'—'} · cash ${fmt(inst.cash_ratio,{pct:true})}`)}
           ${kpiCard('Day P&L · EOD', fmt(risk.daily_pnl,{cur:true}), colorOf(risk.daily_pnl), fmt(risk.daily_return,{pct:true,sign:true}))}
           ${kpiCard('Current Drawdown', fmt(risk.current_drawdown,{pct:true}), risk.current_drawdown<0?'neg':'pos', 'from high-water mark')}
           ${kpiCard('20D Ann. Vol', fmt(risk.rolling_volatility_20d,{pct:true}), risk.rolling_volatility_20d==null?'warn':'', `VaR ${fmt(risk.historical_var_95_1d,{pct:true})} · ES ${fmt(risk.expected_shortfall_95_1d,{pct:true})}`)}
+          ${kpiCard('Gross Exposure · EOD', fmt(latestRisk.gross_exposure,{pct:true}), latestRisk.gross_exposure==null?'warn':'', `net ${fmt(latestRisk.net_exposure,{pct:true})} · cash ${fmt(latestRisk.cash_ratio,{pct:true})}`)}
+          ${kpiCard(`Excess · ${dailyRisk.benchmark?.name||'Benchmark'}`, fmt(comparison.excess_return,{pct:true,sign:true}), colorOf(comparison.excess_return), `${dailyRisk.benchmark?.aligned_return_days||0} aligned days`)}
           ${kpiCard('Fill Rate · 30D', fmt(execution.fill_rate,{pct:true}), execution.fill_rate==null?'warn':(execution.fill_rate>=.9?'pos':(execution.fill_rate<.7?'neg':'warn')), `${execution.orders_total||0} orders`)}
           ${kpiCard('Exec Shortfall', fmtLiveBps(execution.weighted_shortfall_bps), execution.weighted_shortfall_bps==null?'warn':(Math.abs(execution.weighted_shortfall_bps)<=10?'pos':'warn'), 'directional · notional weighted')}`;
         document.getElementById('live-controls').innerHTML = liveControlRows(snapshot);
-        renderCapitalTrajectory(navData);
+        renderCapitalTrajectory(dailyRisk);
         renderExecutionFunnel(execution);
-        renderPositionInventory(snapshot.positions);
+        renderPositionInventory(dailyRisk.latest_positions, latestRisk);
         renderTelemetryCoverage(snapshot.coverage_gaps);
         renderLiveOrders(snapshot.recent_orders);
         renderLiveAlerts(alerts.alerts);
@@ -1667,6 +1811,8 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     }
 
     async function initializeDashboard() {
+      if (!['000852.SH','000300.SH'].includes(liveBenchmarkSymbol)) liveBenchmarkSymbol = '000852.SH';
+      document.getElementById('trajectory-benchmark').value = liveBenchmarkSymbol;
       try {
         await loadInstanceOptions();
       } catch (e) {

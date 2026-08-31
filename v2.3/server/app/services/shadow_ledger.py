@@ -107,10 +107,14 @@ class ShadowLedgerService:
     This module intentionally imports no order, trade, signal, or settlement model.
     """
 
-    def __init__(self, session_factory, parquet_store: ParquetStore, config_path: Path):
+    def __init__(
+        self, session_factory, parquet_store: ParquetStore, config_path: Path,
+        daily_risk=None,
+    ):
         self.session_factory = session_factory
         self.store = parquet_store
         self.config_path = Path(config_path)
+        self.daily_risk = daily_risk
 
     def load_instances(self) -> list[dict]:
         if not self.config_path.exists():
@@ -313,7 +317,18 @@ class ShadowLedgerService:
                 summaries.append({
                     "shadow_id": cfg["shadow_id"], "status": "blocked", "reason": str(exc)
                 })
-        return {"trade_date": trade_date, "instances": summaries}
+        result = {"trade_date": trade_date, "instances": summaries}
+        if self.daily_risk is not None:
+            try:
+                risk = self.daily_risk.upsert_for_date(
+                    trade_date, execution_domain="paper",
+                )
+                result["daily_risk_snapshots"] = risk["written"]
+            except Exception:
+                # A derived monitoring artifact cannot invalidate a completed
+                # shadow ledger mark or cross its no-order safety boundary.
+                logger.exception("daily risk snapshot failed date=%s", trade_date)
+        return result
 
     def _run_one(self, cfg: dict, trade_date: int) -> dict:
         path = cfg["target_file"]

@@ -14,6 +14,7 @@ from app.models.order_signal_map import OrderSignalMap  # noqa: E402, F401
 from app.models.trade import Trade  # noqa: E402, F401
 from app.models.perf_snapshot import PerfSnapshot  # noqa: E402, F401
 from app.models.cash_flow import CashFlowJournal  # noqa: E402, F401
+from app.models.daily_risk_snapshot import DailyRiskSnapshot  # noqa: E402, F401
 from app.models.execution_quality import ExecutionQualityObservation  # noqa: E402, F401
 from app.models.hydra_execution import (  # noqa: E402, F401
     HydraExecutionAttempt,
@@ -36,6 +37,7 @@ __all__ = [
     "Trade",
     "PerfSnapshot",
     "CashFlowJournal",
+    "DailyRiskSnapshot",
     "ExecutionQualityObservation",
     "HydraTarget",
     "HydraRebalance",

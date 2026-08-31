@@ -15,6 +15,7 @@ from app.services.aggregate import AggregateService
 from app.services.alerts import AlertEngine
 from app.services.blacklist import BlacklistService
 from app.services.cash_flow import CashFlowService
+from app.services.daily_risk import DailyRiskSnapshotService
 from app.services.data_upload import DataUploadService
 from app.services.hydra_data import HydraDataStore
 from app.services.hydra_relay import HydraRelayService, HydraRiskLimits
@@ -143,6 +144,13 @@ def get_perf_service(
     return PerfService(session_factory=sf, parquet_store=store)
 
 
+def get_daily_risk_service(
+    sf: sessionmaker = Depends(get_session_factory),
+    store: ParquetStore = Depends(get_parquet_store),
+) -> DailyRiskSnapshotService:
+    return DailyRiskSnapshotService(session_factory=sf, parquet_store=store)
+
+
 def get_metrics_service(
     sf: sessionmaker = Depends(get_session_factory),
 ) -> MetricsService:
@@ -171,6 +179,7 @@ def get_strategy_pipeline(
     store: ParquetStore = Depends(get_parquet_store),
     orders_queue: OrdersQueueService = Depends(get_orders_queue_service),
     perf: PerfService = Depends(get_perf_service),
+    daily_risk: DailyRiskSnapshotService = Depends(get_daily_risk_service),
     blacklist: BlacklistService = Depends(get_blacklist_service),
 ) -> StrategyPipeline:
     return StrategyPipeline(
@@ -181,6 +190,7 @@ def get_strategy_pipeline(
         aggregate=AggregateService(),
         orders_queue=orders_queue,
         perf=perf,
+        daily_risk=daily_risk,
         strategies_yaml_path=Path(settings.strategies_file),
         blacklist=blacklist,
         max_staleness_days=settings.max_data_staleness_days,
@@ -201,11 +211,13 @@ def get_shadow_ledger_service(
     settings: Settings = Depends(get_settings),
     sf: sessionmaker = Depends(get_session_factory),
     store: ParquetStore = Depends(get_parquet_store),
+    daily_risk: DailyRiskSnapshotService = Depends(get_daily_risk_service),
 ) -> ShadowLedgerService:
     return ShadowLedgerService(
         session_factory=sf,
         parquet_store=store,
         config_path=Path(settings.strategies_file),
+        daily_risk=daily_risk,
     )
 
 
