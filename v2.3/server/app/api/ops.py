@@ -33,6 +33,24 @@ async def ops_reconcile_anomalies(instance_id: str, threshold: float = Query(0.5
         data={"overnight_position_anomalies": ops.overnight_position_anomalies(instance_id, threshold)})
 
 
+@router.get(
+    "/ops/live-snapshot",
+    response_model=APIResponse[dict],
+    dependencies=[Depends(verify_api_key)],
+)
+async def ops_live_snapshot(
+    instance_id: str,
+    days: int = Query(30, ge=1, le=365),
+    ops: OpsMonitorService = Depends(get_ops_monitor),
+):
+    """24h command-center snapshot; observed values and telemetry gaps in one call."""
+    return APIResponse[dict](
+        code=0,
+        message="ok",
+        data=ops.live_snapshot(instance_id=instance_id, lookback_days=days),
+    )
+
+
 @router.get("/alerts", response_model=APIResponse[dict], dependencies=[Depends(verify_api_key)])
 async def alerts(eng: AlertEngine = Depends(get_alert_engine)):
     al = eng.run_checks()
