@@ -241,6 +241,81 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     .badge { border-radius: 4px; font-family: var(--mono); }
     .chart-container { height: 270px; }
     .chart-container.tall { height: 330px; }
+    .trajectory-card { min-height: 430px; padding: 0; overflow: hidden; }
+    .trajectory-header {
+      min-height: 65px; padding: 14px 16px 12px; display: flex; justify-content: space-between;
+      align-items: center; gap: 16px; border-bottom: 1px solid rgba(135,157,184,.13);
+      background: linear-gradient(180deg, rgba(19,29,40,.86), rgba(14,20,28,.35));
+    }
+    .trajectory-title-wrap { min-width: 0; display: flex; align-items: center; gap: 11px; }
+    .trajectory-glyph {
+      position: relative; flex: 0 0 32px; width: 32px; height: 32px; border-radius: 8px;
+      border: 1px solid rgba(81,200,242,.26); overflow: hidden;
+      background:
+        linear-gradient(rgba(81,200,242,.07) 1px, transparent 1px) 0 0 / 100% 8px,
+        linear-gradient(90deg, rgba(81,200,242,.07) 1px, transparent 1px) 0 0 / 8px 100%,
+        #0a121a;
+    }
+    .trajectory-glyph::before {
+      content: ""; position: absolute; width: 27px; height: 2px; left: 3px; top: 17px;
+      border-radius: 2px; transform: rotate(-24deg);
+      background: linear-gradient(90deg, #3e7790 0 22%, var(--accent) 23% 67%, #d9f7ff 68%);
+      box-shadow: 0 0 9px rgba(81,200,242,.45);
+    }
+    .trajectory-glyph::after {
+      content: ""; position: absolute; width: 4px; height: 4px; right: 3px; top: 9px;
+      border-radius: 50%; background: #e5faff; box-shadow: 0 0 8px var(--accent);
+    }
+    .trajectory-title h2 {
+      min-height: 0; margin: 0; padding: 0; border: 0; color: #edf6ff;
+      font: 660 12px/1.2 var(--mono); letter-spacing: .065em;
+    }
+    .trajectory-title p { margin-top: 5px; color: var(--muted); font: 8px/1.35 var(--mono); }
+    .trajectory-actions { display: flex; align-items: center; gap: 8px; }
+    .trajectory-segmented {
+      display: inline-flex; padding: 3px; gap: 2px; border: 1px solid #263442;
+      border-radius: 7px; background: #090e14;
+    }
+    .trajectory-segmented button {
+      min-width: 38px; height: 24px; padding: 0 8px; border: 0; border-radius: 4px;
+      color: #66778a; background: transparent; font: 8px var(--mono); cursor: pointer;
+    }
+    .trajectory-segmented button:hover { color: #c7d7e7; background: #121c27; }
+    .trajectory-segmented button.active {
+      color: #dff8ff; background: rgba(81,200,242,.13); box-shadow: inset 0 0 0 1px rgba(81,200,242,.22);
+    }
+    .trajectory-context {
+      min-height: 32px; padding: 0 16px; display: flex; align-items: center; gap: 13px;
+      border-bottom: 1px solid rgba(135,157,184,.09); color: #617286; font: 8px var(--mono);
+      white-space: nowrap; overflow-x: auto; scrollbar-width: none;
+    }
+    .trajectory-context::-webkit-scrollbar { display: none; }
+    .trajectory-context .observed { color: var(--positive); }
+    .trajectory-context .missing { color: #8a6d48; }
+    .trajectory-feed { display: inline-flex; align-items: center; gap: 6px; }
+    .trajectory-feed i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+    .trajectory-stats {
+      display: grid; grid-template-columns: repeat(6, minmax(0,1fr)); padding: 12px 16px 10px;
+      border-bottom: 1px solid rgba(135,157,184,.09);
+    }
+    .trajectory-stat { min-width: 0; padding: 0 12px; border-left: 1px solid rgba(135,157,184,.1); }
+    .trajectory-stat:first-child { padding-left: 0; border-left: 0; }
+    .trajectory-stat-label { color: #617286; font: 8px/1.2 var(--mono); letter-spacing: .05em; }
+    .trajectory-stat-value {
+      margin-top: 6px; color: #dce8f4; font: 13px/1 var(--mono); letter-spacing: -.035em;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .trajectory-stat-value.pos { color: var(--positive); }
+    .trajectory-stat-value.neg { color: var(--negative); }
+    .trajectory-chart { height: 268px; padding: 12px 12px 4px 6px; cursor: crosshair; }
+    .trajectory-footer {
+      min-height: 31px; display: flex; justify-content: space-between; align-items: center; gap: 12px;
+      padding: 0 16px; border-top: 1px solid rgba(135,157,184,.09); color: #566679; font: 8px var(--mono);
+    }
+    .trajectory-legend { display: inline-flex; align-items: center; gap: 13px; }
+    .trajectory-legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .trajectory-legend i { display: inline-block; width: 14px; height: 2px; background: var(--accent); }
+    .trajectory-legend i.hwm { height: 1px; opacity: .55; background: repeating-linear-gradient(90deg,#8092a6 0 3px,transparent 3px 5px); }
     .live-heading { display: flex; justify-content: space-between; align-items: end; gap: 16px; margin: 3px 0 15px; }
     .live-heading h2 { margin: 0; font-size: 1.08em; letter-spacing: -.01em; }
     .live-heading p { margin: 5px 0 0; color: var(--muted); font-size: .72em; }
@@ -285,9 +360,23 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     @media (max-width: 820px) {
       body { padding: 0 13px 30px; }
       .header, #health-strip, .tabs { margin-left: -13px; margin-right: -13px; padding-left: 13px; padding-right: 13px; }
-      .header { position: relative; align-items: flex-start; }
+      .header { position: relative; align-items: flex-start; flex-direction: column; gap: 12px; }
+      .header > div:first-child, .toolbar { width: 100%; }
+      .header h1 { white-space: nowrap; }
       .tabs { top: 0; }
       .live-main-grid { grid-template-columns: 1fr; }
+      .trajectory-header { align-items: flex-start; flex-direction: column; }
+      .trajectory-actions {
+        width: 100%; display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr);
+        gap: 6px; overflow: visible;
+      }
+      .trajectory-segmented { min-width: 0; width: 100%; }
+      .trajectory-segmented button { min-width: 0; flex: 1 1 0; padding: 0 3px; font-size: 7px; }
+      .trajectory-context { min-height: 50px; padding-top: 8px; padding-bottom: 8px; flex-wrap: wrap; white-space: normal; gap: 6px 12px; }
+      .trajectory-stats { grid-template-columns: repeat(3, minmax(0,1fr)); gap: 13px 0; }
+      .trajectory-stat:nth-child(4) { border-left: 0; padding-left: 0; }
+      .trajectory-chart { height: 250px; }
+      .trajectory-footer > span:last-child { display: none; }
     }
   </style>
 </head>
@@ -365,9 +454,40 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     </div>
     <div class="grid-4" id="live-kpis"><div class="loading">读取实盘快照…</div></div>
     <div class="live-main-grid">
-      <div class="card tall">
-        <h2>NAV / CAPITAL TRAJECTORY <span class="hint" id="live-nav-hint">—</span></h2>
-        <div class="chart-container"><canvas id="live-nav-chart"></canvas></div>
+      <div class="card tall trajectory-card">
+        <div class="trajectory-header">
+          <div class="trajectory-title-wrap">
+            <span class="trajectory-glyph" aria-hidden="true"></span>
+            <div class="trajectory-title">
+              <h2>PORTFOLIO EQUITY CURVE</h2>
+              <p id="trajectory-subtitle">读取日终权益账本…</p>
+            </div>
+          </div>
+          <div class="trajectory-actions">
+            <div class="trajectory-segmented" aria-label="曲线指标" role="group">
+              <button class="active" data-trajectory-mode="capital" onclick="setTrajectoryMode('capital')" aria-pressed="true">CAPITAL</button>
+              <button data-trajectory-mode="return" onclick="setTrajectoryMode('return')" aria-pressed="false">RETURN</button>
+              <button data-trajectory-mode="drawdown" onclick="setTrajectoryMode('drawdown')" aria-pressed="false">DRAWDOWN</button>
+            </div>
+            <div class="trajectory-segmented" aria-label="曲线区间" role="group">
+              <button data-trajectory-range="1m" onclick="setTrajectoryRange('1m')" aria-pressed="false">1M</button>
+              <button data-trajectory-range="3m" onclick="setTrajectoryRange('3m')" aria-pressed="false">3M</button>
+              <button data-trajectory-range="ytd" onclick="setTrajectoryRange('ytd')" aria-pressed="false">YTD</button>
+              <button class="active" data-trajectory-range="all" onclick="setTrajectoryRange('all')" aria-pressed="true">ALL</button>
+            </div>
+          </div>
+        </div>
+        <div class="trajectory-context" id="trajectory-context">
+          <span class="trajectory-feed observed"><i></i>EOD OBSERVED</span>
+          <span class="trajectory-feed missing"><i></i>INTRADAY NOT INGESTED</span>
+          <span class="trajectory-feed missing"><i></i>BENCHMARK NOT INGESTED</span>
+        </div>
+        <div class="trajectory-stats" id="trajectory-stats"></div>
+        <div class="chart-container trajectory-chart"><canvas id="live-nav-chart"></canvas></div>
+        <div class="trajectory-footer">
+          <div class="trajectory-legend" id="trajectory-legend"><span><i></i>PORTFOLIO NAV</span><span><i class="hwm"></i>HIGH-WATER MARK</span></div>
+          <span>HOVER TO INSPECT · RANGE IS LOCAL TO THIS CHART</span>
+        </div>
       </div>
       <div class="card tall">
         <h2>CONTROL LEDGER <span class="hint">read only</span></h2>
@@ -531,6 +651,9 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     let API_KEY = localStorage.getItem('qmt_api_key') || '';
     let currentTab = 'live';
     let charts = {};
+    let LIVE_TRAJECTORY_DATA = null;
+    let liveTrajectoryMode = 'capital';
+    let liveTrajectoryRange = 'all';
 
     async function saveKey() {
       const k = document.getElementById('api-key-input').value.trim();
@@ -787,11 +910,216 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       </div>`).join('')}</div>`;
     }
 
+    const trajectoryCrosshairPlugin = {
+      id: 'trajectoryCrosshair',
+      afterDraw(chart) {
+        const active = chart.tooltip?.getActiveElements?.() || [];
+        if (!active.length) return;
+        const x = active[0].element.x;
+        const {ctx, chartArea} = chart;
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(x, chartArea.top);
+        ctx.lineTo(x, chartArea.bottom);
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = 'rgba(174,211,229,.28)';
+        ctx.setLineDash([3, 4]);
+        ctx.stroke();
+        ctx.restore();
+      },
+    };
+
+    function trajectoryDate(value) {
+      const raw = String(value || '');
+      if (/^\d{8}$/.test(raw)) return `${raw.slice(0,4)}-${raw.slice(4,6)}-${raw.slice(6,8)}`;
+      return raw;
+    }
+
+    function trajectoryDateValue(value) {
+      const raw = String(value || '').replaceAll('-', '');
+      if (!/^\d{8}$/.test(raw)) return null;
+      return new Date(Number(raw.slice(0,4)), Number(raw.slice(4,6))-1, Number(raw.slice(6,8)));
+    }
+
+    function trajectoryRows(navData) {
+      const ordered = (navData?.items || []).slice().reverse().filter(i => Number.isFinite(Number(i.nav)));
+      const latestDate = trajectoryDateValue(ordered.at(-1)?.date);
+      const cutoff = latestDate ? new Date(latestDate) : null;
+      if (cutoff && liveTrajectoryRange === '1m') cutoff.setDate(cutoff.getDate() - 31);
+      if (cutoff && liveTrajectoryRange === '3m') cutoff.setDate(cutoff.getDate() - 93);
+      if (cutoff && liveTrajectoryRange === 'ytd') cutoff.setMonth(0, 1);
+      const filtered = liveTrajectoryRange === 'all' || !cutoff ? ordered : ordered.filter(i => {
+        const date = trajectoryDateValue(i.date);
+        return date && date >= cutoff;
+      });
+      let peak = -Infinity;
+      return filtered.map((item, index) => {
+        const nav = Number(item.nav);
+        peak = Math.max(peak, nav);
+        const previous = index ? Number(filtered[index - 1].nav) : null;
+        const dailyReturn = item.daily_return == null
+          ? (previous ? nav / previous - 1 : null) : Number(item.daily_return);
+        return {
+          date: item.date, nav, peak, dailyReturn,
+          dailyPnl: previous == null ? null : nav - previous,
+          drawdown: peak ? nav / peak - 1 : 0,
+        };
+      });
+    }
+
+    function setTrajectoryMode(mode) {
+      liveTrajectoryMode = mode;
+      document.querySelectorAll('[data-trajectory-mode]').forEach(button => {
+        const active = button.dataset.trajectoryMode === mode;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
+      renderCapitalTrajectory(LIVE_TRAJECTORY_DATA);
+    }
+
+    function setTrajectoryRange(range) {
+      liveTrajectoryRange = range;
+      document.querySelectorAll('[data-trajectory-range]').forEach(button => {
+        const active = button.dataset.trajectoryRange === range;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
+      renderCapitalTrajectory(LIVE_TRAJECTORY_DATA);
+    }
+
+    function trajectoryStat(label, value, cls = '') {
+      return `<div class="trajectory-stat"><div class="trajectory-stat-label">${label}</div>
+        <div class="trajectory-stat-value ${cls}">${value}</div></div>`;
+    }
+
+    function renderCapitalTrajectory(navData) {
+      LIVE_TRAJECTORY_DATA = navData;
+      const rows = trajectoryRows(navData);
+      const statsEl = document.getElementById('trajectory-stats');
+      const subtitle = document.getElementById('trajectory-subtitle');
+      if (!rows.length) {
+        statsEl.innerHTML = '<div class="empty-state">当前实例尚无 NAV 快照</div>';
+        subtitle.textContent = 'NO OBSERVED EQUITY DATA';
+        destroyChart('live-nav-chart');
+        return;
+      }
+
+      const first = rows[0], last = rows.at(-1);
+      const pnl = last.nav - first.nav;
+      const totalReturn = first.nav ? last.nav / first.nav - 1 : null;
+      const maxDrawdown = Math.min(...rows.map(row => row.drawdown));
+      subtitle.textContent = `EOD · ${rows.length} OBSERVATIONS · ${trajectoryDate(first.date)} → ${trajectoryDate(last.date)}`;
+      document.getElementById('trajectory-context').innerHTML = `
+        <span class="trajectory-feed observed"><i></i>EOD OBSERVED · ${rows.length} SNAPSHOTS</span>
+        <span class="trajectory-feed missing"><i></i>INTRADAY NOT INGESTED</span>
+        <span class="trajectory-feed missing"><i></i>BENCHMARK NOT INGESTED</span>`;
+      statsEl.innerHTML = [
+        trajectoryStat('START NAV', fmt(first.nav,{curMM:true})),
+        trajectoryStat('CURRENT NAV', fmt(last.nav,{curMM:true})),
+        trajectoryStat('NET P&L', fmt(pnl,{cur:true,sign:true}), colorOf(pnl)),
+        trajectoryStat('TOTAL RETURN', fmt(totalReturn,{pct:true,sign:true}), colorOf(totalReturn)),
+        trajectoryStat('HIGH-WATER', fmt(last.peak,{curMM:true})),
+        trajectoryStat('MAX DRAWDOWN', fmt(maxDrawdown,{pct:true}), maxDrawdown < 0 ? 'neg' : ''),
+      ].join('');
+
+      const labels = rows.map(row => trajectoryDate(row.date));
+      const startNav = first.nav;
+      let mainLabel = 'Portfolio NAV';
+      let values = rows.map(row => row.nav);
+      let lineColor = '#51c8f2';
+      let fillColor = 'rgba(81,200,242,.10)';
+      let tick = value => '¥' + (Number(value)/1e6).toFixed(2) + 'M';
+      let legend = '<span><i></i>PORTFOLIO NAV</span><span><i class="hwm"></i>HIGH-WATER MARK</span>';
+      if (liveTrajectoryMode === 'return') {
+        mainLabel = 'Cumulative return';
+        values = rows.map(row => startNav ? (row.nav / startNav - 1) * 100 : 0);
+        lineColor = '#40d6a0'; fillColor = 'rgba(64,214,160,.10)';
+        tick = value => Number(value).toFixed(1) + '%';
+        legend = '<span><i style="background:var(--positive)"></i>CUMULATIVE RETURN</span>';
+      } else if (liveTrajectoryMode === 'drawdown') {
+        mainLabel = 'Drawdown';
+        values = rows.map(row => row.drawdown * 100);
+        lineColor = '#ff647c'; fillColor = 'rgba(255,100,124,.13)';
+        tick = value => Number(value).toFixed(1) + '%';
+        legend = '<span><i style="background:var(--negative)"></i>UNDERWATER CURVE</span>';
+      }
+      document.getElementById('trajectory-legend').innerHTML = legend;
+
+      const datasets = [{
+        label: mainLabel, data: values, borderColor: lineColor, backgroundColor: fillColor,
+        fill: true, tension: .22, pointRadius: 0, pointHoverRadius: 4,
+        pointHoverBackgroundColor: '#e7fbff', pointHoverBorderColor: lineColor,
+        pointHoverBorderWidth: 2, borderWidth: 2,
+      }];
+      if (liveTrajectoryMode === 'capital') datasets.push({
+        label: 'High-water mark', data: rows.map(row => row.peak), borderColor: 'rgba(147,168,191,.48)',
+        backgroundColor: 'transparent', fill: false, tension: 0, pointRadius: 0,
+        pointHoverRadius: 0, borderWidth: 1, borderDash: [4,4],
+      });
+
+      destroyChart('live-nav-chart');
+      charts['live-nav-chart'] = new Chart(document.getElementById('live-nav-chart'), {
+        type: 'line', data: {labels, datasets}, plugins: [trajectoryCrosshairPlugin],
+        options: {
+          responsive: true, maintainAspectRatio: false, normalized: true,
+          animation: {duration: 280}, interaction: {mode: 'index', intersect: false},
+          layout: {padding: {left: 4, right: 4, top: 8, bottom: 0}},
+          scales: {
+            y: {
+              position: 'right', beginAtZero: liveTrajectoryMode === 'drawdown',
+              max: liveTrajectoryMode === 'drawdown' ? 0 : undefined,
+              ticks: {color:'#65778a', font:{family:'SFMono-Regular',size:9}, callback:tick, maxTicksLimit:6},
+              grid: {color:'rgba(114,139,164,.11)', drawTicks:false}, border:{display:false},
+            },
+            x: {
+              ticks: {
+                color:'#586a7e', font:{family:'SFMono-Regular',size:8},
+                autoSkip:true, maxTicksLimit:window.innerWidth < 600 ? 5 : 7, maxRotation:0,
+                callback:function(value){
+                  const label = this.getLabelForValue(value);
+                  return window.innerWidth < 600 ? label.slice(5) : label;
+                },
+              },
+              grid: {display:false}, border:{color:'rgba(114,139,164,.16)'},
+            },
+          },
+          plugins: {
+            legend: {display:false},
+            tooltip: {
+              enabled:true, displayColors:false, padding:11, cornerRadius:7,
+              backgroundColor:'rgba(5,10,15,.96)', borderColor:'rgba(81,200,242,.24)', borderWidth:1,
+              titleColor:'#edf7ff', bodyColor:'#aebdcb', titleFont:{family:'SFMono-Regular',size:10},
+              bodyFont:{family:'SFMono-Regular',size:9},
+              callbacks: {
+                title: items => items.length ? rows[items[0].dataIndex].date + ' · EOD' : '',
+                label: context => {
+                  const value = context.parsed.y;
+                  if (context.dataset.label === 'Portfolio NAV' || context.dataset.label === 'High-water mark') {
+                    return `${context.dataset.label}  ${fmt(value,{cur:true})}`;
+                  }
+                  return `${context.dataset.label}  ${Number(value).toFixed(2)}%`;
+                },
+                afterBody: items => {
+                  if (!items.length) return [];
+                  const row = rows[items[0].dataIndex];
+                  return [
+                    `Day P&L       ${fmt(row.dailyPnl,{cur:true,sign:true})}`,
+                    `Daily return  ${fmt(row.dailyReturn,{pct:true,sign:true})}`,
+                    `Drawdown      ${fmt(row.drawdown,{pct:true})}`,
+                  ];
+                },
+              },
+            },
+          },
+        },
+      });
+    }
+
     async function renderLive() {
       try {
         const [snapshot, alerts, navData] = await Promise.all([
           api('/admin/ops/live-snapshot?' + selectedQuery({days:30})),
-          api('/admin/alerts'), api(navQuery(getPeriod())),
+          api('/admin/alerts'), api(navQuery('all')),
         ]);
         const inst = snapshot.instance || {}, risk = snapshot.risk || {}, execution = snapshot.execution || {};
         document.getElementById('live-asof').textContent = `AS OF ${snapshot.as_of || '—'}`;
@@ -802,9 +1130,8 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
           ${kpiCard('20D Ann. Vol', fmt(risk.rolling_volatility_20d,{pct:true}), risk.rolling_volatility_20d==null?'warn':'', `VaR ${fmt(risk.historical_var_95_1d,{pct:true})} · ES ${fmt(risk.expected_shortfall_95_1d,{pct:true})}`)}
           ${kpiCard('Fill Rate · 30D', fmt(execution.fill_rate,{pct:true}), execution.fill_rate==null?'warn':(execution.fill_rate>=.9?'pos':(execution.fill_rate<.7?'neg':'warn')), `${execution.orders_total||0} orders`)}
           ${kpiCard('Exec Shortfall', fmtLiveBps(execution.weighted_shortfall_bps), execution.weighted_shortfall_bps==null?'warn':(Math.abs(execution.weighted_shortfall_bps)<=10?'pos':'warn'), 'directional · notional weighted')}`;
-        document.getElementById('live-nav-hint').textContent = `${inst.nav_date||'—'} · ${risk.sample_days||0} risk samples`;
         document.getElementById('live-controls').innerHTML = liveControlRows(snapshot);
-        renderNavChart('live-nav-chart', navData, '#51c8f2');
+        renderCapitalTrajectory(navData);
         renderExecutionFunnel(execution);
         renderPositionInventory(snapshot.positions);
         renderTelemetryCoverage(snapshot.coverage_gaps);

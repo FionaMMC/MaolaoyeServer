@@ -33,6 +33,16 @@ def test_dashboard_meta_and_alerts(client, settings_for_test):
     assert "position_anomaly" in cats
 
 
+def test_dashboard_contains_interactive_equity_curve(client):
+    response = client.get("/dashboard")
+    assert response.status_code == 200
+    html = response.text
+    assert "PORTFOLIO EQUITY CURVE" in html
+    assert "data-trajectory-mode=\"drawdown\"" in html
+    assert "BENCHMARK NOT INGESTED" in html
+    assert "renderCapitalTrajectory" in html
+
+
 def test_ops_endpoints_authed(client, settings_for_test):
     _seed(settings_for_test)
     h = {"Authorization": "Bearer TEST_KEY"}
