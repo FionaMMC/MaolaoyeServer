@@ -117,6 +117,36 @@ def test_daily_risk_uses_shadow_cash_snapshot(settings_for_test):
         assert row.gross_exposure == pytest.approx(0.4)
 
 
+def test_benchmark_curve_starts_at_first_common_observation(settings_for_test):
+    service, sf, store = _service(settings_for_test)
+    store.append("stocks", "AAA.SH", _bars([
+        (20260429, 10.0), (20260430, 11.0), (20260501, 12.1),
+    ]))
+    store.append("indexes", "000852.SH", _bars([
+        (20260430, 100.0), (20260501, 101.0),
+    ]))
+    with sf() as session:
+        session.add_all([
+            PerfSnapshot(
+                instance_id="paper_late_benchmark", date=date, nav=nav,
+                daily_return=None, positions_snapshot={"AAA.SH": 1},
+            )
+            for date, nav in (
+                ("20260429", 100.0), ("20260430", 110.0), ("20260501", 121.0),
+            )
+        ])
+        session.commit()
+
+    service.rebuild(instance_id="paper_late_benchmark")
+    result = service.query("paper_late_benchmark", benchmark_symbol="000852.SH")
+    latest = result["items"][-1]
+    assert latest["portfolio_cumulative_return"] == pytest.approx(0.21)
+    assert latest["aligned_portfolio_cumulative_return"] == pytest.approx(0.10)
+    assert latest["benchmark_cumulative_return"] == pytest.approx(0.01)
+    assert latest["excess_cumulative_return"] == pytest.approx(0.09)
+    assert result["summary"]["portfolio_return"] == pytest.approx(0.10)
+
+
 def test_daily_risk_api(client, settings_for_test):
     service, sf, store = _service(settings_for_test)
     _seed_regular(sf, store)
