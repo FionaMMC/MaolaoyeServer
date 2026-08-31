@@ -969,7 +969,8 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         const date = trajectoryDateValue(i.date);
         return date && date >= cutoff;
       });
-      let peak = -Infinity, performancePeak = 1, portfolioGrowth = 1, benchmarkGrowth = 1;
+      let peak = -Infinity, performancePeak = 1, portfolioGrowth = 1;
+      let alignedPortfolioGrowth = 1, alignedBenchmarkGrowth = 1, comparisonStarted = false;
       return filtered.map((item, index) => {
         const nav = Number(item.nav);
         peak = Math.max(peak, nav);
@@ -977,14 +978,27 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         const portfolioReturn = item.portfolio_return == null ? null : Number(item.portfolio_return);
         const benchmarkReturn = item.benchmark_return == null ? null : Number(item.benchmark_return);
         if (index && portfolioReturn != null) portfolioGrowth *= 1 + portfolioReturn;
-        if (index && benchmarkReturn != null) benchmarkGrowth *= 1 + benchmarkReturn;
         performancePeak = Math.max(performancePeak, portfolioGrowth);
         const portfolioCumulativeReturn = portfolioGrowth - 1;
-        const benchmarkCumulativeReturn = benchmarkGrowth - 1;
+        let alignedPortfolioCumulativeReturn = null;
+        let benchmarkCumulativeReturn = null;
+        let excessCumulativeReturn = null;
+        if (!comparisonStarted && item.benchmark_close != null) {
+          comparisonStarted = true;
+          alignedPortfolioCumulativeReturn = 0;
+          benchmarkCumulativeReturn = 0;
+          excessCumulativeReturn = 0;
+        } else if (comparisonStarted && portfolioReturn != null && benchmarkReturn != null) {
+          alignedPortfolioGrowth *= 1 + portfolioReturn;
+          alignedBenchmarkGrowth *= 1 + benchmarkReturn;
+          alignedPortfolioCumulativeReturn = alignedPortfolioGrowth - 1;
+          benchmarkCumulativeReturn = alignedBenchmarkGrowth - 1;
+          excessCumulativeReturn = alignedPortfolioGrowth - alignedBenchmarkGrowth;
+        }
         return {
           date: item.date, nav, peak, portfolioReturn, benchmarkReturn,
-          portfolioCumulativeReturn, benchmarkCumulativeReturn,
-          excessCumulativeReturn: portfolioCumulativeReturn - benchmarkCumulativeReturn,
+          portfolioCumulativeReturn, alignedPortfolioCumulativeReturn,
+          benchmarkCumulativeReturn, excessCumulativeReturn,
           externalCashFlow: Number(item.external_cash_flow) || 0,
           cashFlowStatus: item.cash_flow_status,
           grossExposure: item.gross_exposure == null ? null : Number(item.gross_exposure),
@@ -1019,11 +1033,13 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       const excessVar = sampleVar(excess), trackingError = excessVar == null ? null : Math.sqrt(excessVar*252);
       const informationRatio = trackingError ? mean(excess)*252/trackingError : null;
       const last = rows.at(-1);
+      const compound = values => values.reduce((growth,value)=>growth*(1+value),1)-1;
       return {
         alignedDays: aligned.length,
-        portfolioReturn: last?.portfolioCumulativeReturn ?? null,
-        benchmarkReturn: last?.benchmarkCumulativeReturn ?? null,
-        excessReturn: last?.excessCumulativeReturn ?? null,
+        rangePortfolioReturn: last?.portfolioCumulativeReturn ?? null,
+        portfolioReturn: p.length ? compound(p) : null,
+        benchmarkReturn: b.length ? compound(b) : null,
+        excessReturn: p.length && b.length ? compound(p)-compound(b) : null,
         beta, correlation, trackingError, informationRatio,
       };
     }
@@ -1079,6 +1095,8 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         comparison.benchmarkReturn = null;
         comparison.excessReturn = null;
       }
+      const displayedPortfolioReturn = benchmarkAvailable
+        ? comparison.portfolioReturn : comparison.rangePortfolioReturn;
       const pnl = rows.slice(1).reduce((sum,row)=>sum+(row.dailyPnl||0),0);
       const maxDrawdown = Math.min(...rows.map(row => row.drawdown));
       const totalFlow = rows.slice(1).reduce((sum,row)=>sum+row.externalCashFlow,0);
@@ -1098,7 +1116,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       let stats;
       if (liveTrajectoryMode === 'return') {
         stats = [
-          trajectoryStat('PORTFOLIO', fmt(comparison.portfolioReturn,{pct:true,sign:true}), colorOf(comparison.portfolioReturn)),
+          trajectoryStat('PORTFOLIO', fmt(displayedPortfolioReturn,{pct:true,sign:true}), colorOf(displayedPortfolioReturn)),
           trajectoryStat(benchmark.name||'BENCHMARK', fmt(comparison.benchmarkReturn,{pct:true,sign:true}), colorOf(comparison.benchmarkReturn)),
           trajectoryStat('EXCESS RETURN', fmt(comparison.excessReturn,{pct:true,sign:true}), colorOf(comparison.excessReturn)),
           trajectoryStat('BETA', fmt(comparison.beta,{dec:3})),
@@ -1111,7 +1129,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
           trajectoryStat('MAX DRAWDOWN', fmt(maxDrawdown,{pct:true}), maxDrawdown<0?'neg':''),
           trajectoryStat('HIGH-WATER', fmt(last.peak,{curMM:true})),
           trajectoryStat('CURRENT NAV', fmt(last.nav,{curMM:true})),
-          trajectoryStat('RANGE RETURN', fmt(comparison.portfolioReturn,{pct:true,sign:true}), colorOf(comparison.portfolioReturn)),
+          trajectoryStat('RANGE RETURN', fmt(comparison.rangePortfolioReturn,{pct:true,sign:true}), colorOf(comparison.rangePortfolioReturn)),
           trajectoryStat('OBSERVATIONS', String(rows.length)),
         ];
       } else if (liveTrajectoryMode === 'exposure') {
@@ -1128,7 +1146,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
           trajectoryStat('START NAV', fmt(first.nav,{curMM:true})),
           trajectoryStat('CURRENT NAV', fmt(last.nav,{curMM:true})),
           trajectoryStat('TRADING P&L', fmt(pnl,{cur:true,sign:true}), colorOf(pnl)),
-          trajectoryStat('TOTAL RETURN', fmt(comparison.portfolioReturn,{pct:true,sign:true}), colorOf(comparison.portfolioReturn)),
+          trajectoryStat('TOTAL RETURN', fmt(comparison.rangePortfolioReturn,{pct:true,sign:true}), colorOf(comparison.rangePortfolioReturn)),
           trajectoryStat('HIGH-WATER', fmt(last.peak,{curMM:true})),
           trajectoryStat('MAX DRAWDOWN', fmt(maxDrawdown,{pct:true}), maxDrawdown < 0 ? 'neg' : ''),
         ];
@@ -1151,7 +1169,9 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       if (liveTrajectoryMode === 'return') {
         tick = value => Number(value).toFixed(1) + '%';
         datasets = [{
-          label:'Portfolio return', data:rows.map(row=>row.portfolioCumulativeReturn*100),
+          label:'Portfolio return', data:rows.map(row => (benchmarkAvailable
+            ? (row.alignedPortfolioCumulativeReturn==null?null:row.alignedPortfolioCumulativeReturn*100)
+            : row.portfolioCumulativeReturn*100)),
           borderColor:'#40d6a0', backgroundColor:'rgba(64,214,160,.07)', fill:true,
           tension:.2, pointRadius:0, pointHoverRadius:4, borderWidth:2,
         }];

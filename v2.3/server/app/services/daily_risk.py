@@ -324,7 +324,9 @@ class DailyRiskSnapshotService:
 
         items = [self._serialize(row) for row in rows]
         portfolio_growth = 1.0
-        benchmark_base = None
+        aligned_portfolio_growth = 1.0
+        aligned_benchmark_growth = 1.0
+        comparison_started = False
         aligned_portfolio_returns = []
         aligned_benchmark_returns = []
         for index, item in enumerate(items):
@@ -335,22 +337,33 @@ class DailyRiskSnapshotService:
                 if item["portfolio_return"] is not None:
                     portfolio_growth *= 1.0 + float(item["portfolio_return"])
                 item["portfolio_cumulative_return"] = portfolio_growth - 1.0
-            if benchmark_close is not None and benchmark_base is None:
-                benchmark_base = benchmark_close
             item["benchmark_close"] = benchmark_close
             item["benchmark_return"] = benchmark_return
-            item["benchmark_cumulative_return"] = (
-                benchmark_close / benchmark_base - 1.0
-                if benchmark_close is not None and benchmark_base not in (None, 0)
-                else None
-            )
-            item["excess_cumulative_return"] = (
-                item["portfolio_cumulative_return"] - item["benchmark_cumulative_return"]
-                if item["benchmark_cumulative_return"] is not None else None
-            )
-            if index > 0 and item["portfolio_return"] is not None and benchmark_return is not None:
+            if not comparison_started and benchmark_close is not None:
+                comparison_started = True
+                item["aligned_portfolio_cumulative_return"] = 0.0
+                item["benchmark_cumulative_return"] = 0.0
+                item["excess_cumulative_return"] = 0.0
+            elif (
+                comparison_started
+                and item["portfolio_return"] is not None
+                and benchmark_return is not None
+            ):
+                aligned_portfolio_growth *= 1.0 + float(item["portfolio_return"])
+                aligned_benchmark_growth *= 1.0 + float(benchmark_return)
                 aligned_portfolio_returns.append(float(item["portfolio_return"]))
                 aligned_benchmark_returns.append(float(benchmark_return))
+                item["aligned_portfolio_cumulative_return"] = (
+                    aligned_portfolio_growth - 1.0
+                )
+                item["benchmark_cumulative_return"] = aligned_benchmark_growth - 1.0
+                item["excess_cumulative_return"] = (
+                    aligned_portfolio_growth - aligned_benchmark_growth
+                )
+            else:
+                item["aligned_portfolio_cumulative_return"] = None
+                item["benchmark_cumulative_return"] = None
+                item["excess_cumulative_return"] = None
 
         comparison = compute_benchmark_comparison(
             aligned_portfolio_returns,
