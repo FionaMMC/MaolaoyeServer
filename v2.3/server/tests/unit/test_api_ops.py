@@ -39,7 +39,9 @@ def test_dashboard_contains_interactive_equity_curve(client):
     html = response.text
     assert "PORTFOLIO EQUITY CURVE" in html
     assert "data-trajectory-mode=\"drawdown\"" in html
-    assert "BENCHMARK NOT INGESTED" in html
+    assert "data-trajectory-mode=\"exposure\"" in html
+    assert "id=\"trajectory-benchmark\"" in html
+    assert "BENCHMARK NOT INGESTED" not in html
     assert "renderCapitalTrajectory" in html
 
 
@@ -65,5 +67,6 @@ def test_live_snapshot_exposes_observed_metrics_and_coverage_gaps(client, settin
     assert data["controls"]["overnight_position_anomalies"] == 1
     assert data["positions"] == [{"symbol": "511260.SH", "quantity": 99_000.0}]
     assert {item["key"] for item in data["coverage_gaps"]} >= {
-        "broker_connection", "market_tick_age", "order_ack_latency", "marked_exposure",
+        "broker_connection", "market_tick_age", "order_ack_latency",
+        "intraday_marked_exposure",
     }

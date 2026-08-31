@@ -17,6 +17,7 @@ from app.auth import AuthContext, verify_api_key
 from app.dependencies import (
     get_blacklist_service,
     get_data_upload_service,
+    get_daily_risk_service,
     get_metrics_service,
     get_reconcile_service,
     get_session_factory,
@@ -35,6 +36,7 @@ from app.schemas.common import APIResponse
 from app.schemas.reconcile import QmtPositionSnapshot, ReconcileResult
 from app.services.blacklist import BlacklistService
 from app.services.data_upload import DataUploadService
+from app.services.daily_risk import DailyRiskSnapshotService
 from app.services.metrics import MetricsService, date_range_for_period
 from app.services.reconcile import (
     InstanceNotFound,
@@ -634,6 +636,29 @@ async def strategy_state(
 
 
 # ── 10. /admin/metrics/summary : 量化绩效指标 ─────────────────────────────
+@router.get(
+    "/metrics/daily-risk",
+    response_model=APIResponse[dict],
+    dependencies=[Depends(verify_api_key)],
+)
+async def metrics_daily_risk(
+    instance_id: str = "paper_v20h_v20h_v1_3",
+    period: str = Query("all", pattern=r"^(7d|30d|90d|180d|1y|ytd|all)$"),
+    benchmark_symbol: str = Query("000852.SH", pattern=r"^(000300\.SH|000852\.SH)$"),
+    daily_risk: DailyRiskSnapshotService = Depends(get_daily_risk_service),
+):
+    """每日 NAV、现金、暴露、价格覆盖率与对齐后的基准/超额收益。"""
+    return APIResponse[dict](
+        code=0,
+        message="ok",
+        data=daily_risk.query(
+            instance_id=instance_id,
+            period=period,
+            benchmark_symbol=benchmark_symbol,
+        ),
+    )
+
+
 @router.get(
     "/metrics/summary",
     response_model=APIResponse[dict],

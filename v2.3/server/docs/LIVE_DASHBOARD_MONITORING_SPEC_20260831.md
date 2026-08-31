@@ -42,7 +42,7 @@
 | QMT connection | 连接状态、最近成功查询、断线持续时间 | P0 缺口 |
 | Market data age | `receive_ts - exchange_ts` 的 p50/p95/p99、最后 tick 年龄 | P0 缺口；当前只有 EOD 分区日期 |
 | NAV / Day P&L | 盘中 raw mark-to-market；EOD 必须单独标识 | 当前只有 EOD |
-| Gross / net exposure | 按 raw mark price 盯市后的总/净暴露 | P0 缺口 |
+| Gross / net exposure | 按持仓与价格盯市后的总/净暴露 | EOD 已覆盖；盘中仍为 P1 缺口 |
 | Current drawdown | 当前 NAV 相对高水位 | 已有 EOD 口径 |
 | Critical alerts | 账实不一致、硬限额失败、断线、数据陈旧、重复/孤儿成交 | 部分已有 |
 
@@ -114,18 +114,25 @@ P1 阈值应先用至少 3–6 次真实调仓建立分布，再固定为业务�
 
 ## 5. 当前交付与下一阶段
 
-本次已实现 `/admin/ops/live-snapshot` 和新的 `Live Command Center`：
+当前已实现 `/admin/ops/live-snapshot`、`/admin/metrics/daily-risk` 和新的
+`Live Command Center`：
 
 - EOD NAV、日 P&L、当前回撤、20D 波动、历史 VaR 95、Expected Shortfall 95；
 - 30D 订单状态、fill/reject rate、提交/待成交/成交名义、执行 shortfall、ETF premium、费用；
 - 价格保护利用率、僵尸 PENDING、账本分叉、快照完整性、隔夜仓位异常；
-- 持仓数量、最近订单生命周期、告警和行情 EOD 新鲜度；
-- 明确展示 6 项尚未接入的 P0/P1 遥测缺口。
+- CSI 1000 / CSI 300 基准切换、资金流调整收益、累计超额、beta、tracking error、
+  information ratio；
+- 每日 long/short/gross/net 市值与 exposure、cash ratio、价格覆盖率、陈旧/缺失价格数；
+- 按绝对盯市市值排序的持仓和 NAV 权重、最近订单生命周期、告警和行情 EOD 新鲜度；
+- 日终持仓优先使用当日收盘价，无当日价格时回退到最近历史收盘并显式统计 `stale`；
+- 纸面账本在无 journal 时标记 `assumed_zero_paper`，live 账本缺 journal 时标记
+  `missing_live`，不会把未知现金流伪装为 0；
+- 明确展示尚未接入的 P0/P1 盘中遥测缺口。
 
 下一阶段按顺序实施：
 
 1. MiniQMT 心跳与 `submit_ts / ack_ts / first_fill_ts / final_ts`；
-2. raw mark price 与持仓 market value，补齐盘中 NAV、P&L、gross/net exposure；
+2. 盘中持仓与 raw mark price，补齐 intraday NAV、P&L、gross/net exposure；
 3. tick exchange/receive timestamp，补齐 feed age 和端到端延迟直方图；
 4. 申万行业、ADV20、spread、IOPV、participation；
 5. 固化三层权重、MRC/RC、压力场景与协方差稳定性到 `risk_snapshot`；

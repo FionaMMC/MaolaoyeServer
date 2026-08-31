@@ -55,6 +55,7 @@ class StrategyPipeline:
         freshness_probe_category: str = "indexes",
         freshness_probe_symbol: str = "000852.SH",
         live_order_generation_enabled: bool = False,
+        daily_risk=None,
     ):
         self.registry = registry
         self.store = parquet_store
@@ -71,6 +72,7 @@ class StrategyPipeline:
         self.freshness_probe_category = freshness_probe_category
         self.freshness_probe_symbol = freshness_probe_symbol
         self.live_order_generation_enabled = live_order_generation_enabled
+        self.daily_risk = daily_risk
 
     def _market_staleness_days(self, trade_date: int) -> int | None:
         """行情比 trade_date 旧几天。护栏关（None）或探针缺失（无法评估）时返回 None。"""
@@ -407,6 +409,19 @@ class StrategyPipeline:
         #     → 后面 16:00 trigger 时 UPSERT 覆盖为正确版本
         today_str = datetime.now().strftime("%Y%m%d")
         self.perf.snapshot_all(int(today_str), execution_domain=execution_domain)
+        daily_risk_summary = None
+        if self.daily_risk is not None:
+            try:
+                daily_risk_summary = self.daily_risk.upsert_for_date(
+                    today_str, execution_domain=execution_domain,
+                )
+            except Exception:
+                # Monitoring is derived, best-effort state.  It must never turn a
+                # successfully persisted strategy/order batch into a failed run.
+                logger.exception(
+                    "daily risk snapshot failed date=%s domain=%s",
+                    today_str, execution_domain,
+                )
 
         summary = {
             "trade_date": trade_date,
@@ -422,6 +437,8 @@ class StrategyPipeline:
         if fetched and force:
             # 审计标记：这次重算换掉了已被客户端拉走的批次
             summary["force_regen_after_fetch"] = len(fetched)
+        if daily_risk_summary is not None:
+            summary["daily_risk_snapshots"] = daily_risk_summary["written"]
         logger.info("pipeline_done %s", summary)
         return summary
 
