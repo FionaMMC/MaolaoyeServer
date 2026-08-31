@@ -204,7 +204,11 @@ class HydraRelayService:
                 select(HydraTarget.target_id).where(
                     HydraTarget.execution_domain == req.execution_domain,
                     HydraTarget.account_alias == req.account_alias,
-                    func.substr(HydraTarget.decision_date, 1, 6) == req.decision_date[:6],
+                    # A January 3rd run can legitimately use the prior
+                    # December's last trading-day data.  The business cycle is
+                    # therefore the intended execution month, never the
+                    # data/decision month.
+                    func.substr(HydraTarget.execution_date, 1, 6) == req.execution_date[:6],
                     HydraTarget.status.in_(("STAGED", "ACTIVE", "COMPLETED")),
                 ).limit(1)
             ).first()
