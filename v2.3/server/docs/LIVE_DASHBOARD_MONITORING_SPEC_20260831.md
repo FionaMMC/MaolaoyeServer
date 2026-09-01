@@ -119,6 +119,8 @@ P1 阈值应先用至少 3–6 次真实调仓建立分布，再固定为业务�
 
 - EOD NAV、日 P&L、当前回撤、20D 波动、历史 VaR 95、Expected Shortfall 95；
 - 30D 订单状态、fill/reject rate、提交/待成交/成交名义、执行 shortfall、ETF premium、费用；
+- 执行分析按实例过滤，通过 `order_signal_map` 追溯策略信号，逐单展示 raw 策略参考价、
+  委托限价、实际成交 VWAP、方向调整价差 bp 与 implementation cost；
 - 价格保护利用率、僵尸 PENDING、账本分叉、快照完整性、隔夜仓位异常；
 - CSI 1000 / CSI 300 基准切换、资金流调整收益、累计超额、beta、tracking error、
   information ratio；

@@ -1,6 +1,8 @@
 """Admin 只读查询端点测试：/admin/orders /admin/nav-history /admin/instance-state 等"""
 from datetime import datetime, timezone
 
+import pytest
+
 _AUTH = {"Authorization": "Bearer TEST_KEY"}
 
 
@@ -11,7 +13,7 @@ def _now():
 def _seed_orders(client, settings_for_test):
     """往 test db 注入几条 orders + signals + trades。"""
     from app.db import init_db, make_engine, make_session_factory
-    from app.models import Order, RawSignal, Trade
+    from app.models import Order, OrderSignalMap, RawSignal, Trade
 
     engine = make_engine(settings_for_test.db_url)
     init_db(engine)
@@ -36,6 +38,7 @@ def _seed_orders(client, settings_for_test):
                         reference_price=10.0, price_offset=0.005, limit_price=10.05,
                         valid_date="20260508", signal_time=_now(),
                         precheck_status="PASS", precheck_reason=None))
+        s.add(OrderSignalMap(order_id="o1", signal_id="s1", signal_quantity=100))
         # trades
         s.add(Trade(order_id="o1", filled_quantity=100, filled_price=9.95,
                     filled_time="2026-05-08T09:25:00", status="FILLED",
@@ -92,6 +95,30 @@ def test_admin_orders_summary(client, settings_for_test):
     assert "20260508" in by_date
     assert by_date["20260508"]["paper_v20h"]["BUY"]["FILLED"] == 2
     assert by_date["20260508"]["real_A"]["BUY"]["REJECTED"] == 1
+
+
+def test_execution_analysis_and_order_matrix_are_instance_scoped(
+    client, settings_for_test,
+):
+    _seed_orders(client, settings_for_test)
+    matrix = client.get(
+        "/admin/orders-summary?date=20260508&instance_id=paper_v20h_v20h_v1_3",
+        headers=_AUTH,
+    ).json()["data"]
+    assert matrix["instance_id"] == "paper_v20h_v20h_v1_3"
+    assert matrix["by_date"]["20260508"]["paper_v20h"]["BUY"]["FILLED"] == 1
+    assert "real_A" not in matrix["by_date"]["20260508"]
+
+    execution = client.get(
+        "/admin/metrics/execution-analysis?instance_id=paper_v20h_v20h_v1_3"
+        "&period=all",
+        headers=_AUTH,
+    ).json()["data"]
+    assert execution["summary"]["n_orders"] == 1
+    assert execution["summary"]["weighted_strategy_to_fill_bps"] == pytest.approx(-50.0)
+    assert execution["summary"]["implementation_shortfall"] == pytest.approx(-5.0)
+    assert execution["items"][0]["strategy_reference_price"] == 10.0
+    assert execution["items"][0]["fill_vwap"] == 9.95
 
 
 def test_shadow_summary_is_read_only_and_marks_no_order_boundary(client, settings_for_test):

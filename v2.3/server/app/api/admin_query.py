@@ -26,6 +26,7 @@ from app.dependencies import (
 from app.models import (
     InstanceState,
     Order,
+    OrderSignalMap,
     PerfSnapshot,
     RawSignal,
     ShadowInstanceState,
@@ -208,6 +209,7 @@ async def admin_orders(
 async def orders_summary(
     date: str | None = Query(None, min_length=8, max_length=8, pattern=r"^\d{8}$"),
     days: int = Query(7, ge=1, le=365),
+    instance_id: str | None = None,
     sf=Depends(get_session_factory),
 ):
     """orders 聚合视图。
@@ -235,6 +237,14 @@ async def orders_summary(
             .group_by(Order.valid_date, Order.account_group, Order.direction, Order.status)
             .order_by(Order.valid_date, Order.account_group, Order.direction, Order.status)
         )
+        if instance_id:
+            mapped_order_ids = (
+                select(OrderSignalMap.order_id)
+                .join(RawSignal, RawSignal.signal_id == OrderSignalMap.signal_id)
+                .where(RawSignal.instance_id == instance_id)
+                .distinct()
+            )
+            stmt = stmt.where(Order.order_id.in_(mapped_order_ids))
         rows = session.execute(stmt).all()
 
     summary: dict = {}
@@ -242,7 +252,12 @@ async def orders_summary(
         summary.setdefault(vd, {}).setdefault(ag, {}).setdefault(d, {})[st] = n
     return APIResponse[dict](
         code=0, message="ok",
-        data={"cutoff": cutoff, "end_date": end_date, "by_date": summary},
+        data={
+            "instance_id": instance_id,
+            "cutoff": cutoff,
+            "end_date": end_date,
+            "by_date": summary,
+        },
     )
 
 
@@ -747,6 +762,29 @@ async def metrics_trade_analytics(
     return APIResponse[dict](
         code=0, message="ok",
         data={"period": period, **data},
+    )
+
+
+@router.get(
+    "/metrics/execution-analysis",
+    response_model=APIResponse[dict],
+    dependencies=[Depends(verify_api_key)],
+)
+async def metrics_execution_analysis(
+    instance_id: str,
+    period: str = Query("30d", pattern=r"^(7d|30d|90d|180d|1y|ytd|all)$"),
+    limit: int = Query(200, ge=1, le=1000),
+    metrics: MetricsService = Depends(get_metrics_service),
+):
+    """实例级策略参考价 → 实际成交 VWAP、方向调整滑点与金额损耗。"""
+    return APIResponse[dict](
+        code=0,
+        message="ok",
+        data=metrics.execution_analysis(
+            instance_id=instance_id,
+            cutoff=date_range_for_period(period),
+            limit=limit,
+        ),
     )
 
 
