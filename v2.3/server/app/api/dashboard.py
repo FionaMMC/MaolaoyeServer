@@ -357,6 +357,13 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     .alert-meta { margin-top: 4px; color: var(--muted); font: 8px var(--mono); }
     .live-note { margin-top: 13px; padding-top: 10px; border-top: 1px solid rgba(135,157,184,.13); color: var(--muted); font: 8px/1.45 var(--mono); }
     #live-orders { overflow-x: auto; }
+    #execution-price-table { overflow-x: auto; }
+    #execution-price-table table { min-width: 980px; }
+    .execution-method {
+      margin: -3px 0 12px; padding: 8px 10px; border: 1px solid rgba(81,200,242,.13);
+      border-radius: 6px; color: #718398; background: rgba(81,200,242,.025);
+      font: 8px/1.5 var(--mono);
+    }
     .modal-box { border-radius: 13px; background: #0d131b; border-color: #293847; box-shadow: 0 30px 100px rgba(0,0,0,.55); }
     .modal-box input { border-radius: 7px; background: #080d13; border-color: #2b3a49; }
     .modal-box button { border-radius: 7px; background: var(--accent); color: #061017; font-weight: 750; }
@@ -628,7 +635,12 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     <div style="height:12px"></div>
     <div class="grid">
       <div class="card wide">
-        <h2>Orders 状态矩阵 <span class="hint">按当前期间</span></h2>
+        <h2>STRATEGY → FILL PRICE ATTRIBUTION <span class="hint" id="execution-analysis-scope">当前实例</span></h2>
+        <div class="execution-method">RAW STRATEGY REFERENCE → ACTUAL FILL VWAP · 方向调整后正值表示不利成交，负值表示价格改善</div>
+        <div id="execution-price-table"><div class="loading">读取实例成交归因…</div></div>
+      </div>
+      <div class="card wide">
+        <h2>Orders 状态矩阵 <span class="hint">当前实例 · 当前期间</span></h2>
         <div id="orders-matrix"><div class="loading">Loading...</div></div>
       </div>
     </div>
@@ -708,6 +720,11 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     function staleClass(lagDays){ if(lagDays==null) return ''; return lagDays>5?'crit':(lagDays>1?'stale':''); }
     function esc(x){ return String(x ?? '—').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
     function fmtLiveBps(x){ return x==null?'—':Number(x).toFixed(1)+' bp'; }
+    function fmtSignedBps(x){
+      if(x==null) return '—';
+      const value=Number(x);
+      return (value>0?'+':'')+value.toFixed(1)+' bp';
+    }
     function ageText(seconds){
       if(seconds==null) return '—';
       if(seconds<60) return Math.round(seconds)+'s';
@@ -1718,25 +1735,65 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
             </p></div>`;
           document.getElementById('orders-matrix').innerHTML =
             '<p class="loading">无订单：shadow 边界已启用</p>';
+          document.getElementById('execution-price-table').innerHTML =
+            '<div class="empty-state">Shadow 实例没有真实订单或成交价格</div>';
+          document.getElementById('execution-analysis-scope').textContent = getInstanceId();
           return;
         }
-        const [trade, ordSummary] = await Promise.all([
-          api('/admin/metrics/trade-analytics?period=' + period),
-          api('/admin/orders-summary?days=' + ({7:7, '7d':7, '30d':30, '90d':90, '180d':180, ytd:365, '1y':365, all:365}[period] || 30)),
+        const days = ({'7d':7, '30d':30, '90d':90, '180d':180, ytd:365, '1y':365, all:365}[period] || 30);
+        const [execution, ordSummary] = await Promise.all([
+          api('/admin/metrics/execution-analysis?' + selectedQuery({period, limit:200})),
+          api('/admin/orders-summary?' + selectedQuery({days})),
         ]);
+        const trade = execution.summary || {};
 
         const fillBadge = trade.fill_rate === null ? 'muted' :
                          (trade.fill_rate > 0.9 ? 'pos' : (trade.fill_rate > 0.7 ? 'warn' : 'neg'));
+        const shortfallClass = trade.weighted_strategy_to_fill_bps == null ? 'warn' :
+          (trade.weighted_strategy_to_fill_bps > 0 ? 'neg' : (trade.weighted_strategy_to_fill_bps < 0 ? 'pos' : ''));
+        const costClass = trade.implementation_shortfall > 0 ? 'neg' :
+          (trade.implementation_shortfall < 0 ? 'pos' : '');
         document.getElementById('kpis-trades').innerHTML = `
           ${kpiCard('订单总数', trade.n_orders, 'muted', `期间 ${period}`)}
           ${kpiCard('Fill Rate', fmt(trade.fill_rate, {pct:true}), fillBadge,
-                   'FILLED+PARTIAL / 总')}
+                   '有实际成交订单 / 总订单')}
           ${kpiCard('成交金额', fmt(trade.total_filled_amount, {curMM:true}), 'muted',
-                   `${trade.n_trades} 笔成交`)}
-          ${kpiCard('对账分叉', trade.bookkeeping_divergence_count,
-                   trade.bookkeeping_divergence_count === 0 ? 'pos' : 'neg',
-                   '需要人工对账')}
+                   `${trade.filled_orders||0} 个成交订单`)}
+          ${kpiCard('Strategy → Fill', fmtSignedBps(trade.weighted_strategy_to_fill_bps), shortfallClass,
+                   '按实例成交金额加权 · 正值不利')}
+          ${kpiCard('Implementation Cost', fmt(trade.implementation_shortfall,{cur:true}), costClass,
+                   '相对策略参考价 · 正值为损耗')}
+          ${kpiCard('Price Coverage', fmt(trade.strategy_price_coverage,{pct:true}), trade.strategy_price_coverage===1?'pos':'warn',
+                   `arrival ${fmt(trade.arrival_price_coverage,{pct:true})}`)}
         `;
+        document.getElementById('execution-analysis-scope').textContent =
+          `${execution.instance_id} · ${period} · ${execution.count} FILLED`;
+
+        const priceRows = execution.items || [];
+        document.getElementById('execution-price-table').innerHTML = priceRows.length ? `
+          <table><tr><th>Date / Fill Time</th><th>Symbol</th><th>Side</th>
+            <th class="num">Strategy Px</th><th class="num">Limit Px</th>
+            <th class="num">Actual Fill</th><th class="num">Δ Price</th>
+            <th class="num">Strategy → Fill</th><th class="num">Alloc. Qty</th>
+            <th class="num">Cost</th></tr>
+          ${priceRows.map(item => {
+            const adverseClass = item.strategy_to_fill_bps > 0 ? 'neg' :
+              (item.strategy_to_fill_bps < 0 ? 'pos' : '');
+            const fillQty = item.allocated_filled_quantity == null ? '—' :
+              Number(item.allocated_filled_quantity).toLocaleString('en-US',{maximumFractionDigits:1});
+            return `<tr><td>${esc(item.valid_date)}<br><span style="color:#617286;font-size:8px">${esc(item.filled_time||'—')}</span></td>
+              <td>${esc(item.symbol)}</td><td class="${item.direction==='BUY'?'pos':'neg'}">${esc(item.direction)}</td>
+              <td class="num">${fmt(item.strategy_reference_price,{dec:3})}</td>
+              <td class="num">${fmt(item.limit_price,{dec:3})}</td>
+              <td class="num">${fmt(item.fill_vwap,{dec:3})}</td>
+              <td class="num ${adverseClass}">${fmt(item.raw_price_difference,{dec:3,sign:true})}</td>
+              <td class="num ${adverseClass}">${fmtSignedBps(item.strategy_to_fill_bps)}</td>
+              <td class="num">${fillQty}</td>
+              <td class="num ${adverseClass}">${fmt(item.implementation_shortfall,{cur:true})}</td></tr>`;
+          }).join('')}</table>
+          <div class="live-note">STRATEGY PX = raw_signals.reference_price · ACTUAL FILL = execution_quality.fill_vwap，历史数据回退 trades.filled_price<br>
+            BUY 成交价高于策略价、SELL 成交价低于策略价均记为正 bp / 正成本（不利成交）。</div>`
+          : '<div class="empty-state">当前实例和期间没有可归因的实际成交</div>';
 
         // Orders matrix
         const dates = Object.keys(ordSummary.by_date).sort();
@@ -1765,6 +1822,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         document.getElementById('orders-matrix').innerHTML = html;
       } catch (e) {
         document.getElementById('kpis-trades').innerHTML = `<div class="error">${e.message}</div>`;
+        document.getElementById('execution-price-table').innerHTML = `<div class="error">${esc(e.message)}</div>`;
       }
     }
 

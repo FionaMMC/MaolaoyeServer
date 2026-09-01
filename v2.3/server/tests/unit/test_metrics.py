@@ -1,12 +1,18 @@
 """MetricsService + 纯函数 测试"""
-import math
 from datetime import datetime
 from pathlib import Path
 
 import pytest
 
 from app.db import init_db, make_engine, make_session_factory
-from app.models import InstanceState, Order, PerfSnapshot, ShadowNavSnapshot, Trade
+from app.models import (
+    Order,
+    OrderSignalMap,
+    PerfSnapshot,
+    RawSignal,
+    ShadowNavSnapshot,
+    Trade,
+)
 from app.services.metrics import (
     MetricsService,
     compute_benchmark_comparison,
@@ -276,6 +282,54 @@ def test_service_trade_analytics(tmp_path: Path):
     assert out["n_trades"] == 2
     # 100*10 + 150*15 = 1000 + 2250 = 3250
     assert out["total_filled_amount"] == 3250.0
+
+
+def test_execution_analysis_filters_instance_and_allocates_aggregate_fill(tmp_path: Path):
+    sf = _factory(tmp_path)
+    now = datetime.now().isoformat()
+    with sf() as session:
+        session.add(Order(
+            order_id="shared", account_group="ag", symbol="600519.SH",
+            direction="BUY", quantity=300, limit_price=10.3,
+            valid_date="20260102", status="FILLED", created_at=now,
+        ))
+        session.add_all([
+            RawSignal(
+                signal_id="signal-a", instance_id="instance-a", symbol="600519.SH",
+                direction="BUY", quantity=100, reference_price=10.0,
+                price_offset=0.01, limit_price=10.1, valid_date="20260102",
+                signal_time=now, precheck_status="PASS", precheck_reason=None,
+            ),
+            RawSignal(
+                signal_id="signal-b", instance_id="instance-b", symbol="600519.SH",
+                direction="BUY", quantity=200, reference_price=10.1,
+                price_offset=0.01, limit_price=10.201, valid_date="20260102",
+                signal_time=now, precheck_status="PASS", precheck_reason=None,
+            ),
+            OrderSignalMap(
+                order_id="shared", signal_id="signal-a", signal_quantity=100,
+            ),
+            OrderSignalMap(
+                order_id="shared", signal_id="signal-b", signal_quantity=200,
+            ),
+            Trade(
+                order_id="shared", filled_quantity=300, filled_price=10.2,
+                filled_time=now, status="FILLED", received_at=now,
+            ),
+        ])
+        session.commit()
+
+    result = MetricsService(sf).execution_analysis("instance-a")
+    assert result["summary"]["n_orders"] == 1
+    assert result["summary"]["filled_orders"] == 1
+    assert result["summary"]["total_filled_quantity"] == pytest.approx(100.0)
+    assert result["summary"]["total_filled_amount"] == pytest.approx(1_020.0)
+    assert result["summary"]["implementation_shortfall"] == pytest.approx(20.0)
+    assert result["summary"]["weighted_strategy_to_fill_bps"] == pytest.approx(200.0)
+    item = result["items"][0]
+    assert item["strategy_reference_price"] == pytest.approx(10.0)
+    assert item["fill_vwap"] == pytest.approx(10.2)
+    assert item["aggregate_allocation_ratio"] == pytest.approx(1 / 3)
 
 
 def test_service_handles_no_data_gracefully(tmp_path: Path):

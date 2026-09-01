@@ -14,13 +14,21 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
-from typing import Iterable, Sequence
+from typing import Sequence
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import func, select
 
-from app.models import Order, PerfSnapshot, ShadowNavSnapshot, Trade
+from app.models import (
+    ExecutionQualityObservation,
+    Order,
+    OrderSignalMap,
+    PerfSnapshot,
+    RawSignal,
+    ShadowNavSnapshot,
+    Trade,
+)
 
 TRADING_DAYS = 252
 RISK_FREE_RATE = 0.035  # 年化无风险，和 V20H bond_yield 一致
@@ -383,7 +391,7 @@ class MetricsService:
         """date_str 'YYYYMMDD' → bucket key（YYYY-MM / YYYY-Www / YYYY）。"""
         if len(date_str) != 8:
             return date_str
-        y, m, d = date_str[:4], date_str[4:6], date_str[6:]
+        y, m = date_str[:4], date_str[4:6]
         if freq == "yearly":
             return y
         if freq == "monthly":
@@ -450,4 +458,238 @@ class MetricsService:
             "total_filled_amount": sum_filled_amt,
             "total_filled_quantity": sum_filled_qty,
             "bookkeeping_divergence_count": bk_div,
+        }
+
+    def execution_analysis(
+        self,
+        instance_id: str,
+        cutoff: str = "00000000",
+        limit: int = 200,
+    ) -> dict:
+        """Instance-scoped strategy-reference to actual-fill attribution.
+
+        Orders are account-group aggregates, so instance ownership must be
+        resolved through ``order_signal_map``.  If an aggregate ever contains
+        multiple instances, fill quantity, notional, fees and implementation
+        cost are allocated by the mapped signal-quantity share.  Prices and bp
+        slippage remain the common execution price for that aggregate order.
+        """
+        with self.session_factory() as session:
+            mapped_rows = session.execute(
+                select(
+                    OrderSignalMap.order_id,
+                    OrderSignalMap.signal_quantity,
+                    RawSignal.reference_price,
+                )
+                .join(RawSignal, RawSignal.signal_id == OrderSignalMap.signal_id)
+                .where(RawSignal.instance_id == instance_id)
+                .where(RawSignal.valid_date >= cutoff)
+            ).all()
+
+            instance_refs: dict[str, dict[str, float | int]] = {}
+            for order_id, quantity, reference_price in mapped_rows:
+                item = instance_refs.setdefault(
+                    order_id,
+                    {"quantity": 0, "weighted_reference": 0.0, "signals": 0},
+                )
+                item["quantity"] += int(quantity)
+                item["weighted_reference"] += float(quantity) * float(reference_price)
+                item["signals"] += 1
+
+            order_ids = list(instance_refs)
+            orders: dict[str, Order] = {}
+            total_mapped_quantity: dict[str, int] = {}
+            latest_fills: dict[str, Trade] = {}
+            quality: dict[str, ExecutionQualityObservation] = {}
+            batch_size = 500
+            for offset in range(0, len(order_ids), batch_size):
+                chunk = order_ids[offset:offset + batch_size]
+                for order in session.execute(
+                    select(Order).where(Order.order_id.in_(chunk))
+                ).scalars():
+                    orders[order.order_id] = order
+                for order_id, quantity in session.execute(
+                    select(
+                        OrderSignalMap.order_id,
+                        func.sum(OrderSignalMap.signal_quantity),
+                    )
+                    .where(OrderSignalMap.order_id.in_(chunk))
+                    .group_by(OrderSignalMap.order_id)
+                ):
+                    total_mapped_quantity[order_id] = int(quantity)
+                for trade in session.execute(
+                    select(Trade)
+                    .where(Trade.order_id.in_(chunk))
+                    .where(Trade.filled_quantity > 0)
+                    .order_by(Trade.id)
+                ).scalars():
+                    latest_fills[trade.order_id] = trade
+                for observation in session.execute(
+                    select(ExecutionQualityObservation).where(
+                        ExecutionQualityObservation.order_id.in_(chunk)
+                    )
+                ).scalars():
+                    quality[observation.order_id] = observation
+
+        status_count: Counter[str] = Counter()
+        direction_count: Counter[str] = Counter()
+        details = []
+        for order_id, ref in instance_refs.items():
+            order = orders.get(order_id)
+            if order is None or order.valid_date < cutoff:
+                continue
+            status_count[order.status] += 1
+            direction_count[order.direction] += 1
+
+            observation = quality.get(order_id)
+            trade = latest_fills.get(order_id)
+            filled_quantity = 0.0
+            fill_price = None
+            used_quality_fill = False
+            if observation and observation.filled_quantity > 0 and observation.fill_vwap:
+                filled_quantity = float(observation.filled_quantity)
+                fill_price = float(observation.fill_vwap)
+                used_quality_fill = True
+            elif trade is not None:
+                filled_quantity = float(trade.filled_quantity)
+                fill_price = float(trade.filled_price)
+            if filled_quantity <= 0 or fill_price is None or fill_price <= 0:
+                continue
+
+            instance_quantity = int(ref["quantity"])
+            mapped_quantity = total_mapped_quantity.get(order_id) or order.quantity
+            allocation_ratio = instance_quantity / mapped_quantity if mapped_quantity else 0.0
+            allocated_fill_quantity = filled_quantity * allocation_ratio
+            strategy_price = (
+                float(ref["weighted_reference"]) / instance_quantity
+                if instance_quantity else None
+            )
+            sign = 1.0 if order.direction == "BUY" else -1.0
+            raw_price_difference = None
+            strategy_to_fill_bps = None
+            implementation_shortfall = None
+            if strategy_price not in (None, 0):
+                raw_price_difference = fill_price - strategy_price
+                strategy_to_fill_bps = sign * (
+                    fill_price / strategy_price - 1.0
+                ) * 10_000
+                implementation_shortfall = (
+                    sign * raw_price_difference * allocated_fill_quantity
+                )
+                if abs(strategy_to_fill_bps) < 1e-6:
+                    raw_price_difference = 0.0
+                    strategy_to_fill_bps = 0.0
+                    implementation_shortfall = 0.0
+            arrival_price = (
+                float(observation.arrival_reference_price)
+                if observation and observation.arrival_reference_price is not None
+                else None
+            )
+            strategy_to_arrival_bps = None
+            arrival_to_fill_bps = None
+            if strategy_price not in (None, 0) and arrival_price is not None:
+                strategy_to_arrival_bps = sign * (
+                    arrival_price / strategy_price - 1.0
+                ) * 10_000
+            if arrival_price not in (None, 0):
+                arrival_to_fill_bps = sign * (
+                    fill_price / arrival_price - 1.0
+                ) * 10_000
+
+            details.append({
+                "order_id": order_id,
+                "valid_date": order.valid_date,
+                "symbol": order.symbol,
+                "direction": order.direction,
+                "status": order.status,
+                "strategy_reference_price": strategy_price,
+                "strategy_price_source": "raw_signals.reference_price",
+                "arrival_reference_price": arrival_price,
+                "limit_price": float(order.limit_price),
+                "fill_vwap": fill_price,
+                "fill_source": (
+                    "execution_quality.fill_vwap"
+                    if used_quality_fill else "trades.filled_price"
+                ),
+                "raw_price_difference": raw_price_difference,
+                "strategy_to_arrival_bps": strategy_to_arrival_bps,
+                "arrival_to_fill_bps": arrival_to_fill_bps,
+                "strategy_to_fill_bps": strategy_to_fill_bps,
+                "order_quantity": order.quantity,
+                "instance_signal_quantity": instance_quantity,
+                "aggregate_allocation_ratio": allocation_ratio,
+                "filled_quantity": filled_quantity,
+                "allocated_filled_quantity": allocated_fill_quantity,
+                "allocated_filled_notional": allocated_fill_quantity * fill_price,
+                "implementation_shortfall": implementation_shortfall,
+                "estimated_fees": (
+                    float(observation.estimated_fees) * allocation_ratio
+                    if observation else None
+                ),
+                "filled_time": trade.filled_time if trade else None,
+            })
+
+        details.sort(
+            key=lambda item: (item["valid_date"], item["filled_time"] or "", item["order_id"]),
+            reverse=True,
+        )
+        n_orders = sum(status_count.values())
+        price_observations = [
+            item for item in details if item["strategy_to_fill_bps"] is not None
+        ]
+        weighted_notional = sum(
+            float(item["allocated_filled_notional"]) for item in price_observations
+        )
+        weighted_shortfall_bps = (
+            sum(
+                float(item["strategy_to_fill_bps"])
+                * float(item["allocated_filled_notional"])
+                for item in price_observations
+            ) / weighted_notional
+            if weighted_notional else None
+        )
+        return {
+            "instance_id": instance_id,
+            "cutoff": cutoff,
+            "summary": {
+                "n_orders": n_orders,
+                "by_status": dict(status_count),
+                "by_direction": dict(direction_count),
+                "fill_rate": len(details) / n_orders if n_orders else None,
+                "filled_orders": len(details),
+                "total_filled_quantity": sum(
+                    float(item["allocated_filled_quantity"]) for item in details
+                ),
+                "total_filled_amount": sum(
+                    float(item["allocated_filled_notional"]) for item in details
+                ),
+                "implementation_shortfall": sum(
+                    float(item["implementation_shortfall"] or 0.0) for item in details
+                ),
+                "weighted_strategy_to_fill_bps": weighted_shortfall_bps,
+                "strategy_price_coverage": (
+                    len(price_observations) / len(details) if details else None
+                ),
+                "arrival_price_coverage": (
+                    sum(item["arrival_reference_price"] is not None for item in details)
+                    / len(details) if details else None
+                ),
+                "adverse_fill_count": sum(
+                    float(item["strategy_to_fill_bps"] or 0.0) > 0
+                    for item in details
+                ),
+                "favorable_fill_count": sum(
+                    float(item["strategy_to_fill_bps"] or 0.0) < 0
+                    for item in details
+                ),
+            },
+            "count": len(details),
+            "returned": min(len(details), limit),
+            "items": details[:limit],
+            "convention": {
+                "positive_bps": "adverse",
+                "negative_bps": "favorable",
+                "buy": "fill above strategy reference is adverse",
+                "sell": "fill below strategy reference is adverse",
+            },
         }

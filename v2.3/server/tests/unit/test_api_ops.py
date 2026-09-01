@@ -43,6 +43,8 @@ def test_dashboard_contains_interactive_equity_curve(client):
     assert "id=\"trajectory-benchmark\"" in html
     assert "BENCHMARK NOT INGESTED" not in html
     assert "renderCapitalTrajectory" in html
+    assert "STRATEGY → FILL PRICE ATTRIBUTION" in html
+    assert "/admin/metrics/execution-analysis?" in html
 
 
 def test_ops_endpoints_authed(client, settings_for_test):
