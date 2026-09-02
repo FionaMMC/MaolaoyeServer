@@ -53,3 +53,18 @@ def test_initialization_is_idempotent_but_never_overwrites(tmp_path):
     with pytest.raises(APIError) as captured:
         service.initialize(_request(qmt_cash=699_999.0))
     assert captured.value.http_status == 409
+
+
+def test_initialization_records_external_positions_but_does_not_assign_them_to_hydra(tmp_path):
+    service, sf = _service(tmp_path)
+    result = service.initialize(_request(qmt_positions={
+        "510300.SH": 100,
+        "600000.SH": 200,
+    }))
+    assert result.positions == {"510300.SH": 100}
+    assert result.external_position_count == 1
+    with sf() as session:
+        state = session.get(InstanceState, "live_hydra")
+        assert state.virtual_positions == {"510300.SH": 100}
+        assert state.strategy_state["external_positions_snapshot"] == {"600000.SH": 200}
+        assert len(state.strategy_state["external_positions_sha256"]) == 64

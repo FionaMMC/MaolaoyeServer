@@ -1,4 +1,8 @@
-"""专用 QMT 账户首次只读快照导入。"""
+"""QMT 账户首次只读快照导入。
+
+一个物理账户可以保留 Hydra 白名单外的人工/其他策略持仓。它们是外部
+持仓：初始化时必须被完整上报和审计，但绝不能写入 Hydra 台账。
+"""
 from __future__ import annotations
 
 import math
@@ -33,8 +37,6 @@ class AccountInitializationRequest(BaseModel):
             raise ValueError("qmt_cash 不能大于 qmt_total_asset")
         if len(self.owned_symbols) != len(set(self.owned_symbols)):
             raise ValueError("owned_symbols 重复")
-        if set(self.qmt_positions) - set(self.owned_symbols):
-            raise ValueError("QMT 持仓超出 owned_symbols")
         if any(
             not isinstance(qty, int) or isinstance(qty, bool) or qty < 0
             for qty in self.qmt_positions.values()
@@ -50,4 +52,5 @@ class AccountInitializationResponseData(BaseModel):
     virtual_cash: float
     positions: dict[str, int]
     evidence_sha256: str
+    external_position_count: int = 0
     idempotent_replay: bool
