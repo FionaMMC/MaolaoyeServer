@@ -40,7 +40,8 @@ class LiveStateStore:
                     submit_status TEXT NOT NULL,
                     submitted_at TEXT NOT NULL,
                     detail TEXT,
-                    execution_json TEXT
+                    execution_json TEXT,
+                    order_remark TEXT
                 );
                 CREATE TABLE IF NOT EXISTS settlement_pushes (
                     trade_date TEXT NOT NULL,
@@ -59,6 +60,8 @@ class LiveStateStore:
             }
             if "execution_json" not in columns:
                 conn.execute("ALTER TABLE submissions ADD COLUMN execution_json TEXT")
+            if "order_remark" not in columns:
+                conn.execute("ALTER TABLE submissions ADD COLUMN order_remark TEXT")
 
     def save_batch(self, batch: ValidatedBatch) -> bool:
         payload = json.dumps(batch.as_payload(), sort_keys=True, separators=(",", ":"))
@@ -114,25 +117,114 @@ class LiveStateStore:
             conn.commit()
         return True
 
-    def record_submission(
-        self, order_id: str, batch_sha256: str, local_order_id: str | None,
-        status: str, detail: str | None = None, execution_meta: dict | None = None,
-    ) -> None:
+    def risk_check(self, batch_sha256: str) -> dict | None:
         with self._connect() as conn:
+            row = conn.execute(
+                "SELECT payload_json FROM risk_checks WHERE batch_sha256 = ?",
+                (batch_sha256,),
+            ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def prepare_submission(
+        self, order_id: str, batch_sha256: str, order_remark: str,
+    ) -> dict:
+        """Durably record intent before any broker call.
+
+        PREPARED proves that QMT has not been called by this state machine yet.
+        The later SUBMITTING_UNKNOWN state deliberately means the opposite: a
+        crash may have happened after broker acceptance and automatic replay is
+        forbidden until the deterministic remark is found at QMT.
+        """
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("BEGIN IMMEDIATE")
             existing = conn.execute(
-                "SELECT local_order_id, submit_status FROM submissions WHERE order_id = ?",
+                "SELECT * FROM submissions WHERE order_id = ?",
                 (order_id,),
             ).fetchone()
             if existing:
-                raise RuntimeError(f"order_id 已提交/记录，拒绝重复下单: {order_id}")
+                row = dict(existing)
+                if (
+                    row["batch_sha256"] != batch_sha256
+                    or row.get("order_remark") not in (None, order_remark)
+                ):
+                    raise RuntimeError(f"order_id 本地提交意图与批次不一致: {order_id}")
+                return row
             conn.execute(
-                "INSERT INTO submissions VALUES (?, ?, ?, ?, ?, ?, ?)",
+                """INSERT INTO submissions (
+                    order_id, batch_sha256, local_order_id, submit_status,
+                    submitted_at, detail, execution_json, order_remark
+                ) VALUES (?, ?, NULL, 'PREPARED', ?, ?, '{}', ?)""",
                 (
-                    order_id, batch_sha256, local_order_id, status, _now_iso(), detail,
-                    json.dumps(execution_meta or {}, sort_keys=True, separators=(",", ":")),
+                    order_id, batch_sha256, _now_iso(),
+                    "durable intent recorded before QMT call", order_remark,
                 ),
             )
             conn.commit()
+        return self.submission(order_id)
+
+    def claim_submission(self, order_id: str) -> bool:
+        """Move PREPARED to the crash-ambiguous state exactly once."""
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            changed = conn.execute(
+                """UPDATE submissions
+                   SET submit_status = 'SUBMITTING_UNKNOWN', submitted_at = ?
+                   WHERE order_id = ? AND submit_status = 'PREPARED'""",
+                (_now_iso(), order_id),
+            ).rowcount
+            conn.commit()
+        return changed == 1
+
+    def complete_submission(
+        self, order_id: str, local_order_id: str | None, status: str,
+        detail: str | None = None, execution_meta: dict | None = None,
+    ) -> bool:
+        if status not in {"SUBMITTED", "REJECTED"}:
+            raise ValueError(f"非法本地提交终态: {status}")
+        body = json.dumps(
+            execution_meta or {}, sort_keys=True, separators=(",", ":"),
+        )
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                "SELECT * FROM submissions WHERE order_id = ?", (order_id,),
+            ).fetchone()
+            if existing is None:
+                raise RuntimeError(f"order_id 尚无 durable intent: {order_id}")
+            row = dict(existing)
+            if row["submit_status"] in {"SUBMITTED", "REJECTED"}:
+                same = (
+                    row["submit_status"] == status
+                    and row["local_order_id"] == local_order_id
+                )
+                if not same:
+                    raise RuntimeError(f"order_id 已有不同提交终态: {order_id}")
+                return False
+            if row["submit_status"] not in {"PREPARED", "SUBMITTING_UNKNOWN"}:
+                raise RuntimeError(
+                    f"order_id 本地提交状态不可完成: {order_id} {row['submit_status']}"
+                )
+            conn.execute(
+                """UPDATE submissions
+                   SET local_order_id = ?, submit_status = ?, submitted_at = ?,
+                       detail = ?, execution_json = ?
+                   WHERE order_id = ?""",
+                (local_order_id, status, _now_iso(), detail, body, order_id),
+            )
+            conn.commit()
+        return True
+
+    def submission(self, order_id: str) -> dict:
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM submissions WHERE order_id = ?", (order_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError(f"本地没有 order_id 提交状态: {order_id}")
+        return dict(row)
 
     def submissions_for_date(self, trade_date: str) -> list[dict]:
         batch = self.load_batch(trade_date)

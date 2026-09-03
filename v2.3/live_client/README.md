@@ -23,12 +23,14 @@ logs, API key and Windows Task Scheduler names.
 - `HYDRA_LIVE_RISK_MODE=disabled` independently blocks every live batch. `auto`
   computes limits from the current QMT total asset, available cash and sellable
   holdings; its snapshot is written once per batch before the first submission.
-- Every server batch is independently re-hashed. A network failure, mixed domain,
-  wrong account alias, changed batch, missing lineage field or risk-limit breach
-  aborts submission.
-- Immediately before submission, the client reads QMT total positions/cash and
-  requires a clean server reconciliation. Sell capacity is checked separately
-  against QMT `can_use_volume` rather than total holdings.
+- Every server batch is independently re-hashed and frozen by `query`. Run the
+  optional online `preflight` after query to compare QMT with the server ledger.
+- `submit` never constructs an HTTP client. It re-hashes only the frozen local
+  batch, verifies the live QMT account and current capacity, then submits SELL
+  before BUY even if the server is unavailable.
+- Each order intent is committed locally before the QMT call. A deterministic QMT
+  remark recovers a broker-accepted order after a client crash; an ambiguous call
+  with no observable broker order is never retried automatically.
 - Settlement refuses to infer `CANCELLED` from an active, missing or unknown QMT
   order status.
 - The code imports `xtquant` only after `HYDRA_LIVE_MODE=live` connects. Tests and
@@ -44,6 +46,7 @@ From the `v2.3` directory with `PYTHONPATH` pointing to that directory:
 ```powershell
 python -m live_client.cli initialize-account --evidence-sha256 <sha256>
 python -m live_client.cli query --date YYYYMMDD
+python -m live_client.cli preflight --date YYYYMMDD
 python -m live_client.cli submit --date YYYYMMDD
 python -m live_client.cli settle --date YYYYMMDD
 python -m live_client.cli cash-flow --date YYYYMMDD --type DIVIDEND `
@@ -82,7 +85,8 @@ commands that access QMT. Query still calls the domain-scoped server API.
 Suggested distinct Windows task names:
 
 - `HydraLive-TargetQuery` — month-end evening after the server stages T+1 orders.
-- `HydraLive-OrderSubmit` — T+1 09:10.
+- `HydraLive-Preflight` — after query, while server availability may still block safely.
+- `HydraLive-OrderSubmit` — T+1 09:10, local frozen batch and MiniQMT only.
 - `HydraLive-QMTStatus` — 15:10.
 - `HydraLive-TradeSettle` — 15:30 after QMT reports terminal status.
 - `HydraLive-ResidualStage` — 16:00 only after clean reconciliation.

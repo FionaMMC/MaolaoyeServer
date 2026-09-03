@@ -57,6 +57,12 @@ class BrokerOrderSnapshot:
     status_msg: str
     strategy_name: str
     order_remark: str
+    order_type: int = 0
+
+
+def live_order_remark(order: dict) -> str:
+    """Stable broker-side idempotency key for one frozen Hydra order."""
+    return f"{order['order_id'][:16]}|{order['target_hash'][:12]}"
 
 
 def _first_positive(value: Any) -> float | None:
@@ -108,6 +114,7 @@ def _broker_order_snapshot(order: Any) -> BrokerOrderSnapshot:
         status_msg=str(getattr(order, "status_msg", "") or ""),
         strategy_name=str(getattr(order, "strategy_name", "") or ""),
         order_remark=str(getattr(order, "order_remark", "") or ""),
+        order_type=int(getattr(order, "order_type", 0) or 0),
     )
 
 
@@ -202,6 +209,9 @@ class MockQMTGateway:
                 "iopv_time": now,
             },
         )
+
+    def find_existing_submission(self, order: dict) -> SubmissionResult | None:
+        return None
 
     def settlement_results(self, submissions: list[dict]) -> list[dict]:
         fill_ratios = dict(self.payload.get("fill_ratios", {}))
@@ -433,7 +443,7 @@ class XtQMTGateway:
             if order["direction"] == "BUY"
             else self.xtconstant.STOCK_SELL
         )
-        remark = f"{order['order_id'][:16]}|{order['target_hash'][:12]}"
+        remark = live_order_remark(order)
         local_id = self.trader.order_stock(
             self.account,
             order["symbol"],
@@ -461,6 +471,47 @@ class XtQMTGateway:
                 "qmt_order_id": str(local_id),
                 "iopv": float(iopv) if iopv is not None and float(iopv) > 0 else None,
                 "iopv_time": now if iopv is not None else None,
+            },
+        )
+
+    def find_existing_submission(self, order: dict) -> SubmissionResult | None:
+        """Recover a possibly accepted QMT call by deterministic remark."""
+        matches = self.orders_by_remark(live_order_remark(order))
+        if not matches:
+            return None
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"QMT 存在 {len(matches)} 笔相同 remark 委托，拒绝自动归并"
+            )
+        existing = matches[0]
+        expected_type = (
+            self.xtconstant.STOCK_BUY
+            if order["direction"] == "BUY"
+            else self.xtconstant.STOCK_SELL
+        )
+        if existing.account_id != self.cfg.account_id:
+            raise RuntimeError("QMT 已有委托账户不匹配")
+        if existing.stock_code != order["symbol"]:
+            raise RuntimeError("QMT 已有委托代码不匹配")
+        if existing.order_volume != int(order["quantity"]):
+            raise RuntimeError("QMT 已有委托数量不匹配")
+        if abs(existing.price - float(order["limit_price"])) > 1e-6:
+            raise RuntimeError("QMT 已有委托限价不匹配")
+        if existing.strategy_name != "hydra_live":
+            raise RuntimeError("QMT 已有委托 strategy_name 不匹配")
+        if existing.order_type and existing.order_type != expected_type:
+            raise RuntimeError("QMT 已有委托方向不匹配")
+        return SubmissionResult(
+            str(existing.order_id),
+            "SUBMITTED",
+            "recovered existing QMT order by deterministic remark",
+            execution_meta={
+                "submitted_price": existing.price,
+                "submitted_time": (
+                    str(existing.order_time) if existing.order_time else None
+                ),
+                "qmt_order_id": str(existing.order_id),
+                "recovered_by_remark": True,
             },
         )
 

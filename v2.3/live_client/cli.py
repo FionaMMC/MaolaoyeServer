@@ -1,16 +1,21 @@
-"""Hydra live client CLI：query → submit → settle。"""
+"""Hydra live client CLI：query → preflight → offline submit → settle。"""
 from __future__ import annotations
 
 import argparse
 import json
 import logging
+from dataclasses import replace
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
 from live_client.config import LiveClientConfig
-from live_client.core import validate_account_capacity, validate_order_batch
-from live_client.gateway import MockQMTGateway, XtQMTGateway
+from live_client.core import (
+    validate_account_capacity,
+    validate_frozen_batch,
+    validate_order_batch,
+)
+from live_client.gateway import MockQMTGateway, XtQMTGateway, live_order_remark
 from live_client.http_client import LiveServerClient
 from live_client.state import LiveStateStore
 
@@ -59,69 +64,148 @@ def query(cfg: LiveClientConfig, trade_date: str) -> dict:
     }
 
 
-def submit(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> dict:
-    cfg.require_submission_enabled()
-    server = LiveServerClient(
-        cfg.server_base_url, cfg.api_key, execution_domain=cfg.execution_domain,
-    )
-    # 网络失败、非 0 响应或空批次都会抛出；绝不沿用本地旧快照继续。
-    fresh_orders = server.fetch_orders(trade_date)
-    fresh_batch = validate_order_batch(fresh_orders, trade_date, cfg)
+def _load_frozen_batch(
+    cfg: LiveClientConfig, trade_date: str, state: LiveStateStore,
+):
+    return validate_frozen_batch(state.load_batch(trade_date), trade_date, cfg)
+
+
+def preflight(
+    cfg: LiveClientConfig, trade_date: str, mock_state: Path | None,
+) -> dict:
+    """Optional online server/QMT reconciliation outside the submit window."""
     state = LiveStateStore(cfg.state_db)
-    state.assert_same_batch(fresh_batch)
+    batch = _load_frozen_batch(cfg, trade_date, state)
     gateway = _gateway(cfg, mock_state)
     gateway.connect()
     try:
         snapshot = gateway.account_snapshot()
         if snapshot.account_id != cfg.account_id:
             raise RuntimeError("QMT account_id 二次校验失败")
-        _require_server_reconciled(server, cfg, snapshot)
+        server = LiveServerClient(
+            cfg.server_base_url, cfg.api_key,
+            execution_domain=cfg.execution_domain,
+        )
+        reconciliation = _require_server_reconciled(server, cfg, snapshot)
         risk_snapshot = validate_account_capacity(
-            fresh_batch,
+            batch,
             snapshot.available_cash,
             snapshot.sellable_positions,
             cfg,
             snapshot.total_asset,
         )
-        state.record_risk_check(fresh_batch.batch_sha256, risk_snapshot)
-        submitted = rejected = 0
-        immediate_rejections: list[dict] = []
+    finally:
+        gateway.close()
+    return {
+        "trade_date": trade_date,
+        "batch_sha256": batch.batch_sha256,
+        "reconciliation": reconciliation,
+        "risk": risk_snapshot,
+        "status": "READY_FOR_OFFLINE_SUBMIT",
+    }
+
+
+def submit(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> dict:
+    cfg.require_submission_enabled()
+    state = LiveStateStore(cfg.state_db)
+    # The batch was independently hashed and frozen during query.  Re-validate
+    # the local bytes, but make no server call in the trading-critical path.
+    frozen_batch = _load_frozen_batch(cfg, trade_date, state)
+    gateway = _gateway(cfg, mock_state)
+    gateway.connect()
+    try:
+        snapshot = gateway.account_snapshot()
+        if snapshot.account_id != cfg.account_id:
+            raise RuntimeError("QMT account_id 二次校验失败")
+        existing_rows = {
+            row["order_id"]: row
+            for row in state.submissions_for_date(trade_date)
+        }
+        if existing_rows:
+            if state.risk_check(frozen_batch.batch_sha256) is None:
+                raise RuntimeError("本地已有提交意图但缺少初始风控快照")
+            remaining_orders = tuple(
+                order for order in frozen_batch.orders
+                if existing_rows.get(order["order_id"], {}).get("submit_status")
+                in {None, "PREPARED"}
+            )
+            capacity_batch = replace(frozen_batch, orders=remaining_orders)
+        else:
+            capacity_batch = frozen_batch
+        risk_snapshot = validate_account_capacity(
+            capacity_batch,
+            snapshot.available_cash,
+            snapshot.sellable_positions,
+            cfg,
+            snapshot.total_asset,
+        )
+        if not existing_rows:
+            state.record_risk_check(frozen_batch.batch_sha256, risk_snapshot)
+        submitted = rejected = submitted_now = 0
+        attempted_now = recovered = already_recorded = 0
         for order in sorted(
-            fresh_batch.orders,
+            frozen_batch.orders,
             key=lambda item: (item["direction"] != "SELL", item["symbol"]),
         ):
+            remark = live_order_remark(order)
+            local = state.prepare_submission(
+                order["order_id"], frozen_batch.batch_sha256, remark,
+            )
+            if local["submit_status"] in {"SUBMITTED", "REJECTED"}:
+                already_recorded += 1
+                if local["submit_status"] == "SUBMITTED":
+                    submitted += 1
+                else:
+                    rejected += 1
+                continue
+
+            existing = gateway.find_existing_submission(order)
+            if existing is not None:
+                state.complete_submission(
+                    order["order_id"], existing.local_order_id, existing.status,
+                    existing.detail, existing.execution_meta,
+                )
+                recovered += 1
+                submitted += 1
+                continue
+
+            if local["submit_status"] == "SUBMITTING_UNKNOWN":
+                raise RuntimeError(
+                    f"order_id {order['order_id']} 曾进入 QMT 调用但未找到确定回报；"
+                    "为防重复下单，禁止自动重试，请按 remark 核对券商委托"
+                )
+            if local["submit_status"] != "PREPARED":
+                raise RuntimeError(
+                    f"order_id 本地提交状态非法: {order['order_id']} "
+                    f"{local['submit_status']}"
+                )
+            if not state.claim_submission(order["order_id"]):
+                raise RuntimeError(
+                    f"order_id {order['order_id']} 已被另一进程认领，拒绝并发下单"
+                )
             result = gateway.submit(order)
-            state.record_submission(
+            state.complete_submission(
                 order["order_id"],
-                fresh_batch.batch_sha256,
                 result.local_order_id,
                 result.status,
                 result.detail,
                 result.execution_meta,
             )
+            attempted_now += 1
             if result.status == "SUBMITTED":
                 submitted += 1
+                submitted_now += 1
             else:
                 rejected += 1
-                # A broker-side immediate rejection is an authoritative terminal
-                # result, not a local-only note.  Report it now so the server does
-                # not retain a false PENDING order until the 15:10 collection.
-                immediate_rejections.append({
-                    "order_id": order["order_id"],
-                    "filled_quantity": 0,
-                    "filled_price": 0.0,
-                    "status": "REJECTED",
-                    "symbol": order["symbol"],
-                    "direction": order["direction"],
-                    **dict(result.execution_meta or {}),
-                })
-        if immediate_rejections:
-            server.push_trade_results(trade_date, immediate_rejections)
         return {
             "trade_date": trade_date,
-            "batch_sha256": fresh_batch.batch_sha256,
+            "batch_sha256": frozen_batch.batch_sha256,
             "submitted": submitted,
             "rejected": rejected,
+            "submitted_now": submitted_now,
+            "attempted_now": attempted_now,
+            "recovered": recovered,
+            "already_recorded": already_recorded,
         }
     finally:
         gateway.close()
@@ -131,14 +215,32 @@ def settle(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> d
     state = LiveStateStore(cfg.state_db)
     submissions = state.submissions_for_date(trade_date)
     submitted = [row for row in submissions if row["submit_status"] == "SUBMITTED"]
-    if not submitted:
-        raise RuntimeError("本地没有可结算的已提交订单")
-    gateway = _gateway(cfg, mock_state)
-    gateway.connect()
-    try:
-        results = gateway.settlement_results(submitted)
-    finally:
-        gateway.close()
+    rejected = [row for row in submissions if row["submit_status"] == "REJECTED"]
+    unresolved = [
+        row for row in submissions
+        if row["submit_status"] in {"PREPARED", "SUBMITTING_UNKNOWN"}
+    ]
+    if unresolved:
+        raise RuntimeError("本地仍有提交状态不确定的订单，拒绝结算")
+    if not submitted and not rejected:
+        raise RuntimeError("本地没有可结算的订单")
+    results = []
+    if submitted:
+        gateway = _gateway(cfg, mock_state)
+        gateway.connect()
+        try:
+            results.extend(gateway.settlement_results(submitted))
+        finally:
+            gateway.close()
+    results.extend({
+        "order_id": row["order_id"],
+        "filled_quantity": 0,
+        "filled_price": 0.0,
+        "status": "REJECTED",
+        "symbol": row["symbol"],
+        "direction": row["direction"],
+        **dict(row.get("execution_meta") or {}),
+    } for row in rejected)
     data = LiveServerClient(
         cfg.server_base_url, cfg.api_key, execution_domain=cfg.execution_domain,
     ).push_trade_results(
@@ -253,10 +355,10 @@ def reconcile_and_close(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Hydra independent live client")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("query", "submit", "settle"):
+    for name in ("query", "preflight", "submit", "settle"):
         command = sub.add_parser(name)
         command.add_argument("--date", required=True)
-        if name in {"submit", "settle"}:
+        if name in {"preflight", "submit", "settle"}:
             command.add_argument("--mock-state", type=Path)
     initialize = sub.add_parser("initialize-account")
     initialize.add_argument("--evidence-sha256", required=True)
@@ -282,6 +384,8 @@ def main() -> None:
     try:
         if args.command == "query":
             result = query(cfg, args.date)
+        elif args.command == "preflight":
+            result = preflight(cfg, args.date, args.mock_state)
         elif args.command == "submit":
             result = submit(cfg, args.date, args.mock_state)
         elif args.command == "settle":

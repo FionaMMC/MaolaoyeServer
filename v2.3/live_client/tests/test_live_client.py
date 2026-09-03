@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,7 +12,12 @@ import pytest
 from live_client import cli
 from live_client.config import LiveClientConfig
 from live_client.core import validate_account_capacity, validate_order_batch
-from live_client.gateway import MockQMTGateway, classify_qmt_settlement_status
+from live_client.gateway import (
+    AccountSnapshot,
+    MockQMTGateway,
+    SubmissionResult,
+    classify_qmt_settlement_status,
+)
 from live_client.state import LiveStateStore
 
 
@@ -115,6 +121,27 @@ def test_state_refuses_server_batch_replacement(tmp_path):
     # Common target_hash is now mixed and fails even before local replacement.
     with pytest.raises(ValueError):
         validate_order_batch(changed, "20260803", cfg)
+
+
+def test_state_migrates_existing_submission_table_in_place(tmp_path):
+    path = tmp_path / "legacy-live.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute("""CREATE TABLE submissions (
+            order_id TEXT PRIMARY KEY,
+            batch_sha256 TEXT NOT NULL,
+            local_order_id TEXT,
+            submit_status TEXT NOT NULL,
+            submitted_at TEXT NOT NULL,
+            detail TEXT,
+            execution_json TEXT
+        )""")
+    LiveStateStore(path)
+    with sqlite3.connect(path) as conn:
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(submissions)")
+        }
+
+    assert "order_remark" in columns
 
 
 def test_account_capacity_is_sell_first_but_never_oversells(tmp_path):
@@ -228,6 +255,10 @@ def test_mock_qmt_full_query_submit_settle_cycle(tmp_path, monkeypatch):
         "batch_sha256": queried["batch_sha256"],
         "submitted": 2,
         "rejected": 0,
+        "submitted_now": 2,
+        "attempted_now": 2,
+        "recovered": 0,
+        "already_recorded": 0,
     }
     assert settled["results"] == 2
     assert FakeServer.pushed[0] == "20260803"
@@ -308,7 +339,7 @@ def test_real_mode_http_requires_and_accepts_explicit_business_approval(
     approved.validate_startup()
 
 
-def test_submit_requires_live_qmt_snapshot_to_match_server_ledger(
+def test_preflight_requires_live_qmt_snapshot_to_match_server_ledger(
     tmp_path, monkeypatch,
 ):
     cfg = _cfg(tmp_path)
@@ -338,7 +369,137 @@ def test_submit_requires_live_qmt_snapshot_to_match_server_ledger(
     }), encoding="utf-8")
     cli.query(cfg, "20260803")
     with pytest.raises(RuntimeError, match="positions"):
-        cli.submit(cfg, "20260803", mock_path)
+        cli.preflight(cfg, "20260803", mock_path)
+
+
+def test_submit_uses_frozen_batch_when_server_is_unavailable(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    batch = validate_order_batch(_orders(), "20260803", cfg)
+    LiveStateStore(cfg.state_db).save_batch(batch)
+
+    class ExplodingServer:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("submit must not construct an HTTP client")
+
+    monkeypatch.setattr(cli, "LiveServerClient", ExplodingServer)
+    mock_path = tmp_path / "mock-state.json"
+    mock_path.write_text(json.dumps({
+        "account_id": cfg.account_id,
+        "available_cash": 10_000,
+        "positions": {},
+    }), encoding="utf-8")
+
+    result = cli.submit(cfg, "20260803", mock_path)
+
+    assert result["submitted"] == 2
+    assert result["attempted_now"] == 2
+
+
+def test_submit_replay_never_calls_qmt_twice(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    batch = validate_order_batch(_orders(), "20260803", cfg)
+    LiveStateStore(cfg.state_db).save_batch(batch)
+    mock_path = tmp_path / "mock-state.json"
+    mock_path.write_text(json.dumps({
+        "account_id": cfg.account_id,
+        "available_cash": 10_000,
+        "positions": {},
+    }), encoding="utf-8")
+
+    first = cli.submit(cfg, "20260803", mock_path)
+    second = cli.submit(cfg, "20260803", mock_path)
+
+    assert first["attempted_now"] == 2
+    assert second["attempted_now"] == 0
+    assert second["already_recorded"] == 2
+
+
+def test_submit_recovers_crash_after_broker_acceptance_by_remark(
+    tmp_path, monkeypatch,
+):
+    cfg = _cfg(tmp_path)
+    batch = validate_order_batch(_orders(), "20260803", cfg)
+    LiveStateStore(cfg.state_db).save_batch(batch)
+    accepted: dict[str, SubmissionResult] = {}
+    calls = {"submit": 0, "crashed": False}
+
+    class CrashRecoverGateway:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def connect(self):
+            pass
+
+        def close(self):
+            pass
+
+        def account_snapshot(self):
+            return AccountSnapshot(
+                cfg.account_id, 10_000, 10_000, {}, {},
+            )
+
+        def find_existing_submission(self, order):
+            return accepted.get(order["order_id"])
+
+        def submit(self, order):
+            calls["submit"] += 1
+            result = SubmissionResult(
+                str(10000 + calls["submit"]), "SUBMITTED",
+                execution_meta={"qmt_order_id": str(10000 + calls["submit"])},
+            )
+            accepted[order["order_id"]] = result
+            if not calls["crashed"]:
+                calls["crashed"] = True
+                raise RuntimeError("simulated crash after QMT acceptance")
+            return result
+
+    monkeypatch.setattr(cli, "_gateway", lambda *_args: CrashRecoverGateway())
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        cli.submit(cfg, "20260803", None)
+    recovered = cli.submit(cfg, "20260803", None)
+
+    assert recovered["recovered"] == 1
+    assert recovered["submitted_now"] == 1
+    assert calls["submit"] == 2
+
+
+def test_submit_never_retries_ambiguous_qmt_call_without_broker_evidence(
+    tmp_path, monkeypatch,
+):
+    cfg = _cfg(tmp_path)
+    batch = validate_order_batch(_orders(), "20260803", cfg)
+    LiveStateStore(cfg.state_db).save_batch(batch)
+    calls = {"submit": 0}
+
+    class AmbiguousGateway:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def connect(self):
+            pass
+
+        def close(self):
+            pass
+
+        def account_snapshot(self):
+            return AccountSnapshot(cfg.account_id, 10_000, 10_000, {}, {})
+
+        def find_existing_submission(self, _order):
+            return None
+
+        def submit(self, _order):
+            calls["submit"] += 1
+            raise RuntimeError("QMT response lost")
+
+    monkeypatch.setattr(cli, "_gateway", lambda *_args: AmbiguousGateway())
+
+    with pytest.raises(RuntimeError, match="QMT response lost"):
+        cli.submit(cfg, "20260803", None)
+    with pytest.raises(RuntimeError, match="禁止自动重试"):
+        cli.submit(cfg, "20260803", None)
+
+    assert calls["submit"] == 1
 
 
 def test_qmt_active_or_unknown_status_is_never_inferred_as_cancelled():

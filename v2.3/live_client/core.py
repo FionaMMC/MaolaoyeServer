@@ -133,6 +133,18 @@ def validate_order_batch(
     )
 
 
+def validate_frozen_batch(
+    payload: dict, trade_date: str, cfg: LiveClientConfig,
+) -> ValidatedBatch:
+    """Re-validate an immutable locally stored batch without server access."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("orders"), list):
+        raise ValueError("本地冻结批次格式非法")
+    batch = validate_order_batch(payload["orders"], trade_date, cfg)
+    if payload != batch.as_payload():
+        raise ValueError("本地冻结批次元数据或内容校验失败")
+    return batch
+
+
 def validate_account_capacity(
     batch: ValidatedBatch, cash: float, positions: dict[str, int],
     cfg: LiveClientConfig, total_asset: float,
