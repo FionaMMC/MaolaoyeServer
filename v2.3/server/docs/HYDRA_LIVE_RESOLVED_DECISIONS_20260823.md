@@ -104,7 +104,8 @@
 | T 15:10 | 拉取并上报成交、部分成交、拒单及 QMT 状态；拒单在此环节提醒 |
 | T 收盘后 | 仅根据 QMT 终态结算；完成现金/持仓对账并关闭 attempt |
 | T 16:00 | 仅在不存在未决订单且对账成功后，根据 actual residual 创建 T+1 attempt |
-| T+1 09:10 | live client 重新拉取、重算 hash、核对账户和批次后，先卖后买 |
+| T 晚间 | live client 拉取一次，独立重算 hash 并冻结本地批次；在线 preflight 完成 server ledger/QMT 对账 |
+| T+1 09:10 | 仅重算本地冻结批次 hash、核对 QMT 账户/资金/可卖持仓，完全不访问 server，先卖后买 |
 
 规则如下：
 
@@ -118,7 +119,7 @@
 - `execution_domain=paper|live` 贯穿 target、order、trade、reconcile、现金流与审计包。
 - paper/live 使用不同 token、client identity、账户别名、账户指纹、userdata、session、SQLite、日志、任务名及可写目录。
 - live token 仅拥有 Hydra live 所需的最小 API 权限，且只能访问被授权的账户别名和执行域。
-- 下单前必须读取 QMT 总持仓、可卖持仓、可用现金；与 server virtual ledger 清洁对账后才可提交。
+- T 晚间 preflight 必须读取 QMT 总持仓、可卖持仓、可用现金，并与 server virtual ledger 清洁对账；T+1 下单时只复核本地冻结批次和最新 QMT 账户/资金/可卖持仓，不得依赖 server 可用性。
 - 分红、入金、出金等外部现金变化必须写入幂等 cash-flow journal。
 - 任何账号、密钥、密码、私有路径或真实账户标识不得提交 Git。
 
@@ -150,7 +151,7 @@
 
 1. 合并研究端月末发布保护，并固定正式 Hydra 发布基线；不得把 2026-08-21 smoke target 当作正式 target。
 2. 实现并测试动态 `auto` 风控模式，同时保留未配置即 fail-closed 的默认语义。
-3. 把 15:10、15:30、16:00、18:00、T+1 09:10 流程接入 Windows 正式任务编排。
+3. 把 T 晚间 query/preflight、15:10、15:30、16:00、18:00、T+1 09:10 本地离线 submit 流程接入 Windows 正式任务编排。
 4. 完成 mock replay、专用模拟账户月末/月初闭环、部分成交/拒单/未决订单/residual/恢复演练。
 
 ## 12. 2026-08-24 研究端补齐结果
@@ -183,7 +184,7 @@
 - [x] 实现 target / rebalance / attempt / order-trade 四层持久状态，QMT `trade_result` 为订单终态唯一依据。
 - [x] 实现动态 `auto` 风控；执行前仍强制可用现金、可卖持仓与 50bp 保护限价三项硬约束。
 - [ ] 完成私有 paper/live 配置与隔离：身份、token、账户指纹、userdata、session、SQLite、日志、任务名和目录均分开；私有信息不得提交 Git。
-- [ ] 使用 Windows 任务计划程序部署已确认的 15:10、15:30、16:00、18:00、T+1 09:10 流程。
+- [ ] 使用 Windows 任务计划程序部署已确认的 T 晚间 query/preflight、15:10、15:30、16:00、18:00、T+1 09:10 本地离线 submit 流程。
 
 ### 验收与进入实盘前置条件
 

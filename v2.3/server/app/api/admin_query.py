@@ -918,13 +918,15 @@ async def heartbeat(
     """检查 client 端是否按时跑了每日流程。返回告警列表 + 各步骤时间戳。
 
     每天 client 应该做的事：
-      09:10  order_submit.py     → GET /orders?date=T  (T = 今天)
+      T 晚间 Hydra query         → GET /orders?date=T+1，冻结本地批次
+      T 晚间 Hydra preflight     → 在线对账（允许因 server 不可用而安全阻断）
+      T+1 09:10 Hydra submit     → 只读本地冻结批次和 QMT，不访问 server
       15:10  trade_result_push   → POST /trade-result
       15:30  data_collector      → POST /market-data
       16:00  trigger_pipeline    → POST /admin/run-pipeline?trade_date=T+1
 
     通过 server 数据库追溯每一步的实际发生时间：
-      - GET /orders 看 raw_signals 表（生成信号的时间）
+      - raw_signals 只能证明 server 已生成信号，不能证明 client 已拉取
       - trade_result 看 trades 表 received_at
       - market-data 看 stocks parquet 的最新 trade_date
       - run-pipeline 看 raw_signals 表的 signal_time (T+1 valid_date)
@@ -1000,7 +1002,7 @@ async def heartbeat(
             if timeline.get("pending_signals_for_today_or_later", 0) == 0:
                 alerts.append(
                     f"⚠ {today_dt} 09:00 之后 没有任何 valid_date >= {today} 的 raw_signals，"
-                    f"是不是 partner 昨晚没 trigger / 今早 client 没启动？"
+                    f"是不是 partner 昨晚没 trigger / server 没生成信号？"
                 )
 
         # 15:30 之后应该看到当天的 OHLCV 推送

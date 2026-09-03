@@ -23,11 +23,12 @@ logs, API key and Windows Task Scheduler names.
 - `HYDRA_LIVE_RISK_MODE=disabled` independently blocks every live batch. `auto`
   computes limits from the current QMT total asset, available cash and sellable
   holdings; its snapshot is written once per batch before the first submission.
-- Every server batch is independently re-hashed and frozen by `query`. Run the
-  optional online `preflight` after query to compare QMT with the server ledger.
+- Every server batch is independently re-hashed and frozen by `query`. The
+  required online `preflight` compares QMT with the server ledger and persists a
+  hashed PASS receipt for that exact batch.
 - `submit` never constructs an HTTP client. It re-hashes only the frozen local
-  batch, verifies the live QMT account and current capacity, then submits SELL
-  before BUY even if the server is unavailable.
+  batch, requires its PASS receipt, verifies the live QMT account and current
+  capacity, then submits SELL before BUY even if the server is unavailable.
 - Each order intent is committed locally before the QMT call. A deterministic QMT
   remark recovers a broker-accepted order after a client crash; an ambiguous call
   with no observable broker order is never retried automatically.
@@ -45,6 +46,7 @@ From the `v2.3` directory with `PYTHONPATH` pointing to that directory:
 
 ```powershell
 python -m live_client.cli initialize-account --evidence-sha256 <sha256>
+python -m live_client.cli doctor
 python -m live_client.cli query --date YYYYMMDD
 python -m live_client.cli preflight --date YYYYMMDD
 python -m live_client.cli submit --date YYYYMMDD
@@ -54,6 +56,56 @@ python -m live_client.cli cash-flow --date YYYYMMDD --type DIVIDEND `
   --evidence-sha256 <sha256>
 python -m live_client.cli reconcile-close --attempt-id <attempt_id> --evidence-sha256 <sha256>
 ```
+
+`doctor` validates the private configuration and performs only the compatible
+SQLite schema migration. It reports `server_contacted=false` and
+`qmt_contacted=false`; it is safe to use during a client code deployment.
+
+## Versioned Windows deployment
+
+The supported Windows entrypoint is versioned and leaves the private env,
+SQLite and logs outside the release directory:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\live_client\windows\Install-HydraLiveClient.ps1 `
+  -SourceRoot C:\src\MaolaoyeServer\v2.3 `
+  -InstallRoot C:\hydra-live `
+  -PythonExe C:\path\to\python.exe
+```
+
+The installer refuses a dirty `live_client` source, copies it to
+`C:\hydra-live\releases\<full-git-sha>`, runs Python syntax validation and the
+synthetic offline-submit acceptance, then atomically switches
+`config\active-release.txt`. It never overwrites `config\hydra-live.env`, the
+state database or logs. A local-only `doctor` is the final activation check; if
+that fails, the active pointer is rolled back. Existing Task Scheduler entries
+are deliberately not modified.
+
+Use the stable runner in Task Scheduler and always supply the already-approved
+exchange trade date explicitly:
+
+```powershell
+C:\hydra-live\bin\Run-HydraLive.ps1 -Command query -Date YYYYMMDD
+C:\hydra-live\bin\Run-HydraLive.ps1 -Command preflight -Date YYYYMMDD
+C:\hydra-live\bin\Run-HydraLive.ps1 -Command submit -Date YYYYMMDD
+C:\hydra-live\bin\Run-HydraLive.ps1 -Command settle -Date YYYYMMDD
+```
+
+Do not derive `YYYYMMDD` by adding one calendar day: month boundaries, weekends
+and exchange holidays must come from the frozen trading calendar. See
+[`WINDOWS_DEPLOYMENT_RUNBOOK.md`](WINDOWS_DEPLOYMENT_RUNBOOK.md) for upgrade,
+acceptance, task cutover and rollback.
+
+The portable no-network acceptance can also be run directly:
+
+```powershell
+python -m live_client.offline_acceptance
+```
+
+It proves three properties with synthetic orders and `mock_qmt`: a dead server
+cannot block local submit, repeating submit creates no second broker call, and
+crash/ambiguous-response recovery never blindly replays an order.
 
 ## Research data freeze (read-only)
 
@@ -84,7 +136,7 @@ commands that access QMT. Query still calls the domain-scoped server API.
 
 Suggested distinct Windows task names:
 
-- `HydraLive-TargetQuery` — month-end evening after the server stages T+1 orders.
+- `HydraLive-TargetQuery` — T evening after the server stages T+1 orders.
 - `HydraLive-Preflight` — after query, while server availability may still block safely.
 - `HydraLive-OrderSubmit` — T+1 09:10, local frozen batch and MiniQMT only.
 - `HydraLive-QMTStatus` — 15:10.

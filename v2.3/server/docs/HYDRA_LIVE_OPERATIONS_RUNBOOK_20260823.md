@@ -133,10 +133,11 @@ is saw-toothed, so the formal 2026-08-31 report at ¥200k is an approval artifac
 1. T close: freeze HFQ/raw/actions/calendar and hashes; produce and validate target.
 2. T evening: stage T+1 attempt; run capital/risk preflight; live client `query`
    freezes and re-hashes the server batch, then `preflight` performs the online
-   server-ledger/QMT comparison.
+   server-ledger/QMT comparison and persists a hashed PASS receipt for the batch.
 3. T+1 09:10: live client `submit` uses only the locally frozen batch and MiniQMT.
-   It re-hashes the local payload, reads QMT total and sellable positions separately,
-   checks cash and client limits, then submits SELL before BUY without HTTP access.
+   It requires that PASS receipt, re-hashes the local payload, reads QMT total and
+   sellable positions separately, checks cash and client limits, then submits SELL
+   before BUY without HTTP access.
 4. T+1 close: `settle` sends cumulative fills and execution-quality evidence.
    It fails closed if QMT still reports an active or unknown order status.
 5. Ingest approved dividends/deposits/withdrawals with a stable source event id and
