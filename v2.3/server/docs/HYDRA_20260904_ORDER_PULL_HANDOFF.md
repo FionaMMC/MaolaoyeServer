@@ -171,6 +171,10 @@ Server 代码必须包含：
 scripts/recover_hydra_pre_activation_baseline.py
 ```
 
+该命令首次引入于提交
+`2ed3de11b991bed79bee44248687994bd2d19755`；部署该提交或其后继版本即可，
+无需为此改 Windows 计划任务。
+
 在 Server 运行；此步不写数据库：
 
 ```bash
