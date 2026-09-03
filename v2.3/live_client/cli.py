@@ -73,7 +73,7 @@ def _load_frozen_batch(
 def preflight(
     cfg: LiveClientConfig, trade_date: str, mock_state: Path | None,
 ) -> dict:
-    """Optional online server/QMT reconciliation outside the submit window."""
+    """Required online reconciliation, completed outside the submit window."""
     state = LiveStateStore(cfg.state_db)
     batch = _load_frozen_batch(cfg, trade_date, state)
     gateway = _gateway(cfg, mock_state)
@@ -96,9 +96,20 @@ def preflight(
         )
     finally:
         gateway.close()
+    receipt = {
+        "status": "PASSED",
+        "trade_date": trade_date,
+        "batch_sha256": batch.batch_sha256,
+        "account_alias": cfg.account_alias,
+        "account_fingerprint": cfg.expected_account_sha256,
+        "reconciliation": reconciliation,
+        "risk": risk_snapshot,
+    }
+    receipt_sha256 = state.record_preflight(batch.batch_sha256, receipt)
     return {
         "trade_date": trade_date,
         "batch_sha256": batch.batch_sha256,
+        "preflight_receipt_sha256": receipt_sha256,
         "reconciliation": reconciliation,
         "risk": risk_snapshot,
         "status": "READY_FOR_OFFLINE_SUBMIT",
@@ -111,6 +122,21 @@ def submit(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> d
     # The batch was independently hashed and frozen during query.  Re-validate
     # the local bytes, but make no server call in the trading-critical path.
     frozen_batch = _load_frozen_batch(cfg, trade_date, state)
+    preflight_receipt = state.latest_preflight(frozen_batch.batch_sha256)
+    expected_receipt = {
+        "status": "PASSED",
+        "trade_date": trade_date,
+        "batch_sha256": frozen_batch.batch_sha256,
+        "account_alias": cfg.account_alias,
+        "account_fingerprint": cfg.expected_account_sha256,
+    }
+    if preflight_receipt is None or any(
+        preflight_receipt["payload"].get(key) != value
+        for key, value in expected_receipt.items()
+    ):
+        raise RuntimeError(
+            "本地没有该冻结批次已通过的在线 preflight 回执，拒绝离线下单"
+        )
     gateway = _gateway(cfg, mock_state)
     gateway.connect()
     try:
@@ -352,6 +378,25 @@ def reconcile_and_close(
     return {"reconciliation": reconciliation, "attempt": closed}
 
 
+def doctor(cfg: LiveClientConfig) -> dict:
+    """Validate private configuration and migrate state without external I/O."""
+    LiveStateStore(cfg.state_db)
+    return {
+        "status": "LOCAL_CONFIG_OK",
+        "mode": cfg.mode,
+        "execution_domain": cfg.execution_domain,
+        "account_alias": cfg.account_alias,
+        "instance_id": cfg.instance_id,
+        "task_prefix": cfg.task_prefix,
+        "risk_mode": cfg.risk_mode,
+        "trading_enabled": cfg.trading_enabled,
+        "transport": cfg.server_base_url.split(":", 1)[0],
+        "state_schema": "ok",
+        "server_contacted": False,
+        "qmt_contacted": False,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Hydra independent live client")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -360,6 +405,7 @@ def main() -> None:
         command.add_argument("--date", required=True)
         if name in {"preflight", "submit", "settle"}:
             command.add_argument("--mock-state", type=Path)
+    sub.add_parser("doctor")
     initialize = sub.add_parser("initialize-account")
     initialize.add_argument("--evidence-sha256", required=True)
     initialize.add_argument("--mock-state", type=Path)
@@ -382,7 +428,9 @@ def main() -> None:
     cfg = LiveClientConfig.from_env()
     log = _logger(cfg)
     try:
-        if args.command == "query":
+        if args.command == "doctor":
+            result = doctor(cfg)
+        elif args.command == "query":
             result = query(cfg, args.date)
         elif args.command == "preflight":
             result = preflight(cfg, args.date, args.mock_state)

@@ -18,6 +18,7 @@ from live_client.gateway import (
     SubmissionResult,
     classify_qmt_settlement_status,
 )
+from live_client.offline_acceptance import run_acceptance
 from live_client.state import LiveStateStore
 
 
@@ -98,6 +99,22 @@ def _orders(trade_date="20260803") -> list[dict]:
     return result
 
 
+def _freeze_with_preflight(cfg: LiveClientConfig):
+    batch = validate_order_batch(_orders(), "20260803", cfg)
+    state = LiveStateStore(cfg.state_db)
+    state.save_batch(batch)
+    state.record_preflight(batch.batch_sha256, {
+        "status": "PASSED",
+        "trade_date": "20260803",
+        "batch_sha256": batch.batch_sha256,
+        "account_alias": cfg.account_alias,
+        "account_fingerprint": cfg.expected_account_sha256,
+        "reconciliation": {"test": "pass"},
+        "risk": {"test": "pass"},
+    })
+    return batch
+
+
 def test_batch_rejects_domain_account_and_hash_mismatch(tmp_path):
     cfg = _cfg(tmp_path)
     for field, value in (
@@ -142,6 +159,19 @@ def test_state_migrates_existing_submission_table_in_place(tmp_path):
         }
 
     assert "order_remark" in columns
+
+
+def test_preflight_receipt_detects_local_tampering(tmp_path):
+    cfg = _cfg(tmp_path)
+    batch = _freeze_with_preflight(cfg)
+    with sqlite3.connect(cfg.state_db) as conn:
+        conn.execute(
+            "UPDATE preflight_checks SET payload_json = ? WHERE batch_sha256 = ?",
+            ('{"status":"PASSED"}', batch.batch_sha256),
+        )
+
+    with pytest.raises(RuntimeError, match="preflight 回执 hash"):
+        LiveStateStore(cfg.state_db).latest_preflight(batch.batch_sha256)
 
 
 def test_account_capacity_is_sell_first_but_never_oversells(tmp_path):
@@ -246,10 +276,12 @@ def test_mock_qmt_full_query_submit_settle_cycle(tmp_path, monkeypatch):
     }), encoding="utf-8")
 
     queried = cli.query(cfg, "20260803")
+    preflight = cli.preflight(cfg, "20260803", mock_path)
     submitted = cli.submit(cfg, "20260803", mock_path)
     settled = cli.settle(cfg, "20260803", mock_path)
 
     assert queried["orders"] == 2
+    assert len(preflight["preflight_receipt_sha256"]) == 64
     assert submitted == {
         "trade_date": "20260803",
         "batch_sha256": queried["batch_sha256"],
@@ -270,6 +302,23 @@ def test_client_emergency_stop_blocks_even_mock_submission(tmp_path):
     cfg = _cfg(tmp_path, trading_enabled=False)
     with pytest.raises(RuntimeError, match="紧急开关关闭"):
         cfg.require_submission_enabled()
+
+
+def test_local_doctor_has_no_server_or_qmt_side_effects(tmp_path):
+    result = cli.doctor(_cfg(tmp_path))
+
+    assert result["status"] == "LOCAL_CONFIG_OK"
+    assert result["server_contacted"] is False
+    assert result["qmt_contacted"] is False
+    assert (tmp_path / "state" / "live.db").exists()
+
+
+def test_packaged_offline_acceptance():
+    result = run_acceptance()
+
+    assert result["status"] == "PASS"
+    assert result["real_qmt_contacted"] is False
+    assert result["server_contacted"] is False
 
 
 def test_real_mode_requires_explicit_paper_isolation_evidence(tmp_path, monkeypatch):
@@ -374,8 +423,7 @@ def test_preflight_requires_live_qmt_snapshot_to_match_server_ledger(
 
 def test_submit_uses_frozen_batch_when_server_is_unavailable(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    batch = validate_order_batch(_orders(), "20260803", cfg)
-    LiveStateStore(cfg.state_db).save_batch(batch)
+    _freeze_with_preflight(cfg)
 
     class ExplodingServer:
         def __init__(self, *_args, **_kwargs):
@@ -395,10 +443,25 @@ def test_submit_uses_frozen_batch_when_server_is_unavailable(tmp_path, monkeypat
     assert result["attempted_now"] == 2
 
 
-def test_submit_replay_never_calls_qmt_twice(tmp_path, monkeypatch):
+def test_submit_requires_prior_successful_online_preflight(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     batch = validate_order_batch(_orders(), "20260803", cfg)
     LiveStateStore(cfg.state_db).save_batch(batch)
+    monkeypatch.setattr(
+        cli,
+        "_gateway",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("QMT must not be opened before preflight receipt check")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="preflight 回执"):
+        cli.submit(cfg, "20260803", None)
+
+
+def test_submit_replay_never_calls_qmt_twice(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _freeze_with_preflight(cfg)
     mock_path = tmp_path / "mock-state.json"
     mock_path.write_text(json.dumps({
         "account_id": cfg.account_id,
@@ -418,8 +481,7 @@ def test_submit_recovers_crash_after_broker_acceptance_by_remark(
     tmp_path, monkeypatch,
 ):
     cfg = _cfg(tmp_path)
-    batch = validate_order_batch(_orders(), "20260803", cfg)
-    LiveStateStore(cfg.state_db).save_batch(batch)
+    _freeze_with_preflight(cfg)
     accepted: dict[str, SubmissionResult] = {}
     calls = {"submit": 0, "crashed": False}
 
@@ -468,8 +530,7 @@ def test_submit_never_retries_ambiguous_qmt_call_without_broker_evidence(
     tmp_path, monkeypatch,
 ):
     cfg = _cfg(tmp_path)
-    batch = validate_order_batch(_orders(), "20260803", cfg)
-    LiveStateStore(cfg.state_db).save_batch(batch)
+    _freeze_with_preflight(cfg)
     calls = {"submit": 0}
 
     class AmbiguousGateway:

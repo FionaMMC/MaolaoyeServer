@@ -1,6 +1,7 @@
 """live client 独立 SQLite；批次变化绝不自动覆盖。"""
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -54,6 +55,15 @@ class LiveStateStore:
                     payload_json TEXT NOT NULL,
                     checked_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS preflight_checks (
+                    check_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    batch_sha256 TEXT NOT NULL,
+                    payload_sha256 TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    checked_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS ix_preflight_batch
+                    ON preflight_checks(batch_sha256, check_id);
             """)
             columns = {
                 row[1] for row in conn.execute("PRAGMA table_info(submissions)").fetchall()
@@ -98,6 +108,47 @@ class LiveStateStore:
         local = self.load_batch(batch.trade_date)
         if local["batch_sha256"] != batch.batch_sha256 or local != batch.as_payload():
             raise RuntimeError("下单前服务器批次与本地快照不一致，停止下单")
+
+    def record_preflight(self, batch_sha256: str, payload: dict) -> str:
+        if payload.get("batch_sha256") != batch_sha256:
+            raise RuntimeError("preflight 回执与本地冻结批次不一致")
+        body = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        payload_sha256 = hashlib.sha256(body.encode()).hexdigest()
+        with self._connect() as conn:
+            batch = conn.execute(
+                "SELECT 1 FROM order_batches WHERE batch_sha256 = ?",
+                (batch_sha256,),
+            ).fetchone()
+            if batch is None:
+                raise RuntimeError("preflight 对应的本地冻结批次不存在")
+            conn.execute(
+                """INSERT INTO preflight_checks (
+                    batch_sha256, payload_sha256, payload_json, checked_at
+                ) VALUES (?, ?, ?, ?)""",
+                (batch_sha256, payload_sha256, body, _now_iso()),
+            )
+            conn.commit()
+        return payload_sha256
+
+    def latest_preflight(self, batch_sha256: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT payload_json, payload_sha256, checked_at
+                   FROM preflight_checks
+                   WHERE batch_sha256 = ?
+                   ORDER BY check_id DESC LIMIT 1""",
+                (batch_sha256,),
+            ).fetchone()
+        if row is None:
+            return None
+        actual_sha256 = hashlib.sha256(row[0].encode()).hexdigest()
+        if actual_sha256 != row[1]:
+            raise RuntimeError("本地 preflight 回执 hash 校验失败")
+        return {
+            "payload": json.loads(row[0]),
+            "payload_sha256": row[1],
+            "checked_at": row[2],
+        }
 
     def record_risk_check(self, batch_sha256: str, payload: dict) -> bool:
         body = json.dumps(payload, sort_keys=True, separators=(",", ":"))
