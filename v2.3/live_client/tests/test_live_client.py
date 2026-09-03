@@ -16,6 +16,7 @@ from live_client.gateway import (
     AccountSnapshot,
     MockQMTGateway,
     SubmissionResult,
+    XtQMTGateway,
     classify_qmt_settlement_status,
 )
 from live_client.offline_acceptance import run_acceptance
@@ -621,6 +622,47 @@ def test_qmt_active_or_unknown_status_is_never_inferred_as_cancelled():
     assert classify_qmt_settlement_status(constants, 54, 0, 100) == "CANCELLED"
     assert classify_qmt_settlement_status(constants, 53, 25, 100) == "PARTIAL"
     assert classify_qmt_settlement_status(constants, 57, 0, 100) == "REJECTED"
+
+
+def test_xt_settlement_uses_async_order_cumulative_fill_not_trade_details():
+    class Trader:
+        def query_stock_orders_async(self, _account, callback):
+            callback([SimpleNamespace(
+                order_id=42, traded_volume=100, traded_price=4.638,
+                order_status=56,
+            )])
+
+        def query_stock_trades(self, _account):
+            raise AssertionError("settlement must not call query_stock_trades")
+
+    gateway = object.__new__(XtQMTGateway)
+    gateway.trader = Trader()
+    gateway.account = object()
+    gateway.xtconstant = SimpleNamespace(ORDER_SUCCEEDED=56)
+    rows = gateway.settlement_results([{
+        "order_id": "server-order-1", "local_order_id": "42",
+        "quantity": 100, "symbol": "510300.SH", "direction": "BUY",
+        "execution_meta": {"qmt_order_id": "42"},
+    }])
+
+    assert rows == [{
+        "order_id": "server-order-1", "filled_quantity": 100,
+        "filled_price": 4.638, "status": "FILLED",
+        "symbol": "510300.SH", "direction": "BUY", "qmt_order_id": "42",
+    }]
+
+
+def test_xt_settlement_order_query_times_out_instead_of_hanging():
+    class Trader:
+        def query_stock_orders_async(self, _account, _callback):
+            return None
+
+    gateway = object.__new__(XtQMTGateway)
+    gateway.trader = Trader()
+    gateway.account = object()
+
+    with pytest.raises(RuntimeError, match="拒绝结算"):
+        gateway._query_orders_for_settlement(timeout_seconds=0.01)
 
 
 def test_qmt_snapshot_keeps_total_and_sellable_positions_separate(tmp_path):

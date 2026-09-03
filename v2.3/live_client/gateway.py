@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Event
 from typing import Any
 
 from live_client.config import LiveClientConfig
@@ -515,28 +516,48 @@ class XtQMTGateway:
             },
         )
 
+    def _query_orders_for_settlement(self, timeout_seconds: float = 10.0) -> list[Any]:
+        """Read cumulative order state without using the unreliable trade-detail API.
+
+        MiniQMT can return healthy account and order data while
+        ``query_stock_trades`` never answers.  The order object's cumulative
+        filled volume, cumulative average price, and terminal status are the
+        authoritative settlement input for one Hydra order.  The async call
+        creates a bounded failure mode instead of blocking the close task.
+        """
+        if self.trader is None or self.account is None:
+            raise RuntimeError("QMT 尚未连接")
+        done = Event()
+        rows: list[Any] = []
+
+        def _received(response: Any) -> None:
+            try:
+                rows.extend(response or [])
+            finally:
+                done.set()
+
+        self.trader.query_stock_orders_async(self.account, _received)
+        if not done.wait(timeout_seconds):
+            raise RuntimeError(
+                f"QMT 异步委托查询在 {timeout_seconds:g} 秒内未返回，拒绝结算"
+            )
+        return rows
+
     def settlement_results(self, submissions: list[dict]) -> list[dict]:
         if self.trader is None or self.account is None:
             raise RuntimeError("QMT 尚未连接")
-        trades = self.trader.query_stock_trades(self.account)
-        orders = self.trader.query_stock_orders(self.account)
-        if trades is None or orders is None:
-            raise RuntimeError("QMT 成交/委托查询返回空")
-        aggregates: dict[int, dict] = {}
-        for trade in trades:
-            local_id = int(trade.order_id)
-            item = aggregates.setdefault(local_id, {"quantity": 0, "amount": 0.0})
-            item["quantity"] += int(trade.traded_volume)
-            item["amount"] += float(trade.traded_price) * int(trade.traded_volume)
-        order_map = {int(order.order_id): order for order in orders}
+        order_map = {
+            int(order.order_id): order
+            for order in self._query_orders_for_settlement()
+        }
         results = []
         for row in submissions:
             local_id = int(row["local_order_id"])
-            fill = aggregates.get(local_id, {"quantity": 0, "amount": 0.0})
-            qty = int(fill["quantity"])
             qmt_order = order_map.get(local_id)
             if qmt_order is None:
                 raise RuntimeError(f"QMT 委托列表缺少本地订单: {local_id}")
+            qty = int(getattr(qmt_order, "traded_volume", 0) or 0)
+            average_price = float(getattr(qmt_order, "traded_price", 0) or 0)
             try:
                 status = classify_qmt_settlement_status(
                     self.xtconstant,
@@ -549,7 +570,7 @@ class XtQMTGateway:
             results.append({
                 "order_id": row["order_id"],
                 "filled_quantity": qty,
-                "filled_price": round(fill["amount"] / qty, 4) if qty else 0.0,
+                "filled_price": round(average_price, 4) if qty else 0.0,
                 "status": status,
                 "symbol": row["symbol"],
                 "direction": row["direction"],
