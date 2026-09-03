@@ -27,6 +27,10 @@ from app.models.shadow import (  # noqa: E402, F401
     ShadowNavSnapshot,
     ShadowTarget,
 )
+from app.models.architecture_review import (  # noqa: E402, F401
+    ArchitectureReviewComment,
+    ArchitectureReviewDecision,
+)
 
 __all__ = [
     "Base",
@@ -46,4 +50,6 @@ __all__ = [
     "ShadowInstanceState",
     "ShadowNavSnapshot",
     "ShadowTarget",
+    "ArchitectureReviewComment",
+    "ArchitectureReviewDecision",
 ]

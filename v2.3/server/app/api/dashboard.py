@@ -39,14 +39,14 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     .toolbar {
       display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
     }
-    .toolbar select, .toolbar button {
+    .toolbar select, .toolbar button, .toolbar a {
       background: #0f1419; color: #d4d8de;
       border: 1px solid #2a3340; padding: 5px 10px;
-      border-radius: 4px; font-size: 0.85em; cursor: pointer;
+      border-radius: 4px; font-size: 0.85em; cursor: pointer; text-decoration: none;
     }
     .toolbar button.primary { background: #4ea1ff; color: #fff; border-color: #4ea1ff; }
     .toolbar button.primary:hover { background: #6db4ff; }
-    .toolbar button:hover { background: #2a3340; }
+    .toolbar button:hover, .toolbar a:hover { background: #2a3340; }
 
     .tabs {
       display: flex; gap: 4px; margin-bottom: 12px; padding: 4px;
@@ -432,6 +432,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         <option value="1y">最近 1 年</option>
         <option value="all">全部</option>
       </select>
+      <a href="/dashboard/review">设计与风控审阅</a>
       <button class="primary" onclick="refreshAll()">↻ 刷新</button>
     </div>
   </div>

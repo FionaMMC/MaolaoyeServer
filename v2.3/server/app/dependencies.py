@@ -11,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from app.db import init_db, make_engine, make_session_factory
 from app.scheduler.pipeline import StrategyPipeline
 from app.services.account_initialization import AccountInitializationService
+from app.services.architecture_review import ArchitectureReviewService
 from app.services.aggregate import AggregateService
 from app.services.alerts import AlertEngine
 from app.services.blacklist import BlacklistService
@@ -31,6 +32,7 @@ from app.services.shadow_ledger import ShadowLedgerService
 from app.settings import Settings, get_settings
 from app.storage.parquet import ParquetStore
 from app.strategy.loader import load_plugins
+from app.review_catalog import REVIEW_SESSION_ID, review_item_ids
 
 
 @lru_cache(maxsize=8)
@@ -74,6 +76,16 @@ def get_account_initialization_service(
     sf: sessionmaker = Depends(get_session_factory),
 ) -> AccountInitializationService:
     return AccountInitializationService(session_factory=sf)
+
+
+def get_architecture_review_service(
+    sf: sessionmaker = Depends(get_session_factory),
+) -> ArchitectureReviewService:
+    return ArchitectureReviewService(
+        session_factory=sf,
+        session_id=REVIEW_SESSION_ID,
+        allowed_item_ids=review_item_ids(),
+    )
 
 
 def get_hydra_data_store(
