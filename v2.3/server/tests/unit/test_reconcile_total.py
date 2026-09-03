@@ -13,11 +13,20 @@ def _factory(tmp_path: Path):
     return make_session_factory(engine)
 
 
-def _seed_instance(sf, instance_id, cash, positions, owned=None):
+def _seed_instance(
+    sf, instance_id, cash, positions, owned=None,
+    execution_domain="paper", account_alias=None,
+):
     with sf() as s:
-        s.add(InstanceState(instance_id=instance_id, virtual_cash=cash,
-                            virtual_positions=positions, last_update=datetime.now().isoformat(),
-                            owned_symbols=owned))
+        s.add(InstanceState(
+            instance_id=instance_id,
+            execution_domain=execution_domain,
+            account_alias=account_alias,
+            virtual_cash=cash,
+            virtual_positions=positions,
+            last_update=datetime.now().isoformat(),
+            owned_symbols=owned,
+        ))
         s.commit()
 
 
@@ -76,3 +85,45 @@ def test_cash_not_ok_when_account_cash_below_ledger(tmp_path: Path):
     r = ReconcileService(sf).reconcile_total({"600000.SH": 100, "511260.SH": 10000}, 1e6, "t")
     assert r.n_mismatched == 0
     assert r.cash_ok is False
+
+
+def test_explicit_live_account_ignores_external_positions(tmp_path: Path):
+    sf = _factory(tmp_path)
+    _seed_instance(
+        sf, "live_hydra", 72_057, {}, owned=["510300.SH", "159915.SZ"],
+        execution_domain="live", account_alias="hydra-live",
+    )
+
+    result = ReconcileService(sf).reconcile_total(
+        {"920071.BJ": 400, "920268.BJ": 100},
+        72_057,
+        "t",
+        execution_domain="live",
+        account_alias="hydra-live",
+    )
+
+    assert result.n_symbols == 0
+    assert result.n_mismatched == 0
+    assert result.n_external_positions == 2
+    assert result.external_positions == {"920071.BJ": 400, "920268.BJ": 100}
+    assert result.cash_ok is True
+
+
+def test_total_reconcile_is_scoped_to_explicit_account_alias(tmp_path: Path):
+    sf = _factory(tmp_path)
+    _seed_instance(
+        sf, "live_a", 1_000, {"510300.SH": 100}, owned=["510300.SH"],
+        execution_domain="live", account_alias="live-a",
+    )
+    _seed_instance(
+        sf, "live_b", 2_000, {"510300.SH": 200}, owned=["510300.SH"],
+        execution_domain="live", account_alias="live-b",
+    )
+
+    result = ReconcileService(sf).reconcile_total(
+        {"510300.SH": 100}, 1_000, "t",
+        execution_domain="live", account_alias="live-a",
+    )
+
+    assert result.n_mismatched == 0
+    assert result.ledger_cash_total == 1_000

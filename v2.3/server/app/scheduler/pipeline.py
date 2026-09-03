@@ -15,6 +15,7 @@ from app.models import InstanceState, Order, OrderSignalMap, RawSignal, Trade
 from app.services.aggregate import AggregateService, TaggedSignal
 from app.services.blacklist import BlacklistService
 from app.services.orders_queue import OrdersQueueService
+from app.services.ownership import validate_no_owned_symbol_overlap
 from app.services.perf import PerfService
 from app.services.precheck import PrecheckService
 from app.storage.parquet import ParquetStore
@@ -622,6 +623,9 @@ class StrategyPipeline:
                     result[instance_id] = {
                         "cash": cash, "positions": {}, "strategy_state": None,
                     }
+            # YAML ownership changes are validated before commit so a bad
+            # configuration cannot poison the database and fail only on restart.
+            validate_no_owned_symbol_overlap(session)
             session.commit()
         return result
 

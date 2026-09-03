@@ -644,6 +644,36 @@ def test_validate_no_overlap_ok_when_disjoint(tmp_path):
     svc.validate_no_overlap()  # 无 raise
 
 
+def test_validate_no_overlap_allows_paper_and_live_to_share_symbol(tmp_path):
+    sf = _factory(tmp_path)
+    with sf() as s:
+        s.add(InstanceState(
+            instance_id="paper", execution_domain="paper", account_alias="paper-a",
+            virtual_cash=0, virtual_positions={}, owned_symbols=["510300.SH"],
+            last_update=datetime.now().isoformat(),
+        ))
+        s.add(InstanceState(
+            instance_id="live", execution_domain="live", account_alias="live-a",
+            virtual_cash=0, virtual_positions={}, owned_symbols=["510300.SH"],
+            last_update=datetime.now().isoformat(),
+        ))
+        s.commit()
+    ReconcileService(sf).validate_no_overlap()
+
+
+def test_validate_no_overlap_allows_distinct_explicit_accounts(tmp_path):
+    sf = _factory(tmp_path)
+    with sf() as s:
+        for alias in ("live-a", "live-b"):
+            s.add(InstanceState(
+                instance_id=alias, execution_domain="live", account_alias=alias,
+                virtual_cash=0, virtual_positions={}, owned_symbols=["510300.SH"],
+                last_update=datetime.now().isoformat(),
+            ))
+        s.commit()
+    ReconcileService(sf).validate_no_overlap()
+
+
 # ── Task 19: reconcile_cash_total ─────────────────────────────────────────
 def test_reconcile_cash_total_within_tolerance(tmp_path):
     sf = _factory(tmp_path)

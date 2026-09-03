@@ -34,20 +34,32 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     log = get_logger("app")
     log.info("server_starting", version="2.3.0")
 
-    # 启动校验：owned_symbols 两两不重叠（多实例共用 QMT 账户时防止 symbol 归属冲突）
+    # 启动校验是最后一道诊断防线。写入路径本身必须阻止重叠；即使历史
+    # 数据已损坏，也要保留订单下载、回报和诊断 API，不能让整个服务退出。
+    ownership_safe = True
     try:
         from app.db import init_db, make_engine, make_session_factory
-        settings = get_settings()
+        settings = getattr(app.state, "settings", None) or get_settings()
         _engine = make_engine(settings.db_url)
         init_db(_engine)
         _sf = make_session_factory(_engine)
         ReconcileService(_sf).validate_no_overlap()
         log.info("validate_no_overlap: OK (owned_symbols 无重叠)")
     except OwnershipOverlap as e:
-        log.error("validate_no_overlap FAILED — owned_symbols 有重叠，请检查 strategies.yaml: %s", e)
-        raise SystemExit(1) from e
+        ownership_safe = False
+        log.critical(
+            "validate_no_overlap FAILED — 自动 scheduler 已隔离，HTTP 服务继续提供"
+            "冻结订单与诊断能力；请修复 owned_symbols: %s",
+            e,
+        )
     except Exception as e:
-        log.warning("validate_no_overlap 跳过（DB 尚未初始化或无 instance_state 表）: %s", e)
+        ownership_safe = False
+        log.error(
+            "validate_no_overlap 无法完成 — 自动 scheduler 已隔离，HTTP 服务继续: %s",
+            e,
+        )
+
+    app.state.ownership_safe = ownership_safe
 
     # 启动 APScheduler
     # ⚠ 多 worker 部署注意：每个 worker 各起一个 scheduler，cron 会重复触发。
@@ -56,7 +68,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.scheduler = None
     try:
         settings = getattr(app.state, "settings", None) or get_settings()
-        if settings.scheduler_enabled:
+        if settings.scheduler_enabled and ownership_safe:
             from app.db import make_engine, make_session_factory
             from app.dependencies import (
                 get_blacklist_service, get_orders_queue_service,
@@ -98,7 +110,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 settings.max_data_staleness_days,
             )
         else:
-            log.info("scheduler_disabled (set QMT_SCHEDULER_ENABLED=true to enable)")
+            reason = (
+                "ownership_overlap"
+                if settings.scheduler_enabled and not ownership_safe
+                else "configuration"
+            )
+            log.info("scheduler_disabled reason=%s", reason)
     except Exception as e:
         log.warning("scheduler 启动失败: %s", e)
 

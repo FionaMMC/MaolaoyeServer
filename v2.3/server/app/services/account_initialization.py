@@ -11,6 +11,10 @@ from app.schemas.account_initialization import (
     AccountInitializationRequest,
     AccountInitializationResponseData,
 )
+from app.services.ownership import (
+    OwnershipOverlap,
+    validate_no_owned_symbol_overlap,
+)
 
 
 def _now_iso() -> str:
@@ -92,6 +96,16 @@ class AccountInitializationService:
                 },
                 last_update=now,
             ))
+            try:
+                # Reject an invalid ownership topology in the creating
+                # transaction.  It must never become a latent startup bomb.
+                validate_no_owned_symbol_overlap(session)
+            except OwnershipOverlap as exc:
+                raise APIError(
+                    ErrorCode.BAD_REQUEST,
+                    f"owned_symbols 与同账户实例冲突: {exc}",
+                    http_status=409,
+                ) from exc
             session.commit()
         return AccountInitializationResponseData(
             instance_id=req.instance_id,

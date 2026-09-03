@@ -68,3 +68,25 @@ def test_initialization_records_external_positions_but_does_not_assign_them_to_h
         assert state.virtual_positions == {"510300.SH": 100}
         assert state.strategy_state["external_positions_snapshot"] == {"600000.SH": 200}
         assert len(state.strategy_state["external_positions_sha256"]) == 64
+
+
+def test_initialization_rejects_same_account_symbol_overlap_before_commit(tmp_path):
+    service, sf = _service(tmp_path)
+    with sf() as session:
+        session.add(InstanceState(
+            instance_id="other_live",
+            execution_domain="live",
+            account_alias="hydra-live",
+            virtual_cash=1.0,
+            virtual_positions={},
+            owned_symbols=["510300.SH"],
+            last_update="2026-09-03T00:00:00+08:00",
+        ))
+        session.commit()
+
+    with pytest.raises(APIError) as captured:
+        service.initialize(_request())
+
+    assert captured.value.http_status == 409
+    with sf() as session:
+        assert session.get(InstanceState, "live_hydra") is None

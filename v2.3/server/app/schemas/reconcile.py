@@ -67,6 +67,8 @@ class TotalReconcileResult(BaseModel):
     n_symbols: int
     n_matched: int
     n_mismatched: int
+    n_external_positions: int = 0
+    external_positions: dict[str, int] = Field(default_factory=dict)
     # [{symbol, qmt, ledger_sum, diff, per_instance:{iid:qty}}]
     mismatches: list[dict] = Field(default_factory=list)
     cash_ok: bool

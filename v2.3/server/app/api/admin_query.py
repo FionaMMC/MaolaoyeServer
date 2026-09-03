@@ -890,6 +890,7 @@ async def reconcile_positions(
         service.shadow_compare(
             snapshot.qmt_positions, snapshot.qmt_cash, snapshot.snapshot_time,
             execution_domain=snapshot.execution_domain,
+            account_alias=snapshot.account_alias,
         )
     except Exception:
         logger.exception("shadow_compare failed (non-fatal, ignored)")

@@ -1,7 +1,7 @@
 """Health 端点：liveness + readiness。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 
 from app.settings import Settings, get_settings
 
@@ -16,6 +16,7 @@ async def liveness() -> dict[str, str]:
 
 @router.get("/readyz")
 async def readiness(
+    request: Request,
     response: Response,
     settings: Settings = Depends(get_settings),
 ) -> dict:
@@ -26,10 +27,17 @@ async def readiness(
     checks["parquet_root"] = "ok" if settings.parquet_root.exists() else (
         f"missing: {settings.parquet_root}"
     )
+    ownership_safe = getattr(request.app.state, "ownership_safe", True)
+    checks["ownership"] = (
+        "ok" if ownership_safe else "degraded: scheduler isolated"
+    )
 
-    all_ok = all(v == "ok" for v in checks.values())
-    if not all_ok:
+    dependencies_ok = checks["parquet_root"] == "ok"
+    if not dependencies_ok:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return {"status": "not_ready", "checks": checks}
 
-    return {"status": "ready", "checks": checks}
+    return {
+        "status": "ready" if ownership_safe else "ready_degraded",
+        "checks": checks,
+    }
