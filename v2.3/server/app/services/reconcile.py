@@ -335,23 +335,26 @@ class ReconcileService:
             return result
 
     def validate_no_overlap(self) -> None:
-        """启动校验：所有 instance 的 owned_symbols 列表两两不重叠。
+        """启动校验：同一 execution domain 内的 owned symbols 不重叠。
 
-        legacy instance（owned_symbols=None）不参与校验（它消费"剩下的"）。
+        paper 与 live 是隔离账本、隔离账户；两域可有相同标的。legacy
+        instance（owned_symbols=None）不参与校验（它消费"剩下的"）。
         如果 raise OwnershipOverlap 应该让 app startup 失败。
         """
-        all_owned: dict[str, str] = {}  # symbol → first_owner_instance_id
+        all_owned: dict[tuple[str, str], str] = {}
         with self.session_factory() as session:
             for inst in session.execute(select(InstanceState)).scalars().all():
                 if not inst.owned_symbols:
                     continue
                 for s in inst.owned_symbols:
-                    if s in all_owned and all_owned[s] != inst.instance_id:
+                    key = (inst.execution_domain, s)
+                    if key in all_owned and all_owned[key] != inst.instance_id:
                         raise OwnershipOverlap(
                             f"symbol {s} owned by both "
-                            f"{all_owned[s]} and {inst.instance_id}"
+                            f"{all_owned[key]} and {inst.instance_id} "
+                            f"in {inst.execution_domain} domain"
                         )
-                    all_owned[s] = inst.instance_id
+                    all_owned[key] = inst.instance_id
 
     def reconcile_cash_total(
         self,
