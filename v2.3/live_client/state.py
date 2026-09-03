@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,8 +22,21 @@ class LiveStateStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._init()
 
-    def _connect(self):
-        return sqlite3.connect(self.path)
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """Provide one transaction and always release its filesystem handle.
+
+        ``sqlite3.Connection.__exit__`` commits or rolls back but deliberately
+        does not close the connection.  That difference is observable on
+        Windows, where an open handle prevents state.db or its temporary parent
+        directory from being removed.
+        """
+        conn = sqlite3.connect(self.path)
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _init(self) -> None:
         with self._connect() as conn:

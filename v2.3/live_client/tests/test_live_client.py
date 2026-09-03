@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from live_client import cli
+from live_client import cli, state as state_module
 from live_client.config import LiveClientConfig
 from live_client.core import validate_account_capacity, validate_order_batch
 from live_client.gateway import (
@@ -159,6 +159,43 @@ def test_state_migrates_existing_submission_table_in_place(tmp_path):
         }
 
     assert "order_remark" in columns
+
+
+def test_state_store_explicitly_closes_every_sqlite_connection(
+    tmp_path, monkeypatch,
+):
+    """Windows must be able to remove state.db before process exit."""
+    real_connect = sqlite3.connect
+    opened_connections = []
+
+    class TrackingConnection(sqlite3.Connection):
+        was_closed = False
+
+        def close(self):
+            self.was_closed = True
+            return super().close()
+
+    def tracking_connect(*args, **kwargs):
+        kwargs["factory"] = TrackingConnection
+        conn = real_connect(*args, **kwargs)
+        opened_connections.append(conn)
+        return conn
+
+    monkeypatch.setattr(state_module.sqlite3, "connect", tracking_connect)
+    cfg = _cfg(tmp_path)
+    store = LiveStateStore(cfg.state_db)
+    batch = validate_order_batch(_orders(), "20260803", cfg)
+    store.save_batch(batch)
+    store.load_batch(batch.trade_date)
+    assert store.save_batch(batch) is False  # early return still closes
+    store.prepare_submission("close-test", batch.batch_sha256, "first-remark")
+    with pytest.raises(RuntimeError, match="提交意图与批次不一致"):
+        store.prepare_submission(
+            "close-test", batch.batch_sha256, "conflicting-remark",
+        )
+
+    assert opened_connections
+    assert all(conn.was_closed for conn in opened_connections)
 
 
 def test_preflight_receipt_detects_local_tampering(tmp_path):
