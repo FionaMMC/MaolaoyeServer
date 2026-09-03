@@ -31,7 +31,21 @@
 - Server 当前账本：现金 `72057.27`，持仓 `{}`，reconciliation status 为 `ok`；
 - generation 关闭，delivery 开启，Server risk mode 为 disabled；
 - Server 尚无 `20260904` target、attempt 或 live order；
-- Server 留有一笔 `20260831` 的旧 canary PENDING 记录；团队说明真实 canary 已成交，所以必须先核对 canary 后的 QMT 当前事实。
+- QMT 现场已确认入金 `128000.00`，最新一次报告为可用现金
+  `210589.85`、总资产 `211051.95`；
+- QMT 白名单持仓为 `510300.SH × 100`，另有三笔白名单外 BJ 持仓；
+- `20260903` canary `hco_40a7d84adac65d55b5015ccbedebc35b`
+  已在 Server 标为 `FILLED`，累计成交 `100 @ 4.638`；相同累计回报出现两行，
+  但第二行的增量为 0，没有造成二次持仓；
+- Server 还留有 `20260831` canary
+  `hco_1dcfdd2f3ff5e3936d307814858213af` 为 `PENDING`。它记录在恢复证据中，
+  但不再作为 opening baseline 校准的阻断项；
+- Server `cash_flow_journal` 仍为 0 行，两次 HTTP 423 没有部分入账。
+
+现场报告中的 `10532.58 = QMT cash - Server cash` 是**净现金变化**，同时包含
+白名单外卖出回笼与 510300 canary 买入支出，不能直接证明为一笔外部卖出收入。
+因此不要把它登记成 `OTHER +10532.58`。本次正式 Hydra 尚未创建首个 target，
+直接把最新 QMT 快照定义为 opening baseline，口径最简单也最准确。
 
 ## 2. 执行规则与 hard stop
 
@@ -103,22 +117,106 @@ if ($LASTEXITCODE -ne 0) { throw "doctor failed" }
 
 如果 sidecar 的 execution date 不是 `20260904`，不得编辑旧 JSON。用同一批准 producer 在新目录重新发布 catch-up artifact，并重算全部关联 hash。
 
-## Phase C — stage 前核对 canary 后账户基线
+## Phase C — 用最新 QMT 快照校准 opening baseline
 
-在 MiniQMT 账户页或用已验证的只读查询，记录当前：可用现金、总资产、全部持仓、可卖持仓、活动/可撤委托。
+这是正式 Hydra 首次 target 之前的一次性校准，不要求把启用前的每一笔现金变化
+拆成日常现金流。不要开启 cash-flow 闸门，也不要执行附件里准备的两条 cash-flow
+命令。
 
-与 Server 已知基线比较：
+### C1. 冻结最新只读快照
 
-```text
-Server cash      = 72057.27
-Server positions = {}
+在 MiniQMT 没有活动/可撤委托时重新读取：可用现金、总资产、全部持仓、可卖持仓。
+保存为 UTF-8 JSON；真实账户号不得写入文件，只写现有配置中的 SHA-256 指纹：
+
+```json
+{
+  "schema_version": 1,
+  "execution_domain": "live",
+  "account_alias": "hydra-live",
+  "instance_id": "live_hydra_v481_rb",
+  "account_fingerprint": "<HYDRA_LIVE_EXPECTED_ACCOUNT_SHA256>",
+  "qmt_cash": 210589.85,
+  "qmt_total_asset": 211051.95,
+  "qmt_positions": {
+    "510300.SH": 100,
+    "920268.BJ": 100,
+    "920269.BJ": 200,
+    "920289.BJ": 200
+  },
+  "qmt_sellable_positions": {},
+  "active_order_count": 0,
+  "snapshot_time": "<本次实际 QMT 查询时间，含时区>",
+  "source": "MiniQMT read-only account snapshot"
+}
 ```
 
-通过标准：Hydra 白名单持仓完全相同、现金差绝对值不超过 1 元、没有活动或未知委托。
+上面的金额和持仓只是已知现场值。执行时以**重新查询结果**为准，不要为了匹配
+示例而改数。文件建议保存为：
 
-如果 canary 买入的 100 份仍在账户，或者现金因成交/费用变化，这里必然不通过。不要先 stage。当前公开 live API 故意不能覆盖已初始化账本；应保存 QMT 委托、成交、费用、现金和持仓证据，走受控 baseline recovery。不得把 canary 假装成 formal Hydra trade，也不得直接改 SQLite 凑平。
+```text
+C:\hydra-live\evidence\opening-baseline-20260903.json
+```
 
-只有 Phase C 通过后才能继续。
+将该文件原样传到 Server 私有目录，例如：
+
+```text
+/opt/qmt-server/private/hydra-incoming/opening-baseline-20260903.json
+```
+
+### C2. 部署恢复命令并先 dry-run
+
+Server 代码必须包含：
+
+```text
+scripts/recover_hydra_pre_activation_baseline.py
+```
+
+在 Server 运行；此步不写数据库：
+
+```bash
+cd /opt/qmt-server/v2.3/server
+SNAPSHOT=/opt/qmt-server/private/hydra-incoming/opening-baseline-20260903.json
+BACKUP=/opt/qmt-server/backups/hydra-opening-baseline-$(date +%Y%m%d-%H%M%S)
+
+sudo /opt/qmt-server/venv/bin/python \
+  -m scripts.recover_hydra_pre_activation_baseline \
+  --snapshot "$SNAPSHOT" \
+  --backup-dir "$BACKUP"
+```
+
+预期 `status=DRY_RUN_OK`，并显示：
+
+```text
+previous_cash      = 72057.27
+previous_positions = {}
+recovered_cash     = 本次 QMT qmt_cash
+recovered_positions= 本次 QMT 持仓中过滤后的 Hydra 9 ETF
+external_positions = 其余持仓（仅留审计，不归 Hydra）
+```
+
+旧 `PENDING` canary 只会出现在 `observed_canary_orders` 中提醒后续整理，不阻断
+本次 opening baseline。
+
+### C3. 应用一次并立即只读复核
+
+dry-run 数字与 QMT 屏幕一致后，用同一份文件执行：
+
+```bash
+sudo /opt/qmt-server/venv/bin/python \
+  -m scripts.recover_hydra_pre_activation_baseline \
+  --snapshot "$SNAPSHOT" \
+  --backup-dir "$BACKUP" \
+  --apply
+```
+
+命令会先生成可恢复的 SQLite backup，再写入 opening baseline 和前后审计记录。
+预期 `status=APPLIED`，并确认返回的 `recovered_cash`、
+`recovered_positions` 与同一份快照一致。这里不创建 target、订单或 QMT 委托；
+完整的在线对账由 Phase K 的 preflight 做，届时必须得到白名单持仓差异
+`0/0/0`、`abs(cash_diff)<=1`。
+
+如果最新 QMT 数字已变化，重新保存一份新快照并重新 dry-run；不要修改已经保存的
+证据文件。只有 Phase C 对账通过后才能继续。
 
 ## Phase D — 安装四份冻结数据
 
@@ -359,6 +457,10 @@ Research publisher: aa6b60deef44b244764385e7b6bd681429b9b362
 Research as_of_date:
 Research decision_date:
 Execution date: 20260904
+Opening baseline snapshot SHA256:
+Opening baseline recovery_id:
+Opening baseline backup:
+Opening baseline cash/positions:
 Target basket_sha256:
 Server target_id:
 Server attempt_id:
