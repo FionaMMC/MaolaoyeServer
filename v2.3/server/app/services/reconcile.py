@@ -170,6 +170,51 @@ class ReconcileService:
             _, account_has_shared_ledger = self._configured_account_policy(
                 snapshot.instance_id, snapshot.qmt_account_id,
             )
+
+            if inst.ledger_mode == "attributed":
+                if not snapshot.dry_run:
+                    raise ReconcileGuardTripped(
+                        "attributed 子账本禁止用整账户 QMT 快照覆盖；"
+                        "只能由已归属成交、费用、股息和显式资本划拨维护"
+                    )
+                portfolio = self.reconcile_total(
+                    qmt_positions=snapshot.qmt_positions,
+                    qmt_cash=snapshot.qmt_cash,
+                    snapshot_time=snapshot.snapshot_time,
+                    execution_domain=snapshot.execution_domain,
+                    account_alias=snapshot.account_alias or inst.account_alias,
+                    cash_tolerance=0.0,
+                )
+                managed_positions = {
+                    symbol: int(quantity)
+                    for symbol, quantity in (inst.virtual_positions or {}).items()
+                    if int(quantity) > 0
+                }
+                return ReconcileResult(
+                    instance_id=snapshot.instance_id,
+                    snapshot_time=snapshot.snapshot_time,
+                    dry_run=True,
+                    applied=False,
+                    reconciliation_scope="portfolio_attributed",
+                    managed_cash=float(inst.virtual_cash),
+                    managed_positions=managed_positions,
+                    portfolio=portfolio,
+                    server_cash=float(inst.virtual_cash),
+                    qmt_cash=float(snapshot.qmt_cash),
+                    cash_diff=float(snapshot.qmt_cash) - float(inst.virtual_cash),
+                    n_server_positions=len(managed_positions),
+                    n_qmt_positions=len({
+                        symbol: quantity
+                        for symbol, quantity in snapshot.qmt_positions.items()
+                        if int(quantity) > 0
+                    }),
+                    n_matched=portfolio.n_matched,
+                    n_mismatched=portfolio.n_mismatched,
+                    n_server_only=0,
+                    n_qmt_only=0,
+                    diffs=[],
+                )
+
             if not snapshot.dry_run and account_has_shared_ledger:
                 raise ReconcileGuardTripped(
                     "该 QMT 物理账户包含 shared_ledger 策略，任何实例都禁止用整账户"
@@ -258,6 +303,8 @@ class ReconcileService:
                 snapshot_time=snapshot.snapshot_time,
                 dry_run=snapshot.dry_run,
                 applied=False,
+                managed_cash=server_cash,
+                managed_positions=server_positions,
                 server_cash=server_cash,
                 qmt_cash=float(snapshot.qmt_cash),
                 cash_diff=cash_diff,
@@ -459,13 +506,14 @@ class ReconcileService:
         cash_ok = True
         if cash_total > 0:
             shortfall = cash_total - qmt_cash
-            cash_ok = shortfall <= cash_total * cash_tolerance
+            cash_ok = shortfall <= max(1.0, cash_total * cash_tolerance)
         result = TotalReconcileResult(snapshot_time=snapshot_time, n_symbols=len(all_syms),
             n_matched=matched, n_mismatched=len(mismatches),
             n_external_positions=len(external_positions),
             external_positions=external_positions,
             mismatches=mismatches,
-            cash_ok=cash_ok, ledger_cash_total=cash_total, qmt_cash=float(qmt_cash))
+            cash_ok=cash_ok, ledger_cash_total=cash_total, qmt_cash=float(qmt_cash),
+            unallocated_cash=float(qmt_cash) - cash_total)
         if mismatches or not cash_ok:
             logger.error("reconcile_total MISMATCH: %d/%d symbols off, cash_ok=%s "
                          "(ledger_cash=%.0f qmt_cash=%.0f). mismatches=%s",

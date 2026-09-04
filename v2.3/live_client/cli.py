@@ -72,6 +72,38 @@ def _load_frozen_batch(
     return validate_frozen_batch(state.load_batch(trade_date), trade_date, cfg)
 
 
+def _strategy_capacity(
+    cfg: LiveClientConfig, snapshot, reconciliation: dict, gateway,
+) -> tuple[float, dict[str, int], float]:
+    """Return cash, sellable positions and NAV owned by this strategy only."""
+    if cfg.ledger_mode == "dedicated":
+        return (
+            float(snapshot.available_cash),
+            dict(snapshot.sellable_positions),
+            float(snapshot.total_asset),
+        )
+    managed_cash = float(reconciliation["managed_cash"])
+    managed_positions = {
+        symbol: int(quantity)
+        for symbol, quantity in reconciliation["managed_positions"].items()
+        if int(quantity) > 0
+    }
+    managed_sellable = {
+        symbol: min(quantity, int(snapshot.sellable_positions.get(symbol, 0)))
+        for symbol, quantity in managed_positions.items()
+    }
+    position_value = 0.0
+    for symbol, quantity in managed_positions.items():
+        physical_quantity = int(snapshot.positions.get(symbol, 0))
+        physical_value = snapshot.position_market_values.get(symbol)
+        if physical_quantity > 0 and physical_value is not None:
+            unit_price = float(physical_value) / physical_quantity
+        else:
+            unit_price = float(gateway.market_quote(symbol).last_price)
+        position_value += quantity * unit_price
+    return managed_cash, managed_sellable, managed_cash + position_value
+
+
 def preflight(
     cfg: LiveClientConfig, trade_date: str, mock_state: Path | None,
 ) -> dict:
@@ -89,13 +121,21 @@ def preflight(
             execution_domain=cfg.execution_domain,
         )
         reconciliation = _require_server_reconciled(server, cfg, snapshot)
+        capacity_cash, capacity_positions, capacity_nav = _strategy_capacity(
+            cfg, snapshot, reconciliation, gateway,
+        )
         risk_snapshot = validate_account_capacity(
             batch,
-            snapshot.available_cash,
-            snapshot.sellable_positions,
+            capacity_cash,
+            capacity_positions,
             cfg,
-            snapshot.total_asset,
+            capacity_nav,
         )
+        risk_snapshot["capacity_scope"] = cfg.ledger_mode
+        risk_snapshot["physical_qmt_available_cash"] = snapshot.available_cash
+        risk_snapshot["physical_qmt_total_asset"] = snapshot.total_asset
+        if cfg.ledger_mode == "attributed":
+            risk_snapshot["managed_sellable_positions"] = capacity_positions
     finally:
         gateway.close()
     receipt = {
@@ -160,13 +200,48 @@ def submit(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> d
             capacity_batch = replace(frozen_batch, orders=remaining_orders)
         else:
             capacity_batch = frozen_batch
-        risk_snapshot = validate_account_capacity(
-            capacity_batch,
-            snapshot.available_cash,
-            snapshot.sellable_positions,
-            cfg,
-            snapshot.total_asset,
-        )
+        if cfg.ledger_mode == "attributed":
+            frozen_reconciliation = preflight_receipt["payload"].get(
+                "reconciliation", {}
+            )
+            frozen_risk = preflight_receipt["payload"].get("risk", {})
+            if frozen_reconciliation.get("reconciliation_scope") != "portfolio_attributed":
+                raise RuntimeError("preflight 回执不是 attributed 策略额度")
+            # Always re-check the complete frozen batch against the strategy's
+            # immutable prior-evening allocation.  This remains valid after a
+            # partial local submission and never borrows another strategy's cash.
+            strategy_risk = validate_account_capacity(
+                frozen_batch,
+                float(frozen_reconciliation["managed_cash"]),
+                {
+                    symbol: int(quantity)
+                    for symbol, quantity in frozen_risk[
+                        "managed_sellable_positions"
+                    ].items()
+                },
+                cfg,
+                float(frozen_risk["qmt_total_asset"]),
+            )
+            physical_risk = validate_account_capacity(
+                capacity_batch,
+                snapshot.available_cash,
+                snapshot.sellable_positions,
+                cfg,
+                snapshot.total_asset,
+            )
+            risk_snapshot = {
+                "capacity_scope": "attributed",
+                "strategy": strategy_risk,
+                "physical_remaining": physical_risk,
+            }
+        else:
+            risk_snapshot = validate_account_capacity(
+                capacity_batch,
+                snapshot.available_cash,
+                snapshot.sellable_positions,
+                cfg,
+                snapshot.total_asset,
+            )
         if not existing_rows:
             state.record_risk_check(frozen_batch.batch_sha256, risk_snapshot)
         submitted = rejected = submitted_now = 0
@@ -447,6 +522,12 @@ def initialize_account(
         "qmt_total_asset": snapshot.total_asset,
         "qmt_positions": snapshot.positions,
         "owned_symbols": sorted(cfg.allowed_symbols),
+        "ledger_mode": cfg.ledger_mode,
+        "allocated_cash": cfg.initial_allocated_cash,
+        "allocated_positions": (
+            cfg.initial_allocated_positions
+            if cfg.ledger_mode == "attributed" else None
+        ),
         "snapshot_time": datetime.now().astimezone().isoformat(),
         "evidence_sha256": evidence_sha256,
     })
@@ -462,7 +543,22 @@ def journal_cash_flow(
     source_event_id: str,
     evidence_sha256: str,
     description: str | None,
+    mock_state: Path | None = None,
+    transition_to_attributed: bool = False,
 ) -> dict:
+    qmt_cash = None
+    snapshot_time = None
+    if event_type.startswith("CAPITAL_"):
+        gateway = _gateway(cfg, mock_state)
+        gateway.connect()
+        try:
+            snapshot = gateway.account_snapshot()
+            if snapshot.account_id != cfg.account_id:
+                raise RuntimeError("QMT account_id 二次校验失败")
+            qmt_cash = snapshot.available_cash
+            snapshot_time = datetime.now().astimezone().isoformat()
+        finally:
+            gateway.close()
     return LiveServerClient(
         cfg.server_base_url, cfg.api_key, execution_domain=cfg.execution_domain,
     ).post_cash_flow({
@@ -472,6 +568,9 @@ def journal_cash_flow(
         "event_date": event_date,
         "event_type": event_type,
         "amount": amount,
+        "qmt_cash": qmt_cash,
+        "snapshot_time": snapshot_time,
+        "transition_to_attributed": transition_to_attributed,
         "currency": "CNY",
         "source": source,
         "source_event_id": source_event_id,
@@ -492,14 +591,27 @@ def _require_server_reconciled(server, cfg, snapshot) -> dict:
         "dry_run": True,
         "force": False,
     })
-    if (
-        reconciliation["n_mismatched"]
-        or reconciliation["n_server_only"]
-        or reconciliation["n_qmt_only"]
-    ):
-        raise RuntimeError("QMT positions 与 server ledger 不一致")
-    if abs(float(reconciliation["cash_diff"])) > 1.0:
-        raise RuntimeError("QMT cash 与 server ledger 不一致")
+    if cfg.ledger_mode == "attributed":
+        if reconciliation.get("reconciliation_scope") != "portfolio_attributed":
+            raise RuntimeError("server 未按 attributed portfolio 口径对账")
+        portfolio = reconciliation.get("portfolio") or {}
+        if portfolio.get("n_mismatched") or not portfolio.get("cash_ok"):
+            raise RuntimeError("QMT 全账户与策略子账本合计不一致")
+        if reconciliation.get("managed_cash") is None or not isinstance(
+            reconciliation.get("managed_positions"), dict
+        ):
+            raise RuntimeError("server 未返回 Hydra 策略可用额度")
+    else:
+        if reconciliation.get("reconciliation_scope", "instance") != "instance":
+            raise RuntimeError("server 账本模式与 dedicated client 不一致")
+        if (
+            reconciliation["n_mismatched"]
+            or reconciliation["n_server_only"]
+            or reconciliation["n_qmt_only"]
+        ):
+            raise RuntimeError("QMT positions 与 server ledger 不一致")
+        if abs(float(reconciliation["cash_diff"])) > 1.0:
+            raise RuntimeError("QMT cash 与 server ledger 不一致")
     return reconciliation
 
 
@@ -539,6 +651,7 @@ def doctor(cfg: LiveClientConfig) -> dict:
         "execution_domain": cfg.execution_domain,
         "account_alias": cfg.account_alias,
         "instance_id": cfg.instance_id,
+        "ledger_mode": cfg.ledger_mode,
         "task_prefix": cfg.task_prefix,
         "risk_mode": cfg.risk_mode,
         "trading_enabled": cfg.trading_enabled,
@@ -547,6 +660,12 @@ def doctor(cfg: LiveClientConfig) -> dict:
         "server_contacted": False,
         "qmt_contacted": False,
     }
+
+
+def show_strategy_ledger(cfg: LiveClientConfig) -> dict:
+    return LiveServerClient(
+        cfg.server_base_url, cfg.api_key, execution_domain=cfg.execution_domain,
+    ).strategy_ledger(cfg.instance_id, cfg.account_alias)
 
 
 def main() -> None:
@@ -562,6 +681,7 @@ def main() -> None:
     retry.add_argument("--next-date", required=True)
     retry.add_argument("--mock-state", type=Path)
     sub.add_parser("doctor")
+    sub.add_parser("ledger")
     initialize = sub.add_parser("initialize-account")
     initialize.add_argument("--evidence-sha256", required=True)
     initialize.add_argument("--mock-state", type=Path)
@@ -573,19 +693,26 @@ def main() -> None:
     cash_flow.add_argument("--date", required=True)
     cash_flow.add_argument(
         "--type", required=True,
-        choices=("DIVIDEND", "DEPOSIT", "WITHDRAWAL", "OTHER"),
+        choices=(
+            "DIVIDEND", "DEPOSIT", "WITHDRAWAL", "CAPITAL_ALLOCATION",
+            "CAPITAL_DEALLOCATION", "OTHER",
+        ),
     )
     cash_flow.add_argument("--amount", required=True, type=float)
     cash_flow.add_argument("--source", required=True)
     cash_flow.add_argument("--source-event-id", required=True)
     cash_flow.add_argument("--evidence-sha256", required=True)
     cash_flow.add_argument("--description")
+    cash_flow.add_argument("--mock-state", type=Path)
+    cash_flow.add_argument("--transition-to-attributed", action="store_true")
     args = parser.parse_args()
     cfg = LiveClientConfig.from_env()
     log = _logger(cfg)
     try:
         if args.command == "doctor":
             result = doctor(cfg)
+        elif args.command == "ledger":
+            result = show_strategy_ledger(cfg)
         elif args.command == "query":
             result = query(cfg, args.date)
         elif args.command == "preflight":
@@ -612,6 +739,8 @@ def main() -> None:
                 source_event_id=args.source_event_id,
                 evidence_sha256=args.evidence_sha256,
                 description=args.description,
+                mock_state=args.mock_state,
+                transition_to_attributed=args.transition_to_attributed,
             )
         else:
             result = reconcile_and_close(

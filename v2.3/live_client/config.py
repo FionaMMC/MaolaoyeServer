@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -84,6 +85,9 @@ class LiveClientConfig:
     max_daily_sell_notional: float
     max_daily_turnover_notional: float
     max_price_offset_bps: float
+    ledger_mode: str = "dedicated"
+    initial_allocated_cash: float | None = None
+    initial_allocated_positions: dict[str, int] = field(default_factory=dict)
     risk_mode: str = "static"
     auto_max_daily_orders: int = 100
     auto_buffer_bps: float = 100.0
@@ -98,6 +102,24 @@ class LiveClientConfig:
             "HYDRA_LIVE_RISK_MODE", "disabled"
         ).strip().lower()
         static = risk_mode == "static"
+        ledger_mode = os.environ.get(
+            "HYDRA_LIVE_LEDGER_MODE", "dedicated"
+        ).strip().lower()
+        allocated_cash = None
+        allocated_positions: dict[str, int] = {}
+        if ledger_mode == "attributed":
+            allocated_cash = float(_required("HYDRA_LIVE_INITIAL_ALLOCATED_CASH"))
+            try:
+                raw_positions = json.loads(_required(
+                    "HYDRA_LIVE_INITIAL_ALLOCATED_POSITIONS_JSON"
+                ))
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    "HYDRA_LIVE_INITIAL_ALLOCATED_POSITIONS_JSON 不是合法 JSON"
+                ) from exc
+            if not isinstance(raw_positions, dict):
+                raise ValueError("INITIAL_ALLOCATED_POSITIONS_JSON 必须是 object")
+            allocated_positions = raw_positions
         cfg = cls(
             mode=os.environ.get("HYDRA_LIVE_MODE", "mock_qmt").strip().lower(),
             execution_domain=_required("HYDRA_LIVE_EXECUTION_DOMAIN"),
@@ -143,6 +165,9 @@ class LiveClientConfig:
                 _positive_float("HYDRA_LIVE_MAX_PRICE_OFFSET_BPS")
                 if static else _nonnegative_float("HYDRA_LIVE_MAX_PRICE_OFFSET_BPS")
             ),
+            ledger_mode=ledger_mode,
+            initial_allocated_cash=allocated_cash,
+            initial_allocated_positions=allocated_positions,
             risk_mode=risk_mode,
             auto_max_daily_orders=_positive_int(
                 "HYDRA_LIVE_AUTO_MAX_DAILY_ORDERS", 100,
@@ -183,6 +208,23 @@ class LiveClientConfig:
             raise ValueError("Hydra live 白名单必须恰好是已批准的 9 只 ETF")
         if self.risk_mode not in {"disabled", "static", "auto"}:
             raise ValueError("HYDRA_LIVE_RISK_MODE 必须是 disabled/static/auto")
+        if self.ledger_mode not in {"dedicated", "attributed"}:
+            raise ValueError("HYDRA_LIVE_LEDGER_MODE 必须是 dedicated/attributed")
+        if self.ledger_mode == "attributed":
+            if (
+                self.initial_allocated_cash is None
+                or not math.isfinite(self.initial_allocated_cash)
+                or self.initial_allocated_cash < 0
+            ):
+                raise ValueError("attributed 初始分配现金必须是非负有限数")
+            if any(
+                symbol not in self.allowed_symbols
+                or not isinstance(quantity, int)
+                or isinstance(quantity, bool)
+                or quantity < 0
+                for symbol, quantity in self.initial_allocated_positions.items()
+            ):
+                raise ValueError("attributed 初始分配持仓非法或超出 Hydra 白名单")
         if self.risk_mode == "static" and any(
             not math.isfinite(value) or value <= 0 for value in (
             self.max_daily_orders,

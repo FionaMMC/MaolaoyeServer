@@ -17,6 +17,11 @@ class OwnershipOverlap(Exception):
     """Two instances claim the same symbol in the same account scope."""
 
 
+def _overlap_is_attributed(first: InstanceState, second: InstanceState) -> bool:
+    """Attributed ledgers may share a symbol; fill lineage preserves ownership."""
+    return first.ledger_mode == second.ledger_mode == "attributed"
+
+
 def _same_account_scope(first: InstanceState, second: InstanceState) -> bool:
     if first.execution_domain != second.execution_domain:
         return False
@@ -33,8 +38,10 @@ def validate_owned_symbol_rows(rows: Iterable[InstanceState]) -> None:
     for row in rows:
         for symbol in row.owned_symbols or ():
             for owner in owners_by_symbol.get(symbol, ()):
-                if owner.instance_id != row.instance_id and _same_account_scope(
-                    owner, row,
+                if (
+                    owner.instance_id != row.instance_id
+                    and _same_account_scope(owner, row)
+                    and not _overlap_is_attributed(owner, row)
                 ):
                     alias = row.account_alias or owner.account_alias or "<legacy>"
                     raise OwnershipOverlap(

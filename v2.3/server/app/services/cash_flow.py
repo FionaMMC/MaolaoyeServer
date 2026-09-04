@@ -9,6 +9,7 @@ from sqlalchemy import select
 from app.exceptions import APIError, ErrorCode
 from app.models import CashFlowJournal, InstanceState
 from app.schemas.cash_flow import CashFlowRequest, CashFlowResponseData
+from app.services.ownership import OwnershipOverlap, validate_no_owned_symbol_overlap
 
 
 def _now_iso() -> str:
@@ -39,6 +40,9 @@ class CashFlowService:
                     and existing.event_type == req.event_type
                     and existing.amount == req.amount
                     and existing.evidence_sha256 == req.evidence_sha256
+                    and existing.qmt_cash_snapshot == req.qmt_cash
+                    and existing.snapshot_time == req.snapshot_time
+                    and existing.transition_to_attributed == req.transition_to_attributed
                 )
                 if not immutable:
                     raise APIError(
@@ -61,6 +65,7 @@ class CashFlowService:
                     amount=existing.amount,
                     already_applied=True,
                     virtual_cash_after=float(state.virtual_cash),
+                    ledger_mode_after=state.ledger_mode,
                 )
 
             state = session.get(InstanceState, req.instance_id)
@@ -91,6 +96,54 @@ class CashFlowService:
                     http_status=409,
                 )
 
+            account_ledger_cash_after: float | None = None
+            unallocated_cash_after: float | None = None
+            if req.event_type.startswith("CAPITAL_"):
+                if state.ledger_mode != "attributed" and not req.transition_to_attributed:
+                    raise APIError(
+                        ErrorCode.BAD_REQUEST,
+                        "资本划拨只适用于 attributed 策略子账本",
+                        http_status=409,
+                    )
+                if req.transition_to_attributed:
+                    transition_time = _now_iso()
+                    state.ledger_mode = "attributed"
+                    strategy_state = dict(state.strategy_state or {})
+                    strategy_state["ledger_mode"] = "attributed"
+                    strategy_state["reconciliation_status"] = "attributed_ledger"
+                    strategy_state["ledger_mode_changed_at"] = transition_time
+                    strategy_state["ledger_transition_evidence_sha256"] = (
+                        req.evidence_sha256
+                    )
+                    strategy_state["ledger_transition_source_event_id"] = (
+                        req.source_event_id
+                    )
+                    state.strategy_state = strategy_state
+                    try:
+                        validate_no_owned_symbol_overlap(session)
+                    except OwnershipOverlap as exc:
+                        raise APIError(
+                            ErrorCode.BAD_REQUEST,
+                            f"切换 attributed 后标的归属冲突: {exc}",
+                            http_status=409,
+                        ) from exc
+                peers = session.execute(select(InstanceState).where(
+                    InstanceState.execution_domain == req.execution_domain,
+                    InstanceState.account_alias == req.account_alias,
+                )).scalars().all()
+                account_ledger_cash_after = sum(
+                    cash_after if peer.instance_id == state.instance_id
+                    else float(peer.virtual_cash)
+                    for peer in peers
+                )
+                if account_ledger_cash_after > float(req.qmt_cash) + 1.0:
+                    raise APIError(
+                        ErrorCode.BAD_REQUEST,
+                        "资本划拨后各策略现金合计超过 QMT 可用现金",
+                        http_status=409,
+                    )
+                unallocated_cash_after = float(req.qmt_cash) - account_ledger_cash_after
+
             now = _now_iso()
             row = CashFlowJournal(
                 execution_domain=req.execution_domain,
@@ -99,6 +152,9 @@ class CashFlowService:
                 event_date=req.event_date,
                 event_type=req.event_type,
                 amount=req.amount,
+                qmt_cash_snapshot=req.qmt_cash,
+                snapshot_time=req.snapshot_time,
+                transition_to_attributed=req.transition_to_attributed,
                 currency=req.currency,
                 source=req.source,
                 source_event_id=req.source_event_id,
@@ -122,4 +178,7 @@ class CashFlowService:
                 amount=req.amount,
                 already_applied=False,
                 virtual_cash_after=cash_after,
+                account_ledger_cash_after=account_ledger_cash_after,
+                unallocated_cash_after=unallocated_cash_after,
+                ledger_mode_after=state.ledger_mode,
             )

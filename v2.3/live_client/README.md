@@ -20,8 +20,11 @@ logs, API key and Windows Task Scheduler names.
   `HYDRA_LIVE_ALLOW_INSECURE_HTTP=true`. This is an acknowledgement switch, not
   encryption, and it does not relax Bearer authentication or any trading gate.
 - `HYDRA_LIVE_TRADING_ENABLED=false` blocks submit, including mock submit.
+- `HYDRA_LIVE_LEDGER_MODE=attributed` makes QMT the physical container only.
+  Hydra capacity comes from its server-side `virtual_cash` and attributed
+  positions; unallocated QMT cash and other strategies' positions are unusable.
 - `HYDRA_LIVE_RISK_MODE=disabled` independently blocks every live batch. `auto`
-  computes limits from the current QMT total asset, available cash and sellable
+  computes limits from Hydra's attributed equity, available cash and sellable
   holdings; its snapshot is written once per batch before the first submission.
 - Every server batch is independently re-hashed and frozen by `query`. The
   required online `preflight` compares QMT with the server ledger and persists a
@@ -47,6 +50,7 @@ From the `v2.3` directory with `PYTHONPATH` pointing to that directory:
 ```powershell
 python -m live_client.cli initialize-account --evidence-sha256 <sha256>
 python -m live_client.cli doctor
+python -m live_client.cli ledger
 python -m live_client.cli query --date YYYYMMDD
 python -m live_client.cli preflight --date YYYYMMDD
 python -m live_client.cli submit --date YYYYMMDD
@@ -55,6 +59,10 @@ python -m live_client.cli retry --date YYYYMMDD --next-date YYYYMMDD
 python -m live_client.cli cash-flow --date YYYYMMDD --type DIVIDEND `
   --amount 123.45 --source <verified-source> --source-event-id <stable-id> `
   --evidence-sha256 <sha256>
+python -m live_client.cli cash-flow --date YYYYMMDD `
+  --type CAPITAL_DEALLOCATION --amount -123.45 --source owner-allocation `
+  --source-event-id <stable-id> --evidence-sha256 <sha256> `
+  --transition-to-attributed
 python -m live_client.cli reconcile-close --attempt-id <attempt_id> --evidence-sha256 <sha256>
 ```
 

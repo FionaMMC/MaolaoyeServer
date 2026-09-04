@@ -90,3 +90,114 @@ def test_initialization_rejects_same_account_symbol_overlap_before_commit(tmp_pa
     assert captured.value.http_status == 409
     with sf() as session:
         assert session.get(InstanceState, "live_hydra") is None
+
+
+def test_attributed_initialization_only_assigns_explicit_capital_and_positions(tmp_path):
+    service, sf = _service(tmp_path)
+    result = service.initialize(_request(
+        qmt_cash=19_149_000.0,
+        qmt_total_asset=19_153_000.0,
+        qmt_positions={"510300.SH": 300, "600000.SH": 200},
+        ledger_mode="attributed",
+        allocated_cash=211_000.0,
+        allocated_positions={"510300.SH": 100},
+    ))
+
+    assert result.ledger_mode == "attributed"
+    assert result.virtual_cash == 211_000.0
+    assert result.unallocated_cash == 18_938_000.0
+    assert result.positions == {"510300.SH": 100}
+    with sf() as session:
+        state = session.get(InstanceState, "live_hydra")
+        assert state.ledger_mode == "attributed"
+        assert state.virtual_cash == 211_000.0
+        assert state.virtual_positions == {"510300.SH": 100}
+        assert state.strategy_state["initial_allocated_cash"] == 211_000.0
+        assert state.strategy_state["external_positions_snapshot"] == {
+            "510300.SH": 200,
+            "600000.SH": 200,
+        }
+
+
+@pytest.mark.parametrize(
+    "changes, message",
+    [
+        ({"ledger_mode": "attributed"}, "必须显式提供"),
+        ({
+            "ledger_mode": "attributed",
+            "allocated_cash": 700_001.0,
+            "allocated_positions": {},
+        }, "不能大于"),
+        ({
+            "ledger_mode": "attributed",
+            "allocated_cash": 211_000.0,
+            "allocated_positions": {"600000.SH": 1},
+        }, "不在 owned_symbols"),
+        ({
+            "ledger_mode": "attributed",
+            "allocated_cash": 211_000.0,
+            "qmt_positions": {"510300.SH": 100},
+            "allocated_positions": {"510300.SH": 101},
+        }, "超过 QMT"),
+    ],
+)
+def test_attributed_initialization_rejects_implicit_or_unfunded_allocation(
+    changes, message,
+):
+    with pytest.raises(ValueError, match=message):
+        _request(**changes)
+
+
+def test_two_attributed_ledgers_can_share_a_symbol(tmp_path):
+    service, sf = _service(tmp_path)
+    with sf() as session:
+        session.add(InstanceState(
+            instance_id="other_live",
+            execution_domain="live",
+            account_alias="hydra-live",
+            ledger_mode="attributed",
+            virtual_cash=100_000.0,
+            virtual_positions={"510300.SH": 100},
+            owned_symbols=["510300.SH"],
+            last_update="2026-09-03T00:00:00+08:00",
+        ))
+        session.commit()
+
+    result = service.initialize(_request(
+        qmt_positions={"510300.SH": 200},
+        ledger_mode="attributed",
+        allocated_cash=211_000.0,
+        allocated_positions={"510300.SH": 100},
+    ))
+
+    assert result.positions == {"510300.SH": 100}
+
+
+def test_attributed_initialization_rejects_double_allocation_across_strategies(
+    tmp_path,
+):
+    service, sf = _service(tmp_path)
+    with sf() as session:
+        session.add(InstanceState(
+            instance_id="other_live",
+            execution_domain="live",
+            account_alias="hydra-live",
+            ledger_mode="attributed",
+            virtual_cash=100_000.0,
+            virtual_positions={"510300.SH": 100},
+            owned_symbols=["510300.SH"],
+            last_update="2026-09-03T00:00:00+08:00",
+        ))
+        session.commit()
+
+    with pytest.raises(APIError, match="分配合计超过") as captured:
+        service.initialize(_request(
+            qmt_positions={"510300.SH": 100},
+            ledger_mode="attributed",
+            allocated_cash=211_000.0,
+            allocated_positions={"510300.SH": 100},
+        ))
+
+    assert captured.value.http_status == 409
+    with sf() as session:
+        assert session.get(InstanceState, "live_hydra") is None

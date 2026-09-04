@@ -53,6 +53,19 @@ class LiveServerClient:
     def initialize_account(self, payload: dict) -> dict:
         return self._post("/accounts/initialize-from-qmt", payload)
 
+    def strategy_ledger(self, instance_id: str, account_alias: str) -> dict:
+        response = requests.get(
+            f"{self.base_url}/accounts/strategy-ledger",
+            params={"instance_id": instance_id, "account_alias": account_alias},
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        body = response.json()
+        if body.get("code") != 0:
+            raise RuntimeError(f"GET /accounts/strategy-ledger 失败: {body}")
+        return body["data"]
+
     def reconcile(self, payload: dict) -> dict:
         return self._post("/admin/reconcile-positions", payload)
 

@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from app.db import make_session_factory
 from app.dependencies import _engine_for_url
 from app.main import create_app
-from app.models import Order
+from app.models import CashFlowJournal, InstanceState, Order
 from app.settings import Settings
 
 
@@ -182,3 +182,54 @@ def test_live_reconciliation_requires_account_fingerprint_and_read_only_mode(tmp
     writable = client.post("/admin/reconcile-positions", headers=headers, json=payload)
     assert writable.status_code == 403
     assert "只读对账" in writable.json()["detail"]
+
+
+def test_live_strategy_ledger_read_is_scoped_to_authorized_account(tmp_path):
+    client, sf = _client_and_sf(tmp_path)
+    with sf() as session:
+        session.add(InstanceState(
+            instance_id="live_hydra",
+            execution_domain="live",
+            account_alias="hydra-live",
+            ledger_mode="attributed",
+            virtual_cash=211_000.0,
+            virtual_positions={"510300.SH": 100},
+            owned_symbols=["510300.SH"],
+            strategy_state={"initial_allocated_cash": 211_000.0},
+            last_update="2026-09-04T09:00:00+08:00",
+        ))
+        session.add(CashFlowJournal(
+            execution_domain="live",
+            account_alias="hydra-live",
+            instance_id="live_hydra",
+            event_date="20260904",
+            event_type="DIVIDEND",
+            amount=12.0,
+            currency="CNY",
+            source="test",
+            source_event_id="dividend-1",
+            evidence_sha256="a" * 64,
+            status="APPLIED",
+            created_at="2026-09-04T09:00:00+08:00",
+            applied_at="2026-09-04T09:00:00+08:00",
+        ))
+        session.commit()
+
+    headers = {"Authorization": "Bearer LIVE_ONLY"}
+    response = client.get(
+        "/accounts/strategy-ledger",
+        params={"instance_id": "live_hydra", "account_alias": "hydra-live"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["ledger_mode"] == "attributed"
+    assert data["virtual_cash"] == 211_000.0
+    assert data["cash_flow_totals"] == {"DIVIDEND": 12.0}
+
+    denied = client.get(
+        "/accounts/strategy-ledger",
+        params={"instance_id": "live_hydra", "account_alias": "other-live"},
+        headers=headers,
+    )
+    assert denied.status_code == 403

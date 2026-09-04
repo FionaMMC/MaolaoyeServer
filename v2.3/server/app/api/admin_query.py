@@ -637,6 +637,9 @@ async def strategy_state(
         items = [
             {
                 "instance_id": r.instance_id,
+                "execution_domain": r.execution_domain,
+                "account_alias": r.account_alias,
+                "ledger_mode": r.ledger_mode,
                 "virtual_cash": r.virtual_cash,
                 "holdings_count": len(r.virtual_positions or {}),
                 "last_update": r.last_update,

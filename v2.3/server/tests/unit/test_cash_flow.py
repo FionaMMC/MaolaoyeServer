@@ -14,6 +14,7 @@ def _service(tmp_path):
         session.add(InstanceState(
             instance_id="paper_hydra",
             execution_domain="paper",
+            account_alias="hydra-paper",
             virtual_cash=1000.0,
             virtual_positions={},
             last_update="2026-08-23T00:00:00+10:00",
@@ -85,3 +86,102 @@ def test_withdrawal_cannot_make_cash_negative(tmp_path):
         assert exc.http_status == 409
     else:
         raise AssertionError("negative virtual cash must fail")
+
+
+def test_capital_allocation_uses_unallocated_physical_cash(tmp_path):
+    service, sf = _service(tmp_path)
+    with sf() as session:
+        state = session.get(InstanceState, "paper_hydra")
+        state.ledger_mode = "attributed"
+        session.commit()
+
+    result = service.apply(_request(
+        event_type="CAPITAL_ALLOCATION",
+        amount=500.0,
+        qmt_cash=10_000.0,
+        snapshot_time="2026-09-04T09:00:00+08:00",
+        source_event_id="allocation-1",
+    ))
+
+    assert result.virtual_cash_after == 1_500.0
+    assert result.account_ledger_cash_after == 1_500.0
+    assert result.unallocated_cash_after == 8_500.0
+    with sf() as session:
+        row = session.query(CashFlowJournal).filter_by(
+            source_event_id="allocation-1"
+        ).one()
+        assert row.qmt_cash_snapshot == 10_000.0
+        assert row.snapshot_time == "2026-09-04T09:00:00+08:00"
+
+
+def test_capital_allocation_cannot_overallocate_shared_account(tmp_path):
+    service, sf = _service(tmp_path)
+    with sf() as session:
+        state = session.get(InstanceState, "paper_hydra")
+        state.ledger_mode = "attributed"
+        session.add(InstanceState(
+            instance_id="paper_other",
+            execution_domain="paper",
+            account_alias="hydra-paper",
+            ledger_mode="attributed",
+            virtual_cash=8_500.0,
+            virtual_positions={},
+            last_update="2026-09-04T00:00:00+08:00",
+        ))
+        session.commit()
+
+    try:
+        service.apply(_request(
+            event_type="CAPITAL_ALLOCATION",
+            amount=1_000.0,
+            qmt_cash=10_000.0,
+            snapshot_time="2026-09-04T09:00:00+08:00",
+            source_event_id="allocation-over",
+        ))
+    except APIError as exc:
+        assert exc.http_status == 409
+    else:
+        raise AssertionError("over-allocation must fail")
+
+
+def test_capital_deallocation_returns_cash_to_unallocated_reserve(tmp_path):
+    service, sf = _service(tmp_path)
+    with sf() as session:
+        state = session.get(InstanceState, "paper_hydra")
+        state.ledger_mode = "attributed"
+        session.commit()
+
+    result = service.apply(_request(
+        event_type="CAPITAL_DEALLOCATION",
+        amount=-600.0,
+        qmt_cash=10_000.0,
+        snapshot_time="2026-09-04T09:00:00+08:00",
+        source_event_id="deallocation-1",
+    ))
+
+    assert result.virtual_cash_after == 400.0
+    assert result.unallocated_cash_after == 9_600.0
+
+
+def test_existing_instance_can_transition_with_audited_capital_deallocation(tmp_path):
+    service, sf = _service(tmp_path)
+
+    result = service.apply(_request(
+        event_type="CAPITAL_DEALLOCATION",
+        amount=-600.0,
+        qmt_cash=10_000.0,
+        snapshot_time="2026-09-04T09:00:00+08:00",
+        source_event_id="transition-deallocation-1",
+        transition_to_attributed=True,
+    ))
+
+    assert result.virtual_cash_after == 400.0
+    assert result.ledger_mode_after == "attributed"
+    with sf() as session:
+        state = session.get(InstanceState, "paper_hydra")
+        assert state.ledger_mode == "attributed"
+        assert state.strategy_state["reconciliation_status"] == "attributed_ledger"
+        row = session.query(CashFlowJournal).filter_by(
+            source_event_id="transition-deallocation-1"
+        ).one()
+        assert row.transition_to_attributed is True

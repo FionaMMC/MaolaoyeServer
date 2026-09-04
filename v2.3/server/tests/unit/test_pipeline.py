@@ -853,7 +853,7 @@ def test_shared_ledger_is_allowed_on_shared_qmt_account(setup):
     assert guard["reconciliation_scope"] == "attributed_ledger"
 
 
-def test_shared_ledger_cannot_claim_qmt_symbols(setup):
+def test_shared_ledger_can_claim_symbols_for_attributed_settlement(setup):
     pipeline, sf, store, yaml_path = setup
     _write_yaml(yaml_path, {
         "account_groups": [{
@@ -868,8 +868,8 @@ def test_shared_ledger_cannot_claim_qmt_symbols(setup):
     })
     instances = pipeline._load_instances()
     guard = pipeline._execution_guards(instances)["paper_v79_noop"]
-    assert guard["allowed"] is False
-    assert "shared_ledger_must_not_claim_symbols" in guard["blockers"]
+    assert guard["allowed"] is True
+    assert guard["blockers"] == []
 
 
 def test_strict_preflight_preserves_unfetched_pending_order(setup):

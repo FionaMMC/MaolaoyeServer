@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event
@@ -19,6 +19,7 @@ class AccountSnapshot:
     total_asset: float
     positions: dict[str, int]
     sellable_positions: dict[str, int]
+    position_market_values: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -191,6 +192,12 @@ class MockQMTGateway:
                     )
                 ).items()
             },
+            position_market_values={
+                str(code): float(value)
+                for code, value in dict(
+                    self.payload.get("position_market_values", {})
+                ).items()
+            },
         )
 
     def submit(self, order: dict) -> SubmissionResult:
@@ -310,6 +317,7 @@ class XtQMTGateway:
             raise RuntimeError("QMT asset 缺少可用资金字段")
         mapped = {}
         sellable = {}
+        market_values = {}
         for position in positions:
             code = str(
                 getattr(position, "stock_code", None)
@@ -325,6 +333,11 @@ class XtQMTGateway:
                 mapped[code] = int(total_qty)
             if code and sellable_qty is not None and int(sellable_qty) > 0:
                 sellable[code] = int(sellable_qty)
+            market_value = getattr(position, "market_value", None)
+            if market_value is None:
+                market_value = getattr(position, "m_dMarketValue", None)
+            if code and market_value is not None and float(market_value) >= 0:
+                market_values[code] = float(market_value)
         total_asset = getattr(asset, "total_asset", None)
         if total_asset is None:
             total_asset = getattr(asset, "m_dBalance", None)
@@ -332,6 +345,7 @@ class XtQMTGateway:
             raise RuntimeError("QMT asset 缺少总资产字段")
         return AccountSnapshot(
             account_id, float(cash), float(total_asset), mapped, sellable,
+            market_values,
         )
 
     def market_quote(self, symbol: str) -> MarketQuote:

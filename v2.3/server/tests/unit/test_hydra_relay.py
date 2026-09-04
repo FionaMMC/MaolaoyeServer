@@ -336,6 +336,70 @@ def test_close_attempt_requires_virtual_ledger_to_match_qmt(tmp_path):
         ))
 
 
+def test_attributed_hydra_uses_only_managed_capital_across_stage_close_and_retry(
+    tmp_path,
+):
+    service, sf, store, model_sha, raw_sha, actions_sha, calendar_sha = _setup(
+        tmp_path, live_enabled=True, state_domain="live", risk_mode="auto",
+    )
+    with sf() as session:
+        state = session.get(InstanceState, "live_hydra")
+        state.ledger_mode = "attributed"
+        state.virtual_cash = 211_000.0
+        state.owned_symbols = sorted(SYMBOLS)
+        session.commit()
+
+    first = service.stage_initial(_target(
+        model_sha, raw_sha, actions_sha, calendar_sha,
+        execution_domain="live",
+        account_alias="hydra-live",
+        instance_id="live_hydra",
+    ))
+    with sf() as session:
+        attempt = session.get(HydraExecutionAttempt, first.attempt_id)
+        assert attempt.risk_snapshot["nav"] == 211_000.0
+        initial_orders = session.execute(
+            select(Order).where(Order.attempt_id == first.attempt_id)
+        ).scalars().all()
+        assert sum(
+            order.quantity * order.limit_price for order in initial_orders
+        ) < 211_000.0
+        for order in initial_orders:
+            order.status = "CANCELLED"
+        session.commit()
+
+    closed = service.close_attempt(HydraAttemptCloseRequest(
+        execution_domain="live",
+        account_alias="hydra-live",
+        attempt_id=first.attempt_id,
+        actual_cash=19_149_000.0,
+        actual_positions={"600000.SH": 200},
+        reconciliation_evidence_sha256="5" * 64,
+    ))
+    assert closed.status == "RESIDUAL"
+    with sf() as session:
+        attempt = session.get(HydraExecutionAttempt, first.attempt_id)
+        assert attempt.reconciled_cash == 211_000.0
+        assert attempt.reconciled_positions == {}
+
+    retry_raw_sha = _install(
+        store, "hydra_execution_raw", _price_frame("20260803"), "none", "20260803",
+    )
+    retry = service.stage_retry(HydraRetryRequest(
+        execution_domain="live",
+        account_alias="hydra-live",
+        rebalance_id=first.rebalance_id,
+        trade_date="20260804",
+        execution_raw_sha256=retry_raw_sha,
+        actual_cash=19_149_000.0,
+        actual_positions={"600000.SH": 200},
+        reconciliation_evidence_sha256="6" * 64,
+    ))
+    with sf() as session:
+        attempt = session.get(HydraExecutionAttempt, retry.attempt_id)
+        assert attempt.risk_snapshot["nav"] == 211_000.0
+
+
 def test_target_rejects_unapproved_publisher(tmp_path):
     service, _, _, model_sha, raw_sha, actions_sha, calendar_sha = _setup(tmp_path)
     req = _target(

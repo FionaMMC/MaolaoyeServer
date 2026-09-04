@@ -595,6 +595,98 @@ def test_preflight_requires_live_qmt_snapshot_to_match_server_ledger(
         cli.preflight(cfg, "20260803", mock_path)
 
 
+def test_attributed_preflight_cannot_borrow_unallocated_qmt_cash(
+    tmp_path, monkeypatch,
+):
+    cfg = _cfg(
+        tmp_path,
+        ledger_mode="attributed",
+        initial_allocated_cash=500.0,
+        initial_allocated_positions={},
+    )
+    orders = _orders()
+
+    class FakeServer:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def fetch_orders(self, _trade_date):
+            return orders
+
+        def reconcile(self, _payload):
+            return {
+                "reconciliation_scope": "portfolio_attributed",
+                "managed_cash": 500.0,
+                "managed_positions": {},
+                "portfolio": {"n_mismatched": 0, "cash_ok": True},
+            }
+
+    monkeypatch.setattr(cli, "LiveServerClient", FakeServer)
+    mock_path = tmp_path / "mock-state.json"
+    mock_path.write_text(json.dumps({
+        "account_id": cfg.account_id,
+        "available_cash": 19_149_000.0,
+        "total_asset": 19_153_000.0,
+        "positions": {},
+    }), encoding="utf-8")
+    cli.query(cfg, "20260803")
+
+    with pytest.raises(ValueError, match="可用资金不足"):
+        cli.preflight(cfg, "20260803", mock_path)
+
+
+def test_attributed_offline_submit_uses_frozen_strategy_capacity(
+    tmp_path, monkeypatch,
+):
+    cfg = _cfg(
+        tmp_path,
+        ledger_mode="attributed",
+        initial_allocated_cash=1_000.0,
+        initial_allocated_positions={},
+    )
+    orders = _orders()
+
+    class FakeServer:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def fetch_orders(self, _trade_date):
+            return orders
+
+        def reconcile(self, _payload):
+            return {
+                "reconciliation_scope": "portfolio_attributed",
+                "managed_cash": 1_000.0,
+                "managed_positions": {},
+                "portfolio": {
+                    "n_mismatched": 0,
+                    "cash_ok": True,
+                    "unallocated_cash": 19_148_000.0,
+                },
+            }
+
+    monkeypatch.setattr(cli, "LiveServerClient", FakeServer)
+    mock_path = tmp_path / "mock-state.json"
+    mock_path.write_text(json.dumps({
+        "account_id": cfg.account_id,
+        "available_cash": 19_149_000.0,
+        "total_asset": 19_153_000.0,
+        "positions": {},
+    }), encoding="utf-8")
+    cli.query(cfg, "20260803")
+    preflight = cli.preflight(cfg, "20260803", mock_path)
+    assert preflight["risk"]["qmt_available_cash"] == 1_000.0
+    assert preflight["risk"]["physical_qmt_available_cash"] == 19_149_000.0
+
+    class ExplodingServer:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("offline submit must not contact server")
+
+    monkeypatch.setattr(cli, "LiveServerClient", ExplodingServer)
+    submitted = cli.submit(cfg, "20260803", mock_path)
+    assert submitted["submitted"] == 2
+
+
 def test_submit_uses_frozen_batch_when_server_is_unavailable(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     _freeze_with_preflight(cfg)

@@ -114,6 +114,33 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print("[migrate] instance_state.account_alias already exists, skip")
 
+        if not column_exists(con, "instance_state", "ledger_mode"):
+            print("[migrate] ALTER TABLE instance_state ADD ledger_mode")
+            con.execute(text(
+                "ALTER TABLE instance_state ADD COLUMN ledger_mode "
+                "VARCHAR NOT NULL DEFAULT 'legacy'"
+            ))
+        else:
+            print("[migrate] instance_state.ledger_mode already exists, skip")
+        con.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_instance_state_ledger_mode "
+            "ON instance_state (ledger_mode)"
+        ))
+
+        cash_flow_columns = {
+            "qmt_cash_snapshot": "FLOAT",
+            "snapshot_time": "VARCHAR",
+            "transition_to_attributed": "BOOLEAN NOT NULL DEFAULT 0",
+        }
+        for col, sql_type in cash_flow_columns.items():
+            if not column_exists(con, "cash_flow_journal", col):
+                print(f"[migrate] ALTER TABLE cash_flow_journal ADD {col}")
+                con.execute(text(
+                    f"ALTER TABLE cash_flow_journal ADD COLUMN {col} {sql_type}"
+                ))
+            else:
+                print(f"[migrate] cash_flow_journal.{col} already exists, skip")
+
         if not column_exists(con, "orders", "qmt_account_alias"):
             print("[migrate] ALTER TABLE orders ADD qmt_account_alias")
             con.execute(text("ALTER TABLE orders ADD COLUMN qmt_account_alias VARCHAR"))

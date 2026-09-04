@@ -130,6 +130,98 @@ def test_shared_ledger_dryrun_does_not_certify_from_total_qmt_snapshot(tmp_path:
         assert inst.virtual_positions == {"600519.SH": 100}
 
 
+def test_attributed_reconcile_returns_managed_ledger_and_portfolio_evidence(tmp_path: Path):
+    sf = _factory(tmp_path)
+    with sf() as s:
+        s.add(InstanceState(
+            instance_id="hydra",
+            execution_domain="live",
+            account_alias="shared",
+            ledger_mode="attributed",
+            virtual_cash=211_000.0,
+            virtual_positions={"510300.SH": 100},
+            owned_symbols=["510300.SH"],
+            last_update=datetime.now().isoformat(),
+        ))
+        s.commit()
+
+    result = ReconcileService(sf).reconcile(QmtPositionSnapshot(
+        instance_id="hydra",
+        execution_domain="live",
+        account_alias="shared",
+        qmt_account_id="TEST123",
+        qmt_cash=19_149_000.0,
+        qmt_positions={"510300.SH": 100},
+        snapshot_time=datetime.now().isoformat(),
+        dry_run=True,
+    ))
+
+    assert result.reconciliation_scope == "portfolio_attributed"
+    assert result.managed_cash == 211_000.0
+    assert result.managed_positions == {"510300.SH": 100}
+    assert result.portfolio.n_mismatched == 0
+    assert result.portfolio.cash_ok is True
+    assert result.portfolio.unallocated_cash == 18_938_000.0
+
+
+def test_attributed_reconcile_never_applies_full_account_snapshot(tmp_path: Path):
+    sf = _factory(tmp_path)
+    with sf() as s:
+        s.add(InstanceState(
+            instance_id="hydra",
+            execution_domain="live",
+            account_alias="shared",
+            ledger_mode="attributed",
+            virtual_cash=211_000.0,
+            virtual_positions={},
+            owned_symbols=["510300.SH"],
+            last_update=datetime.now().isoformat(),
+        ))
+        s.commit()
+
+    with pytest.raises(ReconcileGuardTripped, match="attributed"):
+        ReconcileService(sf).reconcile(QmtPositionSnapshot(
+            instance_id="hydra",
+            execution_domain="live",
+            account_alias="shared",
+            qmt_account_id="TEST123",
+            qmt_cash=19_149_000.0,
+            qmt_positions={"510300.SH": 100},
+            snapshot_time=datetime.now().isoformat(),
+            dry_run=False,
+            force=True,
+        ))
+
+
+def test_attributed_reconcile_does_not_allow_percentage_cash_borrowing(tmp_path: Path):
+    sf = _factory(tmp_path)
+    with sf() as s:
+        s.add(InstanceState(
+            instance_id="hydra",
+            execution_domain="live",
+            account_alias="shared",
+            ledger_mode="attributed",
+            virtual_cash=211_000.0,
+            virtual_positions={},
+            owned_symbols=["510300.SH"],
+            last_update=datetime.now().isoformat(),
+        ))
+        s.commit()
+
+    result = ReconcileService(sf).reconcile(QmtPositionSnapshot(
+        instance_id="hydra",
+        execution_domain="live",
+        account_alias="shared",
+        qmt_account_id="TEST123",
+        qmt_cash=210_000.0,
+        qmt_positions={},
+        snapshot_time=datetime.now().isoformat(),
+        dry_run=True,
+    ))
+
+    assert result.portfolio.cash_ok is False
+
+
 def test_shared_ledger_apply_is_blocked_even_with_force(tmp_path: Path):
     sf = _factory(tmp_path)
     _seed_instance(sf, "paper_v79_v713_relay", 1_000_000.0, {"600519.SH": 100})

@@ -73,6 +73,7 @@ def test_cash_ok_when_account_has_far_more_cash(tmp_path: Path):
     r = svc.reconcile_total({"600000.SH": 100, "511260.SH": 10000}, 2e8, "t")
     assert r.n_mismatched == 0
     assert r.cash_ok is True
+    assert r.unallocated_cash == 180_000_000.0
     report = svc.shadow_compare({"600000.SH": 100, "511260.SH": 10000}, 2e8, "t")
     assert report["consistent"] is True
 

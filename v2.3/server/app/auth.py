@@ -93,6 +93,7 @@ async def verify_api_key(
             "/trade-result",
             "/cash-flows",
             "/accounts/initialize-from-qmt",
+            "/accounts/strategy-ledger",
             "/admin/reconcile-positions",
             "/hydra/targets/stage",
             "/hydra/rebalances/retry",

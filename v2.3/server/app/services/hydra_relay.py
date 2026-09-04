@@ -30,6 +30,7 @@ from app.schemas.hydra_relay import (
 )
 from app.services.hydra_data import HydraDataStore
 from app.services.blacklist import BlacklistService
+from app.services.reconcile import ReconcileService
 
 
 def _now_iso() -> str:
@@ -360,7 +361,24 @@ class HydraRelayService:
                     "上一 attempt 尚未完成 post-trade 对账或没有 residual",
                     http_status=409,
                 )
-            positions = self._validate_positions(req.actual_positions)
+            instance_id = self._instance_id_for_rebalance(session, rebalance.rebalance_id)
+            state = self._validated_state(
+                session, instance_id, req.execution_domain, req.account_alias,
+            )
+            if state.ledger_mode == "attributed":
+                self._assert_attributed_portfolio_snapshot(
+                    req.execution_domain,
+                    req.account_alias,
+                    req.actual_cash,
+                    req.actual_positions,
+                )
+                positions = self._validate_positions(
+                    dict(state.virtual_positions or {})
+                )
+                actual_cash = float(state.virtual_cash)
+            else:
+                positions = self._validate_positions(req.actual_positions)
+                actual_cash = req.actual_cash
             unexpected_positions = sorted(set(positions) - self.allowed_symbols)
             if unexpected_positions:
                 raise APIError(
@@ -370,14 +388,13 @@ class HydraRelayService:
             codes = set(rebalance.target_shares) | set(positions)
             price_rows = self._latest_before(raw, manifest.as_of_date, codes)
             prices = price_rows.set_index("symbol")["close"].astype(float).to_dict()
-            instance_id = self._instance_id_for_rebalance(session, rebalance.rebalance_id)
             response = self._create_attempt(
                 session=session,
                 target=target,
                 rebalance=rebalance,
                 instance_id=instance_id,
                 trade_date=req.trade_date,
-                actual_cash=req.actual_cash,
+                actual_cash=actual_cash,
                 actual_positions=positions,
                 prices=prices,
                 buy_offset=50.0,
@@ -421,29 +438,42 @@ class HydraRelayService:
             rebalance = session.get(HydraRebalance, attempt.rebalance_id)
             target = session.get(HydraTarget, rebalance.target_id)
             positions = self._validate_positions(req.actual_positions)
-            unexpected = sorted(set(positions) - self.allowed_symbols)
-            if unexpected:
-                raise APIError(
-                    ErrorCode.BAD_REQUEST,
-                    f"专用 Hydra 账户含白名单外持仓: {unexpected}",
-                )
             instance_id = self._instance_id_for_rebalance(session, rebalance.rebalance_id)
             state = self._validated_state(
                 session, instance_id, req.execution_domain, req.account_alias,
             )
-            if dict(state.virtual_positions or {}) != {
-                code: qty for code, qty in positions.items() if qty > 0
-            }:
-                raise APIError(
-                    ErrorCode.BAD_REQUEST,
-                    "post-trade QMT 持仓与虚拟账本不一致",
-                    http_status=409,
+            if state.ledger_mode == "attributed":
+                self._assert_attributed_portfolio_snapshot(
+                    req.execution_domain,
+                    req.account_alias,
+                    req.actual_cash,
+                    req.actual_positions,
                 )
-            if abs(float(state.virtual_cash) - req.actual_cash) > 1.0:
+                positions = self._validate_positions(
+                    dict(state.virtual_positions or {})
+                )
+                reconciled_cash = float(state.virtual_cash)
+            else:
+                if dict(state.virtual_positions or {}) != {
+                    code: qty for code, qty in positions.items() if qty > 0
+                }:
+                    raise APIError(
+                        ErrorCode.BAD_REQUEST,
+                        "post-trade QMT 持仓与虚拟账本不一致",
+                        http_status=409,
+                    )
+                if abs(float(state.virtual_cash) - req.actual_cash) > 1.0:
+                    raise APIError(
+                        ErrorCode.BAD_REQUEST,
+                        "post-trade QMT 现金与虚拟账本不一致；先核对费用/分红/入出金",
+                        http_status=409,
+                )
+                reconciled_cash = req.actual_cash
+            unexpected = sorted(set(positions) - self.allowed_symbols)
+            if unexpected:
                 raise APIError(
                     ErrorCode.BAD_REQUEST,
-                    "post-trade QMT 现金与虚拟账本不一致；先核对费用/分红/入出金",
-                    http_status=409,
+                    f"Hydra 归属账本含白名单外持仓: {unexpected}",
                 )
             residual = {
                 code: int(target_qty) - int(positions.get(code, 0))
@@ -454,7 +484,7 @@ class HydraRelayService:
             now = _now_iso()
             attempt.residual_after = residual
             attempt.posttrade_reconciliation_sha256 = req.reconciliation_evidence_sha256
-            attempt.reconciled_cash = req.actual_cash
+            attempt.reconciled_cash = reconciled_cash
             attempt.reconciled_positions = positions
             attempt.status = status
             attempt.closed_at = now
@@ -745,9 +775,34 @@ class HydraRelayService:
         if account_alias is not None and state.account_alias != account_alias:
             raise APIError(ErrorCode.AUTH_FAILED, "Hydra instance 跨 account_alias", http_status=403)
         status = dict(state.strategy_state or {}).get("reconciliation_status")
-        if status not in {"ok", "reconciled"}:
+        if status not in {"ok", "reconciled", "attributed_ledger"}:
             raise APIError(ErrorCode.BAD_REQUEST, "Hydra 调仓前未完成 QMT 对账", http_status=409)
+        if state.ledger_mode not in {"legacy", "dedicated", "attributed"}:
+            raise APIError(ErrorCode.BAD_REQUEST, "Hydra ledger_mode 非法", http_status=409)
         return state
+
+    def _assert_attributed_portfolio_snapshot(
+        self,
+        domain: str,
+        account_alias: str,
+        actual_cash: float,
+        actual_positions: dict[str, int],
+    ) -> None:
+        """Verify the physical account without assigning it to one strategy."""
+        total = ReconcileService(self.session_factory).reconcile_total(
+            qmt_positions=self._validate_positions(actual_positions),
+            qmt_cash=float(actual_cash),
+            snapshot_time=_now_iso(),
+            execution_domain=domain,
+            account_alias=account_alias,
+            cash_tolerance=0.0,
+        )
+        if total.n_mismatched or not total.cash_ok:
+            raise APIError(
+                ErrorCode.BAD_REQUEST,
+                "QMT 物理账户与全部策略归属账本合计不一致",
+                http_status=409,
+            )
 
     @staticmethod
     def _validate_positions(positions: dict[str, int]) -> dict[str, int]:

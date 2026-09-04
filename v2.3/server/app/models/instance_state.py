@@ -15,6 +15,11 @@ class InstanceState(Base):
         String, nullable=False, default="paper", server_default="paper", index=True,
     )
     account_alias: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    # 物理账户与策略账本的关系：legacy=迁移前语义；dedicated=独占账户；
+    # attributed=共享物理账户，只能使用归属到本实例的现金与持仓。
+    ledger_mode: Mapped[str] = mapped_column(
+        String, nullable=False, default="legacy", server_default="legacy", index=True,
+    )
     virtual_cash: Mapped[float] = mapped_column(nullable=False)
     virtual_positions: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     last_update: Mapped[str] = mapped_column(String, nullable=False)

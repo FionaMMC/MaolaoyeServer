@@ -518,8 +518,6 @@ class StrategyPipeline:
                         blockers.append("ambiguous_position_ownership")
                     if dynamic:
                         blockers.append("dynamic_ownership_not_implemented")
-                    if shared_ledger and inst.get("owned_symbols") != []:
-                        blockers.append("shared_ledger_must_not_claim_symbols")
                     if not inst.get("qmt_account_id"):
                         blockers.append("missing_qmt_account")
                     elif isolated and len(account_groups_by_qmt.get(
@@ -586,8 +584,22 @@ class StrategyPipeline:
             }
             for inst in instances:
                 instance_id = inst["instance_id"]
+                configured_ledger_mode = (
+                    "attributed"
+                    if inst.get("account_isolation") == "shared_ledger"
+                    else "dedicated"
+                    if inst.get("account_isolation") == "dedicated"
+                    else "legacy"
+                )
                 if instance_id in existing:
                     row = existing[instance_id]
+                    if row.ledger_mode not in ("legacy", configured_ledger_mode):
+                        raise RuntimeError(
+                            f"instance_id {instance_id} ledger_mode 冲突: "
+                            f"db={row.ledger_mode} yaml={configured_ledger_mode}"
+                        )
+                    if row.ledger_mode == "legacy" and configured_ledger_mode != "legacy":
+                        row.ledger_mode = configured_ledger_mode
                     # 同步 owned_symbols (yaml 是 source of truth)
                     yaml_owned = inst.get("owned_symbols")
                     if row.owned_symbols != yaml_owned:
@@ -615,6 +627,7 @@ class StrategyPipeline:
                         instance_id=instance_id,
                         execution_domain=inst["execution_domain"],
                         account_alias=inst.get("qmt_account_alias"),
+                        ledger_mode=configured_ledger_mode,
                         virtual_cash=cash,
                         virtual_positions={},
                         owned_symbols=inst.get("owned_symbols"),
