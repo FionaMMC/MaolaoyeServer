@@ -86,7 +86,11 @@ try {
                 if ($queryOutput -notmatch '"status"\s*:\s*"(FETCHED|ALREADY_FETCHED)"') { throw "query did not freeze a batch" }
                 $preflightOutput = @(& $runner -Command preflight -Date $nextDate -PythonExe $pythonExe 2>&1) | Out-String
                 if ($preflightOutput -notmatch '"status"\s*:\s*"READY_FOR_OFFLINE_SUBMIT"') { throw "preflight did not return READY_FOR_OFFLINE_SUBMIT" }
-                $output = "query:`n$queryOutput`npreflight:`n$preflightOutput"
+                $registerSubmit = Join-Path $installRoot "scripts\Register-HydraLiveSubmitTask.ps1"
+                if (-not (Test-Path -LiteralPath $registerSubmit -PathType Leaf)) { throw "submit task registrar is missing" }
+                $taskOutput = @(& $registerSubmit -TradeDate $nextDate 2>&1) | Out-String
+                if ($taskOutput -notmatch '"status"\s*:\s*"(REGISTERED|ALREADY_REGISTERED)"') { throw "09:10 submit task was not registered" }
+                $output = "query:`n$queryOutput`npreflight:`n$preflightOutput`nsubmit-task:`n$taskOutput"
             }
         }
     }

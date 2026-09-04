@@ -227,6 +227,7 @@ $hadRunner = Test-Path -LiteralPath $installedRunner -PathType Leaf
 $runtimeScriptNames = @(
     "Invoke-HydraLiveSubmit.ps1",
     "Invoke-HydraLiveOperations.ps1",
+    "Register-HydraLiveSubmitTask.ps1",
     "Register-HydraLiveOperationsTasks.ps1",
     "hydra_live_market_backup.py"
 )

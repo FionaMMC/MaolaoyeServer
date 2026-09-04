@@ -274,7 +274,12 @@ def test_auto_risk_uses_qmt_nav_and_records_immutable_snapshot(tmp_path):
 
 
 def test_mock_qmt_full_query_submit_settle_cycle(tmp_path, monkeypatch):
-    cfg = _cfg(tmp_path, retry_execution_raw_sha256="b" * 64)
+    cfg = _cfg(
+        tmp_path,
+        retry_execution_raw_sha256="b" * 64,
+        retry_target_id="ht_test",
+        retry_rebalance_id="hr_test",
+    )
     orders = _orders()
 
     class FakeServer:
@@ -403,10 +408,43 @@ def test_complete_server_close_never_stages_retry(tmp_path, monkeypatch):
     )["status"] == "NO_RESIDUAL"
 
 
+def test_retry_binding_mismatch_fails_before_qmt_or_server(tmp_path, monkeypatch):
+    cfg = _cfg(
+        tmp_path,
+        retry_execution_raw_sha256="b" * 64,
+        retry_target_id="ht_wrong",
+        retry_rebalance_id="hr_test",
+    )
+    batch = validate_order_batch(_orders(), "20260803", cfg)
+    state = LiveStateStore(cfg.state_db)
+    state.save_batch(batch)
+    state.record_workflow_receipt("close", "20260803", {
+        "trade_date": "20260803",
+        "attempt_id": "ha_test",
+        "target_id": "ht_test",
+        "rebalance_id": "hr_test",
+        "status": "RESIDUAL",
+        "residual_after": {"510300.SH": 100},
+        "evidence_sha256": "a" * 64,
+        "evidence_path": "test",
+    })
+    monkeypatch.setattr(
+        cli, "_gateway",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("binding mismatch must fail before QMT")
+        ),
+    )
+    with pytest.raises(RuntimeError, match="target/rebalance"):
+        cli.stage_residual_retry(cfg, "20260803", "20260804", None)
+
+
 def test_windows_runtime_separates_evening_preflight_from_morning_submit():
     windows = Path(cli.__file__).parent / "windows"
     morning = (windows / "Invoke-HydraLiveSubmit.ps1").read_text(encoding="utf-8")
     operations = (windows / "Invoke-HydraLiveOperations.ps1").read_text(encoding="utf-8")
+    registrar = (windows / "Register-HydraLiveSubmitTask.ps1").read_text(encoding="utf-8")
+    task_set = (windows / "Register-HydraLiveOperationsTasks.ps1").read_text(encoding="utf-8")
+    installer = (windows / "Install-HydraLiveClient.ps1").read_text(encoding="utf-8")
     assert "-Command submit" in morning
     assert "-Command preflight" not in morning
     assert "fallback Python is forbidden" in morning
@@ -414,6 +452,18 @@ def test_windows_runtime_separates_evening_preflight_from_morning_submit():
     assert "-Command settle-close" in operations
     assert "-Command retry" in operations
     assert "-Command preflight" in operations
+    assert operations.index('"READY_FOR_OFFLINE_SUBMIT"') < operations.index(
+        "Register-HydraLiveSubmitTask.ps1"
+    )
+    assert '"(REGISTERED|ALREADY_REGISTERED)"' in operations
+    assert 'New-ScheduledTaskTrigger -Once -At $runAt' in registrar
+    assert 'Invoke-HydraLiveSubmit.ps1' in registrar
+    assert 'Hydra-Live-Submit-$TradeDate-0910' in registrar
+    assert 'Register-ScheduledTask' in registrar
+    assert '-Force' not in registrar
+    assert '"Register-HydraLiveSubmitTask.ps1"' in installer
+    assert 'RestartCount = 1' in task_set
+    assert 'RestartMinutes = 5' in task_set
 
 
 def test_qmt_connection_retries_only_before_broker_use(tmp_path, monkeypatch):
@@ -456,6 +506,82 @@ def test_qmt_connection_retries_only_before_broker_use(tmp_path, monkeypatch):
     assert created[0].stopped is True
     gateway.close()
     assert created[1].stopped is True
+    assert gateway.trader is None
+    assert gateway.account is None
+    assert gateway.xtconstant is None
+    assert gateway.xtdata is None
+
+
+def test_qmt_connect_exception_cleans_up_each_candidate(tmp_path, monkeypatch):
+    import xtquant.xttrader as xttrader_module
+
+    created = []
+
+    class FakeTrader:
+        def __init__(self, *_args):
+            self.stopped = False
+            created.append(self)
+
+        def register_callback(self, _callback):
+            pass
+
+        def start(self):
+            pass
+
+        def connect(self):
+            raise OSError("simulated transport failure")
+
+        def stop(self):
+            self.stopped = True
+
+    monkeypatch.setattr(xttrader_module, "XtQuantTrader", FakeTrader)
+    monkeypatch.setattr(xttrader_module, "XtQuantTraderCallback", lambda: object())
+    monkeypatch.setattr(gateway_module.time, "sleep", lambda _seconds: None)
+
+    gateway = XtQMTGateway(_cfg(tmp_path))
+    with pytest.raises(RuntimeError, match="连续 3 次"):
+        gateway.connect()
+    assert len(created) == 3
+    assert all(candidate.stopped for candidate in created)
+    assert gateway.trader is None
+
+
+def test_qmt_subscribe_exception_cleans_up_connected_trader(
+    tmp_path, monkeypatch,
+):
+    import xtquant.xttrader as xttrader_module
+
+    created = []
+
+    class FakeTrader:
+        def __init__(self, *_args):
+            self.stopped = False
+            created.append(self)
+
+        def register_callback(self, _callback):
+            pass
+
+        def start(self):
+            pass
+
+        def connect(self):
+            return 0
+
+        def subscribe(self, _account):
+            raise OSError("simulated subscribe failure")
+
+        def stop(self):
+            self.stopped = True
+
+    monkeypatch.setattr(xttrader_module, "XtQuantTrader", FakeTrader)
+    monkeypatch.setattr(xttrader_module, "XtQuantTraderCallback", lambda: object())
+
+    gateway = XtQMTGateway(_cfg(tmp_path))
+    with pytest.raises(RuntimeError, match="subscribe"):
+        gateway.connect()
+    assert len(created) == 1
+    assert created[0].stopped is True
+    assert gateway.trader is None
 
 
 def test_live_market_backup_propagates_upload_failure(monkeypatch):
@@ -476,6 +602,12 @@ def test_client_emergency_stop_blocks_even_mock_submission(tmp_path):
     cfg = _cfg(tmp_path, trading_enabled=False)
     with pytest.raises(RuntimeError, match="紧急开关关闭"):
         cfg.require_submission_enabled()
+
+
+def test_retry_binding_is_configured_as_an_indivisible_triple(tmp_path):
+    cfg = _cfg(tmp_path, retry_execution_raw_sha256="b" * 64)
+    with pytest.raises(ValueError, match="必须同时配置"):
+        cfg.validate_startup()
 
 
 def test_local_doctor_has_no_server_or_qmt_side_effects(tmp_path):

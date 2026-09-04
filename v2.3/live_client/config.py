@@ -92,6 +92,8 @@ class LiveClientConfig:
     auto_max_daily_orders: int = 100
     auto_buffer_bps: float = 100.0
     retry_execution_raw_sha256: str = ""
+    retry_target_id: str = ""
+    retry_rebalance_id: str = ""
     # Same-machine is the conservative default.  A separate Windows host has
     # no shared QMT account/session/filesystem/Task Scheduler namespace.
     paper_client_colocated: bool = True
@@ -176,6 +178,12 @@ class LiveClientConfig:
             retry_execution_raw_sha256=os.environ.get(
                 "HYDRA_LIVE_RETRY_EXECUTION_RAW_SHA256", "",
             ).strip(),
+            retry_target_id=os.environ.get(
+                "HYDRA_LIVE_RETRY_TARGET_ID", "",
+            ).strip(),
+            retry_rebalance_id=os.environ.get(
+                "HYDRA_LIVE_RETRY_REBALANCE_ID", "",
+            ).strip(),
             paper_client_colocated=_bool(
                 "HYDRA_LIVE_PAPER_CLIENT_COLOCATED", True,
             ),
@@ -250,6 +258,15 @@ class LiveClientConfig:
             or any(c not in "0123456789abcdef" for c in self.retry_execution_raw_sha256)
         ):
             raise ValueError("HYDRA_LIVE_RETRY_EXECUTION_RAW_SHA256 必须是 lowercase SHA-256")
+        retry_binding = (
+            self.retry_execution_raw_sha256,
+            self.retry_target_id,
+            self.retry_rebalance_id,
+        )
+        if any(retry_binding) and not all(retry_binding):
+            raise ValueError(
+                "retry execution hash、target_id 与 rebalance_id 必须同时配置"
+            )
         if self.state_db.resolve() == (self.log_dir / "pipeline.db").resolve():
             raise ValueError("live SQLite 与日志目录配置异常")
         paper_paths = {
