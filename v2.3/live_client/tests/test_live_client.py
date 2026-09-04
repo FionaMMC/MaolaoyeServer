@@ -324,6 +324,10 @@ def test_mock_qmt_full_query_submit_settle_cycle(tmp_path, monkeypatch):
             assert payload["rebalance_id"] == "hr_test"
             assert payload["trade_date"] == "20260804"
             assert payload["execution_raw_sha256"] == "b" * 64
+            assert "residual_after" not in payload
+            assert "orders" not in payload
+            assert "reference_price" not in payload
+            assert "limit_price" not in payload
             return {
                 "target_id": "ht_test",
                 "rebalance_id": "hr_test",
@@ -461,9 +465,20 @@ def test_windows_runtime_separates_evening_preflight_from_morning_submit():
     assert 'Hydra-Live-Submit-$TradeDate-0910' in registrar
     assert 'Register-ScheduledTask' in registrar
     assert '-Force' not in registrar
+    assert 'Settings.RestartCount' in registrar
+    assert 'Settings.StartWhenAvailable' in registrar
+    assert '-RestartCount 0' in registrar
     assert '"Register-HydraLiveSubmitTask.ps1"' in installer
     assert 'RestartCount = 1' in task_set
     assert 'RestartMinutes = 5' in task_set
+    assert 'Disable = $true' in task_set
+    assert task_set.index('Register-ScheduledTask') < task_set.index(
+        '$legacyTasks | Disable-ScheduledTask'
+    )
+    assert task_set.index('$legacyTasks | Disable-ScheduledTask') < task_set.index(
+        'Enable-ScheduledTask -TaskName $_'
+    )
+    assert '$legacyEnabledBefore' in task_set
 
 
 def test_qmt_connection_retries_only_before_broker_use(tmp_path, monkeypatch):

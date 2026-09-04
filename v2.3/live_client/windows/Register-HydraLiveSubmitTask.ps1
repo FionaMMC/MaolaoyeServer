@@ -46,8 +46,19 @@ if ($null -ne $existing) {
             $runAt.ToString("yyyyMMddHHmm")
     )
     $samePrincipal = $existing.Principal.UserId -ieq $expectedUser
-    if (-not $sameAction -or -not $sameTrigger -or -not $samePrincipal) {
-        throw "Existing submit task has different action, trigger, or principal: $taskName"
+    # A same-name task with restart/catch-up enabled is not equivalent: it could
+    # replay an order submission after the approved 09:10 window.  Treat task
+    # settings as part of the immutable one-time-submit definition.
+    $sameSettings = (
+        [int]$existing.Settings.RestartCount -eq 0 -and
+        -not [bool]$existing.Settings.StartWhenAvailable -and
+        [string]$existing.Settings.MultipleInstances -eq "IgnoreNew"
+    )
+    if (
+        -not $sameAction -or -not $sameTrigger -or -not $samePrincipal -or
+        -not $sameSettings
+    ) {
+        throw "Existing submit task has different action, trigger, principal, or safety settings: $taskName"
     }
     if ($existing.State -eq "Disabled") {
         throw "Existing submit task is disabled: $taskName"
@@ -68,7 +79,8 @@ $principal = New-ScheduledTaskPrincipal `
     -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 15) `
-    -MultipleInstances IgnoreNew -AllowStartIfOnBatteries:$false
+    -MultipleInstances IgnoreNew -AllowStartIfOnBatteries:$false `
+    -StartWhenAvailable:$false -RestartCount 0
 Register-ScheduledTask -TaskName $taskName -TaskPath "\" -Action $action `
     -Trigger $trigger -Principal $principal -Settings $settings `
     -Description "Hydra live one-time offline submit for $TradeDate at 09:10." |

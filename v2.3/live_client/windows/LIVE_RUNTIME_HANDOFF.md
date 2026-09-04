@@ -28,6 +28,7 @@ MiniQMT connection retry in `gateway.py` applies only before account or broker
 order operations; every failed candidate is stopped, and it never retries an
 order API call.
 
-Before enabling residual retry, configure all three values from the same
-approved target/rebalance: `HYDRA_LIVE_RETRY_EXECUTION_RAW_SHA256`,
-`HYDRA_LIVE_RETRY_TARGET_ID`, and `HYDRA_LIVE_RETRY_REBALANCE_ID`.
+Before enabling residual retry, configure all three values for the same approved
+cycle: take `HYDRA_LIVE_RETRY_EXECUTION_RAW_SHA256` from the canonical raw
+manifest, and take `HYDRA_LIVE_RETRY_TARGET_ID` plus
+`HYDRA_LIVE_RETRY_REBALANCE_ID` from the server stage response or frozen batch.

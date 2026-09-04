@@ -1,5 +1,9 @@
 # Hydra 策略资金子账本部署与迁移
 
+> Server、Windows、residual 调度和现有实例纠正的统一执行顺序见
+> [`HYDRA_LIVE_UNIFIED_DEPLOYMENT_HANDOFF_20260904.md`](HYDRA_LIVE_UNIFIED_DEPLOYMENT_HANDOFF_20260904.md)。
+> 本文保留资金口径说明；实际部署以统一 handoff 为准。
+
 ## 目的
 
 一个 QMT 账户可以放多个策略和未分配现金，但 Hydra 只能使用：
@@ -32,8 +36,8 @@ QMT 全账户余额只用于证明物理资产完整，不再直接成为 Hydra 
 
    ```text
    HYDRA_LIVE_LEDGER_MODE=attributed
-   HYDRA_LIVE_INITIAL_ALLOCATED_CASH=211000
-   HYDRA_LIVE_INITIAL_ALLOCATED_POSITIONS_JSON={}
+   HYDRA_LIVE_INITIAL_ALLOCATED_CASH=210589.85
+   HYDRA_LIVE_INITIAL_ALLOCATED_POSITIONS_JSON={"510300.SH":100}
    ```
 
    后两个值只供“全新实例首次初始化”使用。已有实例的实际额度始终以 Server
@@ -49,7 +53,9 @@ QMT 全账户余额只用于证明物理资产完整，不再直接成为 Hydra 
 
 不要删除或篡改昨晚那笔 `DEPOSIT`。从 Server 的 `cash_flow_journal` 找到该笔
 误归属给 Hydra 的准确金额、`source_event_id` 和证据；纠正额应是该误记金额的
-精确负数，不要用“约 1900 万”或用当前账户余额倒推。
+精确负数，不要用“约 1900 万”或用当前账户余额倒推。根据现有两个现金快照，
+`19,148,943.85 - 210,589.85 = 18,938,354.00`，但这个差额只能用于交叉检查，
+不能替代 journal 原记录和审批证据。
 
 准备一份审批/核对文件并计算 SHA-256，然后在 Windows 连接真实 QMT 的环境运行：
 

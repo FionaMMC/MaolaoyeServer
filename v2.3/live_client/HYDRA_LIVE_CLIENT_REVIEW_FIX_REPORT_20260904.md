@@ -37,7 +37,7 @@
 
 - `workflow_receipts` 保存 `close` 与 `retry` 的规范 JSON、SHA-256 和记录时间，防止同日不同结果被静默覆盖。
 - reconciliation evidence 写入私有日志目录的 `evidence` 子目录，文件名包含交易日、attempt id 和内容 hash。
-- 16:00 retry 使用同一已批准目标的 `HYDRA_LIVE_RETRY_EXECUTION_RAW_SHA256`、`HYDRA_LIVE_RETRY_TARGET_ID` 和 `HYDRA_LIVE_RETRY_REBALANCE_ID`。三者是不可分割的绑定，缺一即 fail-closed；它们不是账户密钥。
+- 16:00 retry 使用同一已批准调仓周期的 `HYDRA_LIVE_RETRY_EXECUTION_RAW_SHA256`、`HYDRA_LIVE_RETRY_TARGET_ID` 和 `HYDRA_LIVE_RETRY_REBALANCE_ID`。execution hash 来自 canonical raw manifest，两个 ID 来自 Server stage 响应或冻结批次；三者是不可分割的绑定，缺一即 fail-closed，它们不是账户密钥。
 - 无当日批次时，15:10 返回 `NO_ORDERS`，16:00 返回 `NO_ATTEMPT`，不会在普通交易日制造误报警。
 - 服务器返回 `COMPLETE` 时，16:00 返回 `NO_RESIDUAL`，不会打开 QMT 或请求补单。
 
@@ -60,7 +60,7 @@
 3. 客户端相关 test suite 为 45 passed、1 skipped；跳过项是 Windows 不支持用 Unix `0600` mode-bit 代表 ACL，该权限在部署时通过 Windows ACL 单独验证。
 4. 从私有配置确认 `HYDRA_LIVE_PYTHON` 与本机 MiniQMT Python 一致。
 5. 确认 `HYDRA_LIVE_CODE_COMMIT` 是本次获批的完整 Git SHA，且与 `HYDRA_LIVE_CODE_DIR` 的 HEAD 相同。
-6. 从同一获批 target sidecar 确认 retry execution SHA-256、target id 和 rebalance id，禁止猜测或混用不同批次。
+6. 从获批 canonical raw manifest 确认 retry execution SHA-256，并从同一周期的 Server stage 响应或冻结批次确认 target id 和 rebalance id；禁止猜测或混用不同批次。
 7. 先安装新 release，但不注册任务；运行 `doctor` 与 mock acceptance。
 8. 审阅计划任务动作后再替换旧的 15:10、16:00、18:00 任务。旧 `/hydra/live/trigger` 任务不得与新 retry 任务并存。
 
@@ -76,3 +76,27 @@
 - 未更改 `C:\hydra-live\config\hydra-live.env`。
 - 未清理现有计划任务。
 - 未执行任何真实 QMT 查询、撤单或下单。
+
+## 联合资金子账本复审补充
+
+`64b8373` 已并入 `codex/hydra-strategy-capital-ledger-20260904`，因此正式部署
+不能再单独使用客户端分支。联合复审确认：客户端 retry 请求不携带 residual、
+订单、策略参考价或限价；Server 根据 attributed 策略持仓计算差额，并从获批
+`hydra_execution_raw` 生成参考价和限价。新增回归测试固定了这条责任边界。
+
+联合复审另外修正两处任务切换风险：
+
+- 09:10 同名一次性任务只有在 restart count 为 0、`StartWhenAvailable=false`
+  且重叠策略为 `IgnoreNew` 时才允许复用；否则拒绝把可能自动重下或迟到补跑的
+  任务当作相同任务。
+- 四个日常任务先全部以禁用状态注册并验证，再禁用旧任务、启用新任务；任何一步
+  失败都会禁用本轮新任务并恢复原先启用的旧任务。
+
+本机复审从 `v2.3/server` 正确运行目录执行完整 Server test suite，结果为退出码
+0，只有缺少真实 V53 bundle 的一项集成测试按预期 skip。portable client 测试为
+41 项通过；四项依赖 Windows MiniQMT `xtquant` 的测试未在 macOS 本机执行，沿用
+原 Windows 复审的 45 passed / 1 skipped 证据，部署时仍必须由目标 Windows 再做
+PowerShell 语法检查、installer doctor 和离线 acceptance。
+
+联合部署与现有 21.1 万策略账本迁移的唯一执行顺序见
+[`HYDRA_LIVE_UNIFIED_DEPLOYMENT_HANDOFF_20260904.md`](HYDRA_LIVE_UNIFIED_DEPLOYMENT_HANDOFF_20260904.md)。

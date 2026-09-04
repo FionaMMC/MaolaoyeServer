@@ -107,6 +107,11 @@ and exchange holidays must come from the frozen trading calendar. See
 [`WINDOWS_DEPLOYMENT_RUNBOOK.md`](WINDOWS_DEPLOYMENT_RUNBOOK.md) for upgrade,
 acceptance, task cutover and rollback.
 
+For the combined Server/client deployment, existing-instance capital correction,
+attributed-ledger migration and residual-task cutover, follow
+[`HYDRA_LIVE_UNIFIED_DEPLOYMENT_HANDOFF_20260904.md`](HYDRA_LIVE_UNIFIED_DEPLOYMENT_HANDOFF_20260904.md)
+as the authoritative sequence.
+
 The portable no-network acceptance can also be run directly:
 
 ```powershell

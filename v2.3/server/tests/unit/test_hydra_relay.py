@@ -236,6 +236,9 @@ def test_retry_reuses_target_shares_and_only_orders_residual(tmp_path):
         session.commit()
 
     retry_frame = _price_frame(as_of="20260803")
+    retry_row = retry_frame["symbol"] == "510300.SH"
+    retry_frame.loc[retry_row, ["open", "high", "low", "close"]] = 2.5
+    retry_frame.loc[retry_row, "amount"] = 2500.0
     retry_raw_sha = _install(
         store, "hydra_execution_raw", retry_frame, "none", as_of="20260803",
     )
@@ -275,6 +278,10 @@ def test_retry_reuses_target_shares_and_only_orders_residual(tmp_path):
         assert [(order.symbol, order.direction, order.quantity) for order in orders] == [
             ("510300.SH", "BUY", 100),
         ]
+        # The client supplies neither the residual nor its prices.  The server
+        # recomputes the delta and prices it from the approved frozen raw stream.
+        assert orders[0].execution_reference_price == 2.5
+        assert orders[0].limit_price == 2.512
 
 
 def test_retry_blocked_while_prior_attempt_is_pending(tmp_path):
