@@ -18,22 +18,26 @@
 | 行情上传失败仍可能报 completed | `market_push.py --live-backup` 在 QMT 不通、空数据或上传失败时返回非零；成功必须输出 `UPLOADED` 或休市日 `SKIPPED_NON_TRADING` 回执，wrapper 才通知成功。 |
 | Windows 运行代码游离于 Git | 安装器现会将经过版本化的 runner 和四份 runtime scripts 安装到 `C:\hydra-live`，并在升级前备份原文件。 |
 | 旧 trigger 与新 retry 可能同时运行 | 注册器默认发现旧任务即拒绝；只有显式使用 `-ReplaceLegacyTasks` 才会禁用旧 15:10/16:00/18:00 任务并注册新任务。 |
+| 18:00 成功后没有自动创建 09:10 任务 | 只有在批次冻结且 preflight 返回 `READY_FOR_OFFLINE_SUBMIT` 后，才按下一交易日创建 `Hydra-Live-Submit-YYYYMMDD-0910`。同名同内容返回 `ALREADY_REGISTERED`，同名异内容拒绝覆盖。 |
+| 15:10 瞬时失败可能让 attempt 卡住 | 仅 `settle-close` 设置失败后 5 分钟重试一次；09:10 submit 绝不自动重试。 |
+| retry execution hash 未绑定目标 | 私有配置必须同时给出 execution SHA-256、target id、rebalance id；16:00 在打开 QMT 前同时核对 close 回执和本地冻结批次。 |
+| QMT 异常连接可能遗留 trader | 构造、callback、start、connect、account 或 subscribe 任一阶段异常均清理已创建 trader；`close()` 同时清空所有 QMT 引用。 |
 
 ## 整改后的任务时间线
 
 | 时间 | Windows 任务 | 行为与硬边界 |
 |---|---|---|
-| 15:10 | `Hydra-Live-SettleClose-1510` | 查询 QMT 累计委托终态，推送 `/trade-result`；保存账户证据 SHA-256；对账并关闭 Hydra attempt。活动或未知委托、账本差异均 fail-closed。 |
+| 15:10 | `Hydra-Live-SettleClose-1510` | 查询 QMT 累计委托终态，推送 `/trade-result`；保存账户证据 SHA-256；对账并关闭 Hydra attempt。活动或未知委托、账本差异均 fail-closed。失败后 5 分钟仅重试一次。 |
 | 15:30 | `Hydra-Live-MarketBackup-1530` | 上传隔离的 live-QMT 行情备份；必须取得机器可读成功回执。 |
 | 16:00 | `Hydra-Live-Retry-1600` | 读取 15:10 的带 hash close 回执。只有服务器明确返回 `RESIDUAL` 才请求 retry；订单数量与内容由服务器生成。 |
-| 18:00 | `Hydra-Live-QueryPreflight-1800` | 获取下一交易日，执行 `query → preflight`。无订单是正常终态；有订单必须冻结批次并取得 `READY_FOR_OFFLINE_SUBMIT`。 |
-| T+1 09:10 | 单次 submit 任务 | 只执行 `submit`。不创建 HTTP client、不访问服务器；缺批次或缺 PASS 回执时在打开 QMT 前停止。 |
+| 18:00 | `Hydra-Live-QueryPreflight-1800` | 获取下一交易日，执行 `query → preflight`。无订单是正常终态；有订单必须冻结批次并取得 `READY_FOR_OFFLINE_SUBMIT`，然后创建下一交易日 09:10 一次性任务。 |
+| T+1 09:10 | `Hydra-Live-Submit-YYYYMMDD-0910` | 只执行 `submit`。不创建 HTTP client、不访问服务器；缺批次或缺 PASS 回执时在打开 QMT 前停止；任务不自动重试。 |
 
 ## 数据和状态证据
 
 - `workflow_receipts` 保存 `close` 与 `retry` 的规范 JSON、SHA-256 和记录时间，防止同日不同结果被静默覆盖。
 - reconciliation evidence 写入私有日志目录的 `evidence` 子目录，文件名包含交易日、attempt id 和内容 hash。
-- 16:00 retry 使用目标批准的 `execution_raw` SHA-256。部署前需要把该值写入私有变量 `HYDRA_LIVE_RETRY_EXECUTION_RAW_SHA256`；它是数据内容 hash，不是账户密钥。
+- 16:00 retry 使用同一已批准目标的 `HYDRA_LIVE_RETRY_EXECUTION_RAW_SHA256`、`HYDRA_LIVE_RETRY_TARGET_ID` 和 `HYDRA_LIVE_RETRY_REBALANCE_ID`。三者是不可分割的绑定，缺一即 fail-closed；它们不是账户密钥。
 - 无当日批次时，15:10 返回 `NO_ORDERS`，16:00 返回 `NO_ATTEMPT`，不会在普通交易日制造误报警。
 - 服务器返回 `COMPLETE` 时，16:00 返回 `NO_RESIDUAL`，不会打开 QMT 或请求补单。
 
@@ -53,12 +57,17 @@
 
 1. Python/PowerShell 语法检查通过。
 2. `live_client/tests/test_live_client.py` 全部通过，包括 mock 的 `query → preflight → submit → settle-close → retry`。
-3. 完整 test suite 为 38 passed、1 skipped；跳过项是 Windows 不支持用 Unix `0600` mode-bit 代表 ACL，该权限在部署时通过 Windows ACL 单独验证。
+3. 客户端相关 test suite 为 45 passed、1 skipped；跳过项是 Windows 不支持用 Unix `0600` mode-bit 代表 ACL，该权限在部署时通过 Windows ACL 单独验证。
 4. 从私有配置确认 `HYDRA_LIVE_PYTHON` 与本机 MiniQMT Python 一致。
 5. 确认 `HYDRA_LIVE_CODE_COMMIT` 是本次获批的完整 Git SHA，且与 `HYDRA_LIVE_CODE_DIR` 的 HEAD 相同。
-6. 从获批 target sidecar 确认 `HYDRA_LIVE_RETRY_EXECUTION_RAW_SHA256`，禁止猜测或取“最新文件”。
+6. 从同一获批 target sidecar 确认 retry execution SHA-256、target id 和 rebalance id，禁止猜测或混用不同批次。
 7. 先安装新 release，但不注册任务；运行 `doctor` 与 mock acceptance。
 8. 审阅计划任务动作后再替换旧的 15:10、16:00、18:00 任务。旧 `/hydra/live/trigger` 任务不得与新 retry 任务并存。
+
+补充说明：从仓库根目录扫描整个 `v2.3` 时，服务器旧有的 6 个
+`v53_adapter` 测试会因 Windows 默认 GBK 解码 UTF-8 `config.yaml` 失败；
+本轮未改动 server/v53 文件，该问题与本次 live-client 整改无关，未为了
+“全绿”扩大修改范围。
 
 ## 未做事项
 

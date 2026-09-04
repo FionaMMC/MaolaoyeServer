@@ -6,10 +6,10 @@ $ErrorActionPreference = "Stop"
 $taskScript = "C:\hydra-live\scripts\Invoke-HydraLiveOperations.ps1"
 if (-not (Test-Path -LiteralPath $taskScript -PathType Leaf)) { throw "Operations script is missing: $taskScript" }
 $items = @(
-    @{ Name = "Hydra-Live-SettleClose-1510"; Stage = "settle-close"; Hour = 15; Minute = 10; LimitMinutes = 30 },
-    @{ Name = "Hydra-Live-MarketBackup-1530"; Stage = "market-backup"; Hour = 15; Minute = 30; LimitMinutes = 90 },
-    @{ Name = "Hydra-Live-Retry-1600"; Stage = "retry"; Hour = 16; Minute = 0; LimitMinutes = 20 },
-    @{ Name = "Hydra-Live-QueryPreflight-1800"; Stage = "query-preflight"; Hour = 18; Minute = 0; LimitMinutes = 30 }
+    @{ Name = "Hydra-Live-SettleClose-1510"; Stage = "settle-close"; Hour = 15; Minute = 10; LimitMinutes = 30; RestartCount = 1; RestartMinutes = 5 },
+    @{ Name = "Hydra-Live-MarketBackup-1530"; Stage = "market-backup"; Hour = 15; Minute = 30; LimitMinutes = 90; RestartCount = 0 },
+    @{ Name = "Hydra-Live-Retry-1600"; Stage = "retry"; Hour = 16; Minute = 0; LimitMinutes = 20; RestartCount = 0 },
+    @{ Name = "Hydra-Live-QueryPreflight-1800"; Stage = "query-preflight"; Hour = 18; Minute = 0; LimitMinutes = 30; RestartCount = 0 }
 )
 $legacyNames = @(
     "Hydra-Live-Settle-1510",
@@ -29,6 +29,15 @@ foreach ($item in $items) {
     $action = New-ScheduledTaskAction -Execute "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$taskScript`" -Stage $($item.Stage)"
     $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At ([datetime]::Today.Date.AddHours($item.Hour).AddMinutes($item.Minute))
     $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Highest
-    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes $item.LimitMinutes) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries:$false
+    $settingsParameters = @{
+        ExecutionTimeLimit = New-TimeSpan -Minutes $item.LimitMinutes
+        MultipleInstances = "IgnoreNew"
+        AllowStartIfOnBatteries = $false
+    }
+    if ($item.RestartCount -gt 0) {
+        $settingsParameters.RestartCount = $item.RestartCount
+        $settingsParameters.RestartInterval = New-TimeSpan -Minutes $item.RestartMinutes
+    }
+    $settings = New-ScheduledTaskSettingsSet @settingsParameters
     Register-ScheduledTask -TaskName $item.Name -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description "Hydra live weekday $($item.Stage); server makes residual-order decisions." -Force | Out-Null
 }

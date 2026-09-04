@@ -138,8 +138,8 @@ commands that access QMT. Query still calls the domain-scoped server API.
 
 Supported Windows task names:
 
-- `Hydra-Live-QueryPreflight-1800` — T evening query followed by online preflight.
-- `HydraLive-OrderSubmit` — T+1 09:10, local frozen batch and MiniQMT only.
+- `Hydra-Live-QueryPreflight-1800` — T evening query followed by online preflight; after `READY_FOR_OFFLINE_SUBMIT`, it idempotently creates the next item.
+- `Hydra-Live-Submit-YYYYMMDD-0910` — one-time T+1 09:10 task using only the local frozen batch and MiniQMT.
 - `Hydra-Live-SettleClose-1510` — terminal QMT status, trade result, reconciliation and attempt close.
 - `Hydra-Live-MarketBackup-1530` — isolated live-QMT market backup with explicit receipt.
 - `Hydra-Live-Retry-1600` — Hydra retry only after a server-confirmed residual.
@@ -151,6 +151,12 @@ transition adapter in this release.
 
 Do not create these tasks until the mock and dedicated-paper acceptance gates in
 the server runbook have passed.
+
+`Hydra-Live-SettleClose-1510` alone is configured for one automatic restart
+after five minutes. No order-submit task has an automatic restart. Residual
+retry requires one approved and internally consistent triple:
+`HYDRA_LIVE_RETRY_EXECUTION_RAW_SHA256`, `HYDRA_LIVE_RETRY_TARGET_ID` and
+`HYDRA_LIVE_RETRY_REBALANCE_ID`.
 
 ## One-lot real MiniQMT canary
 

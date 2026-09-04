@@ -342,9 +342,16 @@ def settle_and_close(
         "actual_positions": snapshot.positions,
         "reconciliation_evidence_sha256": evidence_sha256,
     })
+    batch_target_id = batch.orders[0]["target_id"]
+    if (
+        closed.get("target_id") != batch_target_id
+        or closed.get("rebalance_id") != batch.rebalance_id
+    ):
+        raise RuntimeError("Hydra close 回执与本地冻结批次 target/rebalance 不一致")
     receipt = {
         "trade_date": trade_date,
         "attempt_id": attempt_id,
+        "target_id": closed["target_id"],
         "rebalance_id": closed["rebalance_id"],
         "status": closed["status"],
         "residual_after": closed.get("residual_after") or {},
@@ -380,8 +387,32 @@ def stage_residual_retry(
         return {"status": "NO_RESIDUAL", "trade_date": source_trade_date}
     if closed["status"] != "RESIDUAL" or not closed.get("residual_after"):
         raise RuntimeError("Hydra close 回执没有有效 RESIDUAL")
-    if not cfg.retry_execution_raw_sha256:
-        raise RuntimeError("缺少 HYDRA_LIVE_RETRY_EXECUTION_RAW_SHA256")
+    batch = _load_frozen_batch(cfg, source_trade_date, state)
+    batch_target_id = batch.orders[0]["target_id"]
+    retry_binding = (
+        cfg.retry_execution_raw_sha256,
+        cfg.retry_target_id,
+        cfg.retry_rebalance_id,
+    )
+    if not all(retry_binding):
+        raise RuntimeError(
+            "缺少完整 retry 绑定：execution hash、target_id 与 rebalance_id"
+        )
+    expected_binding = {
+        "target_id": cfg.retry_target_id,
+        "rebalance_id": cfg.retry_rebalance_id,
+    }
+    actual_binding = {
+        "target_id": closed.get("target_id"),
+        "rebalance_id": closed.get("rebalance_id"),
+    }
+    if actual_binding != expected_binding:
+        raise RuntimeError("Hydra close 回执与已批准 retry target/rebalance 不一致")
+    if (
+        batch_target_id != cfg.retry_target_id
+        or batch.rebalance_id != cfg.retry_rebalance_id
+    ):
+        raise RuntimeError("本地冻结批次与已批准 retry target/rebalance 不一致")
 
     gateway = _gateway(cfg, mock_state)
     gateway.connect()
@@ -406,9 +437,15 @@ def stage_residual_retry(
         "actual_positions": snapshot.positions,
         "reconciliation_evidence_sha256": evidence_sha256,
     })
+    if (
+        staged.get("target_id") != cfg.retry_target_id
+        or staged.get("rebalance_id") != cfg.retry_rebalance_id
+    ):
+        raise RuntimeError("Hydra retry 回执与已批准 target/rebalance 不一致")
     receipt = {
         "source_trade_date": source_trade_date,
         "next_trade_date": next_trade_date,
+        "target_id": staged["target_id"],
         "attempt_id": staged["attempt_id"],
         "rebalance_id": staged["rebalance_id"],
         "batch_sha256": staged["batch_sha256"],

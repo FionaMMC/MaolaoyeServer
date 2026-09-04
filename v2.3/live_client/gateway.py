@@ -246,6 +246,16 @@ class XtQMTGateway:
         self.xtconstant = None
         self.xtdata = None
 
+    @staticmethod
+    def _stop_trader_safely(trader) -> None:
+        if trader is None:
+            return
+        try:
+            trader.stop()
+        except Exception:
+            # Cleanup must never hide the original connect/subscribe failure.
+            pass
+
     def connect(self) -> None:
         from xtquant import xtconstant, xtdata
         from xtquant.xttrader import XtQuantTrader, XtQuantTraderCallback
@@ -253,37 +263,53 @@ class XtQMTGateway:
 
         xtdata.data_dir = str(self.cfg.userdata_dir)
         trader = None
+        last_connect_error = None
         # MiniQMT can reject an immediately repeated connection for the same
         # session id after the preflight client has closed. Retry only this
         # pre-broker connection step: no account state is written and no order
         # API has been reached yet.
         for attempt in range(3):
-            candidate = XtQuantTrader(
-                str(self.cfg.userdata_dir), self.cfg.session_id,
-            )
-            candidate.register_callback(XtQuantTraderCallback())
-            candidate.start()
-            if candidate.connect() == 0:
-                trader = candidate
-                break
-            candidate.stop()
+            candidate = None
+            try:
+                candidate = XtQuantTrader(
+                    str(self.cfg.userdata_dir), self.cfg.session_id,
+                )
+                candidate.register_callback(XtQuantTraderCallback())
+                candidate.start()
+                connect_result = candidate.connect()
+                if connect_result == 0:
+                    trader = candidate
+                    break
+                last_connect_error = RuntimeError(
+                    f"QMT connect() 返回 {connect_result}"
+                )
+            except Exception as exc:
+                last_connect_error = exc
+            self._stop_trader_safely(candidate)
             if attempt < 2:
                 time.sleep(1)
         if trader is None:
-            raise RuntimeError("QMT connect() 失败（连续 3 次）")
-        account = StockAccount(self.cfg.account_id)
-        if trader.subscribe(account) != 0:
-            trader.stop()
-            raise RuntimeError("QMT subscribe() 失败")
+            raise RuntimeError("QMT connect() 失败（连续 3 次）") from last_connect_error
+        try:
+            account = StockAccount(self.cfg.account_id)
+            subscribe_result = trader.subscribe(account)
+            if subscribe_result != 0:
+                raise RuntimeError(f"QMT subscribe() 返回 {subscribe_result}")
+        except Exception as exc:
+            self._stop_trader_safely(trader)
+            raise RuntimeError("QMT subscribe() 失败") from exc
         self.trader = trader
         self.account = account
         self.xtconstant = xtconstant
         self.xtdata = xtdata
 
     def close(self) -> None:
-        if self.trader is not None:
-            self.trader.stop()
-            self.trader = None
+        trader = self.trader
+        self.trader = None
+        self.account = None
+        self.xtconstant = None
+        self.xtdata = None
+        self._stop_trader_safely(trader)
 
     def account_snapshot(self) -> AccountSnapshot:
         if self.trader is None or self.account is None:
