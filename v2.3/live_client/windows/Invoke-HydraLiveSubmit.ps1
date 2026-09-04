@@ -2,17 +2,29 @@
 param(
     [Parameter(Mandatory = $true)]
     [ValidatePattern("^\d{8}$")]
-    [string]$TradeDate,
-    [switch]$PreflightOnly
+    [string]$TradeDate
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $installRoot = "C:\hydra-live"
+$envFile = Join-Path $installRoot "config\hydra-live.env"
 $runner = Join-Path $installRoot "bin\Run-HydraLive.ps1"
-$pythonExe = if ($env:HYDRA_LIVE_PYTHON) { $env:HYDRA_LIVE_PYTHON } else { "python" }
 $logFile = Join-Path $installRoot "logs\hydra-live-submit-$TradeDate.log"
+
+function Import-HydraPrivateEnvironment {
+    foreach ($rawLine in Get-Content -LiteralPath $envFile -Encoding UTF8) {
+        $line = $rawLine.Trim()
+        if (-not $line -or $line.StartsWith("#")) { continue }
+        if ($line -notmatch "^([A-Za-z_][A-Za-z0-9_]*)=(.*)$") { throw "Invalid private env entry" }
+        $value = $Matches[2].Trim()
+        if ($value.Length -ge 2 -and (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'")))) {
+            $value = $value.Substring(1, $value.Length - 2)
+        }
+        [Environment]::SetEnvironmentVariable($Matches[1], $value, "Process")
+    }
+}
 
 function Send-WeComNotification([string]$Message) {
     if ([string]::IsNullOrWhiteSpace($env:HYDRA_LIVE_WECHAT_WEBHOOK)) { return }
@@ -24,21 +36,19 @@ function Send-WeComNotification([string]$Message) {
     } catch { Write-Warning "Enterprise WeChat notification failed: $($_.Exception.Message)" }
 }
 
-$phase = "preflight"
+Import-HydraPrivateEnvironment
+if ([string]::IsNullOrWhiteSpace($env:HYDRA_LIVE_PYTHON)) {
+    throw "HYDRA_LIVE_PYTHON is required; fallback Python is forbidden"
+}
+$pythonExe = $env:HYDRA_LIVE_PYTHON
+if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) {
+    throw "HYDRA_LIVE_PYTHON does not exist"
+}
+
+$phase = "submit"
 try {
-    # Run-HydraLive throws on command failure. Do not inspect $LASTEXITCODE
-    # after formatting a PowerShell pipeline: it is not the runner result.
-    $preflightLines = @(& $runner -Command preflight -Date $TradeDate -PythonExe $pythonExe 2>&1)
-    $preflightOutput = $preflightLines | Out-String
-    if ($preflightOutput -notmatch '"status"\s*:\s*"READY_FOR_OFFLINE_SUBMIT"') {
-        throw "Preflight did not return READY_FOR_OFFLINE_SUBMIT."
-    }
-    if ($PreflightOnly) {
-        Add-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) preflight succeeded; submit intentionally skipped`n$preflightOutput"
-        Send-WeComNotification "[Hydra live] $TradeDate preflight passed; submit intentionally skipped."
-        exit 0
-    }
-    $phase = "submit"
+    # Morning submit is deliberately offline from the server. The Python
+    # client re-hashes the frozen batch and requires last night's PASS receipt.
     $submitLines = @(& $runner -Command submit -Date $TradeDate -PythonExe $pythonExe 2>&1)
     $submitOutput = $submitLines | Out-String
     Add-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) submit succeeded`n$submitOutput"

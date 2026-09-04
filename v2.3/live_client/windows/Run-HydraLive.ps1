@@ -1,11 +1,14 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("doctor", "query", "preflight", "submit", "settle")]
+    [ValidateSet("doctor", "query", "preflight", "submit", "settle", "settle-close", "retry")]
     [string]$Command,
 
     [ValidatePattern("^\d{8}$")]
     [string]$Date,
+
+    [ValidatePattern("^\d{8}$")]
+    [string]$NextDate,
 
     [string]$InstallRoot = "C:\hydra-live",
     [string]$EnvFile,
@@ -51,8 +54,11 @@ function Import-HydraEnvironment {
 if ($Command -ne "doctor" -and -not $Date) {
     throw "-$Command requires an explicit -Date YYYYMMDD"
 }
-if ($MockState -and $Command -notin @("preflight", "submit", "settle")) {
-    throw "-MockState is only valid for preflight, submit, or settle"
+if ($Command -eq "retry" -and -not $NextDate) {
+    throw "-retry requires -NextDate YYYYMMDD"
+}
+if ($MockState -and $Command -notin @("preflight", "submit", "settle", "settle-close", "retry")) {
+    throw "-MockState is not valid for this command"
 }
 if (-not $EnvFile) {
     $EnvFile = Join-Path $InstallRoot "config\hydra-live.env"
@@ -102,6 +108,9 @@ try {
     $arguments = @("-m", "live_client.cli", $Command)
     if ($Date) {
         $arguments += @("--date", $Date)
+    }
+    if ($NextDate) {
+        $arguments += @("--next-date", $NextDate)
     }
     if ($MockState) {
         $arguments += @("--mock-state", $MockState)

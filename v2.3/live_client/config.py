@@ -87,6 +87,7 @@ class LiveClientConfig:
     risk_mode: str = "static"
     auto_max_daily_orders: int = 100
     auto_buffer_bps: float = 100.0
+    retry_execution_raw_sha256: str = ""
     # Same-machine is the conservative default.  A separate Windows host has
     # no shared QMT account/session/filesystem/Task Scheduler namespace.
     paper_client_colocated: bool = True
@@ -147,6 +148,9 @@ class LiveClientConfig:
                 "HYDRA_LIVE_AUTO_MAX_DAILY_ORDERS", 100,
             ),
             auto_buffer_bps=_nonnegative_float("HYDRA_LIVE_AUTO_BUFFER_BPS", 100),
+            retry_execution_raw_sha256=os.environ.get(
+                "HYDRA_LIVE_RETRY_EXECUTION_RAW_SHA256", "",
+            ).strip(),
             paper_client_colocated=_bool(
                 "HYDRA_LIVE_PAPER_CLIENT_COLOCATED", True,
             ),
@@ -199,6 +203,11 @@ class LiveClientConfig:
                 raise ValueError("auto 风控缓冲必须在 0..500bps")
         if self.effective_price_offset_bps > 50:
             raise ValueError("client 价格偏移上限不能超过 50bps")
+        if self.retry_execution_raw_sha256 and (
+            len(self.retry_execution_raw_sha256) != 64
+            or any(c not in "0123456789abcdef" for c in self.retry_execution_raw_sha256)
+        ):
+            raise ValueError("HYDRA_LIVE_RETRY_EXECUTION_RAW_SHA256 必须是 lowercase SHA-256")
         if self.state_db.resolve() == (self.log_dir / "pipeline.db").resolve():
             raise ValueError("live SQLite 与日志目录配置异常")
         paper_paths = {

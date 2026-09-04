@@ -205,6 +205,8 @@ def test_plan_is_read_only_hashed_private_and_hard_capped(tmp_path, monkeypatch)
             unsigned, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
         ).encode()
     ).hexdigest()
+    if os.name == "nt":
+        pytest.skip("POSIX 0600 mode bits are not an ACL assertion on Windows")
     assert os.stat(path).st_mode & 0o777 == 0o600
     assert path.is_relative_to(cfg.log_dir)
 

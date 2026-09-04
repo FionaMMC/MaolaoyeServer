@@ -14,9 +14,9 @@ It is based on the packaged live-client source commit `be32a27827dd152c0da0c239d
 
 | Time | Task | Client action |
 |---|---|---|
-| 15:10 | `Hydra-Live-Settle-1510` | Read QMT cumulative order state and push settlement result. |
+| 15:10 | `Hydra-Live-SettleClose-1510` | Push terminal QMT order state, reconcile the account and close the Hydra attempt. |
 | 15:30 | `Hydra-Live-MarketBackup-1530` | Store an isolated live-QMT market-data backup. |
-| 16:00 | `Hydra-Live-Trigger-1600` | Invoke the existing server trigger; residual-order decisions remain server-side. |
-| 18:00 | `Hydra-Live-Query-1800` | Pull and freeze the next trading day's server batch locally. |
+| 16:00 | `Hydra-Live-Retry-1600` | If the close receipt says `RESIDUAL`, ask the Hydra relay to stage the next attempt. |
+| 18:00 | `Hydra-Live-QueryPreflight-1800` | Pull/freeze the next trading day's batch and persist its online preflight receipt. |
 
-`Invoke-HydraLiveSubmit.ps1` is deliberately manual/one-time: it performs a live preflight and submits only when the result is `READY_FOR_OFFLINE_SUBMIT`. The MiniQMT connection retry in `gateway.py` applies only before account or broker-order operations; it never retries an order API call.
+`Invoke-HydraLiveSubmit.ps1` is deliberately manual/one-time: it performs only offline submit and relies on the prior evening's frozen batch and PASS receipt. The MiniQMT connection retry in `gateway.py` applies only before account or broker-order operations; it never retries an order API call.

@@ -4,6 +4,7 @@ mock_qmt 模式：跳过 QMT 下载，直接读取 mock_data/market_payload_mock
 """
 
 import argparse
+import json
 import os
 import threading
 import time
@@ -204,13 +205,14 @@ def _push_to_server(payload: dict, *, live_backup: bool = False) -> bool:
         return False
 
 
-def _push(payload: dict, trade_date: str, *, live_backup: bool = False) -> None:
+def _push(payload: dict, trade_date: str, *, live_backup: bool = False) -> bool:
     if live_backup:
         if _push_to_server(payload, live_backup=True):
             _wechat_notify(f"实盘 QMT 行情备份成功 {trade_date}")
+            return True
         else:
             _wechat_alert(f"实盘 QMT 行情备份失败 {trade_date}")
-        return
+            return False
     if config.PUSH_MODE in ("local", "mock_qmt"):
         filename = f"market_data_{trade_date}.json"
         config.save_local_push(filename, payload)
@@ -220,16 +222,17 @@ def _push(payload: dict, trade_date: str, *, live_backup: bool = False) -> None:
             f"indexes={len(payload['indexes'])}）"
         )
         _wechat_notify(f"行情推送（{config.PUSH_MODE}）{trade_date}：ok")
-        return
+        return True
 
     for attempt in range(1, config.PUSH_MAX_RETRIES + 1):
         log.info(f"第 {attempt}/{config.PUSH_MAX_RETRIES} 次推送...")
         if _push_to_server(payload):
             _wechat_notify(f"行情推送成功 {trade_date}")
-            return
+            return True
         if attempt < config.PUSH_MAX_RETRIES:
             time.sleep(config.PUSH_RETRY_INTERVAL_SECONDS)
     _wechat_alert(f"行情推送失败：重试 {config.PUSH_MAX_RETRIES} 次仍失败（trade_date={trade_date}）")
+    return False
 
 
 def main():
@@ -256,6 +259,8 @@ def main():
         trade_date = datetime.now().strftime("%Y%m%d")
         if not is_trading_day(trade_date):
             log.info(f"今日 {trade_date} 非交易日，正常退出")
+            if args.live_backup:
+                print(json.dumps({"status": "SKIPPED_NON_TRADING", "trade_date": trade_date}))
             return
 
     log.info(f"交易日 {trade_date}，开始下载行情")
@@ -265,7 +270,7 @@ def main():
     if not _check_qmt_alive():
         _wechat_alert(f"market_push {trade_date}：QMT 连通性检测失败，请确认 miniQMT 正在运行")
         log.error("QMT 连通性检测失败，退出（请确认 miniQMT 是否已启动）")
-        return
+        raise SystemExit(1)
     log.info("QMT 连通性检测通过")
 
     _download_all(all_codes)
@@ -276,14 +281,26 @@ def main():
 
     if not stocks_raw:
         _wechat_alert(f"股票行情读取结果为空（trade_date={trade_date}）")
-        return
+        raise SystemExit(1)
 
     payload = _build_payload(trade_date, stocks_raw, etfs_raw, indexes_raw)
     if not payload["stocks"]:
         _wechat_alert(f"清洗后股票数据为空（trade_date={trade_date}）")
-        return
+        raise SystemExit(1)
 
-    _push(payload, trade_date, live_backup=args.live_backup)
+    pushed = _push(payload, trade_date, live_backup=args.live_backup)
+    if not pushed:
+        raise SystemExit(1)
+    if args.live_backup:
+        print(json.dumps({
+            "status": "UPLOADED",
+            "trade_date": trade_date,
+            "received": {
+                "stocks": len(payload["stocks"]),
+                "etfs": len(payload["etfs"]),
+                "indexes": len(payload["indexes"]),
+            },
+        }, sort_keys=True))
     log.info("=== market_push 完成 ===")
 
 

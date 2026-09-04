@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("settle", "market-backup", "trigger", "query")]
+    [ValidateSet("settle-close", "market-backup", "retry", "query-preflight")]
     [string]$Stage
 )
 
@@ -10,7 +10,7 @@ $ErrorActionPreference = "Stop"
 $installRoot = "C:\hydra-live"
 $envFile = Join-Path $installRoot "config\hydra-live.env"
 $runner = Join-Path $installRoot "bin\Run-HydraLive.ps1"
-$pythonExe = "C:\parttime\annaconda\envs\py311_qmt\python.exe"
+$pythonExe = $null
 $logFile = Join-Path $installRoot "logs\hydra-live-$Stage.log"
 
 function Import-HydraPrivateEnvironment {
@@ -53,22 +53,42 @@ print(next(date for date in dates if date > today))
 }
 
 Import-HydraPrivateEnvironment
+$requiredPython = $env:HYDRA_LIVE_PYTHON
+if ([string]::IsNullOrWhiteSpace($requiredPython) -or -not (Test-Path -LiteralPath $requiredPython -PathType Leaf)) {
+    throw "HYDRA_LIVE_PYTHON must be an existing absolute executable path"
+}
+$pythonExe = $requiredPython
 $today = Get-Date -Format "yyyyMMdd"
 try {
     switch ($Stage) {
-        "settle" { $output = @(& $runner -Command settle -Date $today -PythonExe $pythonExe 2>&1) | Out-String }
+        "settle-close" {
+            $output = @(& $runner -Command settle-close -Date $today -PythonExe $pythonExe 2>&1) | Out-String
+            if ($output -notmatch '"status"\s*:\s*"(ATTEMPT_CLOSED|NO_ORDERS)"') { throw "settle-close returned no terminal receipt" }
+        }
         "market-backup" {
             if ([string]::IsNullOrWhiteSpace($env:HYDRA_LIVE_DATA_BACKUP_API_KEY)) { throw "HYDRA_LIVE_DATA_BACKUP_API_KEY is not configured" }
             $script = Join-Path $installRoot "scripts\hydra_live_market_backup.py"
             $lines = @(& $pythonExe $script 2>&1); $exitCode = $LASTEXITCODE; $output = $lines | Out-String
             if ($exitCode -ne 0) { throw "market backup returned a non-zero exit code" }
+            if ($output -notmatch '"status"\s*:\s*"(UPLOADED|SKIPPED_NON_TRADING)"') { throw "market backup returned no success receipt" }
         }
-        "trigger" {
-            $script = Join-Path $env:HYDRA_LIVE_CODE_DIR "client\trigger_pipeline.py"
-            $lines = @(& $pythonExe $script --live 2>&1); $exitCode = $LASTEXITCODE; $output = $lines | Out-String
-            if ($exitCode -ne 0) { throw "live trigger returned a non-zero exit code" }
+        "retry" {
+            $nextDate = Get-NextTradingDate
+            $output = @(& $runner -Command retry -Date $today -NextDate $nextDate -PythonExe $pythonExe 2>&1) | Out-String
+            if ($output -notmatch '"status"\s*:\s*"(RETRY_STAGED|NO_RESIDUAL|NO_ATTEMPT|ALREADY_STAGED)"') { throw "retry returned no terminal receipt" }
         }
-        "query" { $output = @(& $runner -Command query -Date (Get-NextTradingDate) -PythonExe $pythonExe 2>&1) | Out-String }
+        "query-preflight" {
+            $nextDate = Get-NextTradingDate
+            $queryOutput = @(& $runner -Command query -Date $nextDate -PythonExe $pythonExe 2>&1) | Out-String
+            if ($queryOutput -match '"status"\s*:\s*"NO_ORDERS"') {
+                $output = "query:`n$queryOutput`npreflight: skipped because server returned NO_ORDERS"
+            } else {
+                if ($queryOutput -notmatch '"status"\s*:\s*"(FETCHED|ALREADY_FETCHED)"') { throw "query did not freeze a batch" }
+                $preflightOutput = @(& $runner -Command preflight -Date $nextDate -PythonExe $pythonExe 2>&1) | Out-String
+                if ($preflightOutput -notmatch '"status"\s*:\s*"READY_FOR_OFFLINE_SUBMIT"') { throw "preflight did not return READY_FOR_OFFLINE_SUBMIT" }
+                $output = "query:`n$queryOutput`npreflight:`n$preflightOutput"
+            }
+        }
     }
     Add-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) $Stage succeeded`n$output"
     Send-WeComNotification "[Hydra live] $Stage completed for $today."

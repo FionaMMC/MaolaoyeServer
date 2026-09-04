@@ -59,6 +59,9 @@ class LiveServerClient:
     def close_attempt(self, payload: dict) -> dict:
         return self._post("/hydra/attempts/close", payload)
 
+    def stage_retry(self, payload: dict) -> dict:
+        return self._post("/hydra/rebalances/retry", payload)
+
     def post_cash_flow(self, payload: dict) -> dict:
         return self._post("/cash-flows", payload)
 

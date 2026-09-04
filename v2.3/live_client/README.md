@@ -50,7 +50,8 @@ python -m live_client.cli doctor
 python -m live_client.cli query --date YYYYMMDD
 python -m live_client.cli preflight --date YYYYMMDD
 python -m live_client.cli submit --date YYYYMMDD
-python -m live_client.cli settle --date YYYYMMDD
+python -m live_client.cli settle-close --date YYYYMMDD
+python -m live_client.cli retry --date YYYYMMDD --next-date YYYYMMDD
 python -m live_client.cli cash-flow --date YYYYMMDD --type DIVIDEND `
   --amount 123.45 --source <verified-source> --source-event-id <stable-id> `
   --evidence-sha256 <sha256>
@@ -89,7 +90,8 @@ exchange trade date explicitly:
 C:\hydra-live\bin\Run-HydraLive.ps1 -Command query -Date YYYYMMDD
 C:\hydra-live\bin\Run-HydraLive.ps1 -Command preflight -Date YYYYMMDD
 C:\hydra-live\bin\Run-HydraLive.ps1 -Command submit -Date YYYYMMDD
-C:\hydra-live\bin\Run-HydraLive.ps1 -Command settle -Date YYYYMMDD
+C:\hydra-live\bin\Run-HydraLive.ps1 -Command settle-close -Date YYYYMMDD
+C:\hydra-live\bin\Run-HydraLive.ps1 -Command retry -Date YYYYMMDD -NextDate YYYYMMDD
 ```
 
 Do not derive `YYYYMMDD` by adding one calendar day: month boundaries, weekends
@@ -134,17 +136,14 @@ not an account query or an order operation.
 For mock runs, append `--mock-state C:\private\hydra-live\mock-state.json` to
 commands that access QMT. Query still calls the domain-scoped server API.
 
-Suggested distinct Windows task names:
+Supported Windows task names:
 
-- `HydraLive-TargetQuery` — T evening after the server stages T+1 orders.
-- `HydraLive-Preflight` — after query, while server availability may still block safely.
+- `Hydra-Live-QueryPreflight-1800` — T evening query followed by online preflight.
 - `HydraLive-OrderSubmit` — T+1 09:10, local frozen batch and MiniQMT only.
-- `HydraLive-QMTStatus` — 15:10.
-- `HydraLive-TradeSettle` — 15:30 after QMT reports terminal status.
-- `HydraLive-ResidualStage` — 16:00 only after clean reconciliation.
-- `HydraLive-AuditExport` — 18:00.
+- `Hydra-Live-SettleClose-1510` — terminal QMT status, trade result, reconciliation and attempt close.
+- `Hydra-Live-MarketBackup-1530` — isolated live-QMT market backup with explicit receipt.
+- `Hydra-Live-Retry-1600` — Hydra retry only after a server-confirmed residual.
 - `HydraLive-CashFlowJournal` — daily after verified dividend/fund-flow evidence.
-- `HydraLive-ReconcileClose` — after settlement and external cash-flow ingestion.
 - `HydraLive-DataFreeze` — month-end after QMT daily data is complete.
 
 These tasks connect directly to MiniQMT through `xtquant`; there is no large-QMT

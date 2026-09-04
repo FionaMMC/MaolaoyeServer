@@ -3,12 +3,31 @@ from __future__ import annotations
 
 import os
 import runpy
+import subprocess
 import sys
 from pathlib import Path
 
 
+def _assert_pinned_code(code_dir: Path, expected_commit: str) -> None:
+    if len(expected_commit) != 40 or any(c not in "0123456789abcdef" for c in expected_commit):
+        raise RuntimeError("HYDRA_LIVE_CODE_COMMIT must be a full lowercase Git SHA")
+    actual = subprocess.run(
+        ["git", "-C", str(code_dir), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    if actual != expected_commit:
+        raise RuntimeError("HYDRA_LIVE_CODE_DIR is not at HYDRA_LIVE_CODE_COMMIT")
+    dirty = subprocess.run(
+        ["git", "-C", str(code_dir), "status", "--porcelain", "--", "client/market_push.py", "config.py"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    if dirty:
+        raise RuntimeError("market backup source files have uncommitted changes")
+
+
 def main() -> None:
     code_dir = Path(os.environ["HYDRA_LIVE_CODE_DIR"])
+    _assert_pinned_code(code_dir, os.environ["HYDRA_LIVE_CODE_COMMIT"])
     client_script = code_dir / "client" / "market_push.py"
     if not client_script.is_file():
         raise RuntimeError(f"market_push.py not found under HYDRA_LIVE_CODE_DIR: {code_dir}")
