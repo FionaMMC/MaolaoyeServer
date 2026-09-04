@@ -54,6 +54,7 @@ python -m live_client.cli ledger
 python -m live_client.cli query --date YYYYMMDD
 python -m live_client.cli preflight --date YYYYMMDD
 python -m live_client.cli submit --date YYYYMMDD
+python -m live_client.cli cancel-open --date YYYYMMDD
 python -m live_client.cli settle-close --date YYYYMMDD
 python -m live_client.cli retry --date YYYYMMDD --next-date YYYYMMDD
 python -m live_client.cli cash-flow --date YYYYMMDD --type DIVIDEND `
@@ -98,6 +99,7 @@ exchange trade date explicitly:
 C:\hydra-live\bin\Run-HydraLive.ps1 -Command query -Date YYYYMMDD
 C:\hydra-live\bin\Run-HydraLive.ps1 -Command preflight -Date YYYYMMDD
 C:\hydra-live\bin\Run-HydraLive.ps1 -Command submit -Date YYYYMMDD
+C:\hydra-live\bin\Run-HydraLive.ps1 -Command cancel-open -Date YYYYMMDD
 C:\hydra-live\bin\Run-HydraLive.ps1 -Command settle-close -Date YYYYMMDD
 C:\hydra-live\bin\Run-HydraLive.ps1 -Command retry -Date YYYYMMDD -NextDate YYYYMMDD
 ```
@@ -111,6 +113,9 @@ For the combined Server/client deployment, existing-instance capital correction,
 attributed-ledger migration and residual-task cutover, follow
 [`HYDRA_LIVE_UNIFIED_DEPLOYMENT_HANDOFF_20260904.md`](HYDRA_LIVE_UNIFIED_DEPLOYMENT_HANDOFF_20260904.md)
 as the authoritative sequence.
+
+The broker-confirmed 14:55 cancel / 16:05 final-settlement cutover is summarized
+in [`HYDRA_LIVE_EOD_CANCEL_HANDOFF_20260904.md`](HYDRA_LIVE_EOD_CANCEL_HANDOFF_20260904.md).
 
 The portable no-network acceptance can also be run directly:
 
@@ -153,9 +158,10 @@ Supported Windows task names:
 
 - `Hydra-Live-QueryPreflight-1800` — T evening query followed by online preflight; after `READY_FOR_OFFLINE_SUBMIT`, it idempotently creates the next item.
 - `Hydra-Live-Submit-YYYYMMDD-0910` — one-time T+1 09:10 task using only the local frozen batch and MiniQMT.
-- `Hydra-Live-SettleClose-1510` — terminal QMT status, trade result, reconciliation and attempt close.
+- `Hydra-Live-CancelOpen-1455` — request cancellation only for exact active orders from the locally frozen Hydra batch; it never marks a request as a completed cancellation.
 - `Hydra-Live-MarketBackup-1530` — isolated live-QMT market backup with explicit receipt.
-- `Hydra-Live-Retry-1600` — Hydra retry only after a server-confirmed residual.
+- `Hydra-Live-SettleClose-1605` — after the broker's 16:00 final cancellation report, push terminal QMT state, reconcile and close the attempt; one process retry is allowed at 16:10.
+- `Hydra-Live-Retry-1620` — Hydra retry only after a server-confirmed residual.
 - `HydraLive-CashFlowJournal` — daily after verified dividend/fund-flow evidence.
 - `HydraLive-DataFreeze` — month-end after QMT daily data is complete.
 
@@ -165,7 +171,7 @@ transition adapter in this release.
 Do not create these tasks until the mock and dedicated-paper acceptance gates in
 the server runbook have passed.
 
-`Hydra-Live-SettleClose-1510` alone is configured for one automatic restart
+`Hydra-Live-SettleClose-1605` alone is configured for one automatic restart
 after five minutes. No order-submit task has an automatic restart. Residual
 retry requires one approved and internally consistent triple:
 `HYDRA_LIVE_RETRY_EXECUTION_RAW_SHA256`, `HYDRA_LIVE_RETRY_TARGET_ID` and

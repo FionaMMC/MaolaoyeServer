@@ -15,9 +15,10 @@ release manifest and in `active-release.txt`.
 
 | Time | Task | Client action |
 |---|---|---|
-| 15:10 | `Hydra-Live-SettleClose-1510` | Push terminal QMT order state, reconcile the account and close the Hydra attempt; on process failure, retry once after five minutes. |
+| 14:55 | `Hydra-Live-CancelOpen-1455` | Request cancellation only for active orders belonging to the frozen Hydra batch. A request acknowledgement is not treated as a terminal cancellation. |
 | 15:30 | `Hydra-Live-MarketBackup-1530` | Store an isolated live-QMT market-data backup. |
-| 16:00 | `Hydra-Live-Retry-1600` | If the close receipt says `RESIDUAL`, ask the Hydra relay to stage the next attempt. |
+| 16:05 | `Hydra-Live-SettleClose-1605` | Read the broker's post-16:00 terminal report, push trades, reconcile and close the attempt; on process failure, retry once at 16:10. |
+| 16:20 | `Hydra-Live-Retry-1620` | If the close receipt says `RESIDUAL`, ask the Hydra relay to stage the next attempt. |
 | 18:00 | `Hydra-Live-QueryPreflight-1800` | Pull/freeze the next trading day's batch, persist its online preflight receipt, then idempotently create `Hydra-Live-Submit-YYYYMMDD-0910`. |
 | T+1 09:10 | `Hydra-Live-Submit-YYYYMMDD-0910` | One-time offline submit using the frozen batch and PASS receipt; no server call and no automatic task retry. |
 
@@ -27,6 +28,14 @@ refuses to overwrite a same-name task whose action or trigger differs. The
 MiniQMT connection retry in `gateway.py` applies only before account or broker
 order operations; every failed candidate is stopped, and it never retries an
 order API call.
+
+`cancel-open` is intentionally scheduled before the exchange's 14:57 no-cancel
+window. It first proves account, symbol, quantity, price, direction, strategy
+name and deterministic remark for the complete local Hydra submission set. An
+identity mismatch blocks every cancellation. Per-order request failures are
+reported without stopping requests for the other already-validated Hydra
+orders, and every run writes a SHA-256 evidence receipt. The 16:05 task still
+requires explicit terminal QMT states; `ORDER_PARTSUCC_CANCEL` remains active.
 
 Before enabling residual retry, configure all three values for the same approved
 cycle: take `HYDRA_LIVE_RETRY_EXECUTION_RAW_SHA256` from the canonical raw

@@ -16,11 +16,16 @@ Windows MiniQMT 客户端运行同一个获批提交，同时完成以下三件�
 统一交付分支是：
 
 ```text
-codex/hydra-strategy-capital-ledger-20260904
+codex/hydra-eod-cancel-lifecycle-20260904
 ```
 
 只部署本交接消息最终给出的完整 40 位 commit。不要单独部署 `64b8373`，因为它
-没有资金子账本；也不要停在 `0c61d812`，因为它没有最后一轮一次性任务整改。
+没有资金子账本；不要停在 `0c61d812`，因为它没有最后一轮一次性任务整改；也不要
+继续使用 `1daf3334`，因为它没有 14:55 正式撤单和券商 16:00 终态回报时序。
+
+本次日终修复的简版部署步骤见
+`HYDRA_LIVE_EOD_CANCEL_HANDOFF_20260904.md`；与本文冲突时，以日终修复文档中的
+14:55/16:05/16:20 时序为准。
 
 ## 责任边界
 
@@ -31,8 +36,9 @@ codex/hydra-strategy-capital-ledger-20260904
 | 补单价格 | 从获批的 `hydra_execution_raw` 冻结数据重新定价并生成订单 | 不传 residual、参考价、限价或订单内容 |
 | 成交质量 | 保存策略参考价、到达价、成交 VWAP、滑点、IOPV 溢价和费用 | 从 QMT 采集并回传实际成交字段 |
 | 09:10 下单 | 可以宕机；不在下单链路内 | 只校验本地冻结批次、preflight 回执和实时 QMT 账户/购买力 |
-| 15:10 结案 | 入账成交，维护策略子账本，计算 residual | settle-close；进程故障最多 5 分钟后重试一次 |
-| 16:00 retry | `/hydra/rebalances/retry` 生成差额批次 | 只在 Server close 回执为 `RESIDUAL` 时请求 |
+| 14:55 撤单 | 不参与，不改变订单状态 | 只对本地冻结批次中身份完全匹配且仍活动的 Hydra 委托请求撤单 |
+| 16:05 结案 | 入账成交，维护策略子账本，计算 residual | 等待券商 16:00 正式回报后 settle-close；进程故障最多 5 分钟后重试一次 |
+| 16:20 retry | `/hydra/rebalances/retry` 生成差额批次 | 只在 Server close 回执为 `RESIDUAL` 时请求 |
 
 `15:30` 的 `live_qmt_backups` 是诊断备份，明确不能进入策略数据仓，也不能拿来
 给补单定价。retry 使用的是另行获批并进入 canonical data store 的
@@ -61,7 +67,7 @@ RETRY_REBALANCE_ID=<Server stage/冻结批次的 rebalance_id>
 
 target/rebalance ID 来自 Server stage 响应或本地冻结批次；execution raw hash
 来自获批 canonical raw manifest。三者必须属于同一调仓周期，但并不是三者都能
-从原始研究 sidecar 中直接得到。缺任何一项时，先不启用 16:00 retry，不要猜值。
+从原始研究 sidecar 中直接得到。缺任何一项时，先不启用 16:20 retry，不要猜值。
 
 ## A. 维护窗口与只读快照
 
@@ -263,15 +269,26 @@ positions={"510300.SH":100}
   -ReplaceLegacyTasks
 ```
 
-注册器会先把四个新任务以禁用状态全部注册并验证，再禁用旧任务、启用新任务；任一
+注册器会先把五个新任务以禁用状态全部注册并验证，再禁用旧任务、启用新任务；任一
 步骤失败会禁用本轮新任务并恢复原先启用的旧任务，避免半套新旧链路并存。必须确认：
 
-- `Hydra-Live-SettleClose-1510`：失败后 5 分钟最多重启一次；
+- `Hydra-Live-CancelOpen-1455`：无自动重启；14:57 后启动会报警且不发撤单；
 - `Hydra-Live-MarketBackup-1530`：无自动重启；
-- `Hydra-Live-Retry-1600`：无自动重启，不含 `trigger_pipeline.py --live`；
+- `Hydra-Live-SettleClose-1605`：等待券商 16:00 最终回报，失败后 5 分钟最多重启一次；
+- `Hydra-Live-Retry-1620`：无自动重启，不含 `trigger_pipeline.py --live`；
 - `Hydra-Live-QueryPreflight-1800`：无自动重启；
-- 旧 `Hydra-Live-Trigger-1600` 已禁用；
+- 旧 `Hydra-Live-SettleClose-1510`、`Hydra-Live-Trigger-1600` 和
+  `Hydra-Live-Retry-1600` 已禁用；
 - 不存在固定每日 09:10 submit 任务。
+
+`cancel-open` 不是“收盘后清账”，而是在券商截止时间前发送真实撤单请求。它只处理
+本地 state DB 中本批次 `SUBMITTED` 的订单，并在任何外部写操作前逐笔核对 QMT
+账户、代码、数量、限价、方向、`strategy_name=hydra_live` 和确定性 remark；任一
+身份不符时整批不撤。QMT 返回 0 只记为 `REQUESTED`，不能写成 `CANCELLED`。
+`ORDER_REPORTED_CANCEL` 与 `ORDER_PARTSUCC_CANCEL` 都仍是活动状态，必须等券商在
+16:00 后回报 `ORDER_CANCELED`、`ORDER_PART_CANCEL`、`ORDER_SUCCEEDED` 或
+`ORDER_JUNK`，16:05 才允许 settle-close。部分撤单请求失败时保存
+`CANCEL_INCOMPLETE` 和 SHA-256 evidence 并报警，不会撤账户中其他策略的订单。
 
 18:00 只有在 `query → preflight` 返回 `READY_FOR_OFFLINE_SUBMIT` 后才创建一次性的
 `Hydra-Live-Submit-YYYYMMDD-0910`。同名任务的动作、时间、用户或“禁止自动重试/
@@ -289,8 +306,8 @@ positions={"510300.SH":100}
 2. Server migration 两次演练和生产迁移成功，health/readiness 正常；
 3. `ledger` 只显示 Hydra 约 21.1 万归属资产，约 1,900 万为 unallocated；
 4. Windows installer、doctor、offline acceptance 全部通过；
-5. 四个新日常任务正确，三个旧任务已禁用；
-6. retry 三元组来源已记录；没有 residual 时缺三元组不影响 09:10 主单，但 16:00
+5. 五个新日常任务正确，旧 15:10/16:00 任务已禁用；
+6. retry 三元组来源已记录；没有 residual 时缺三元组不影响 09:10 主单，但 16:20
    会拒绝补单；
 7. QMT 当前无活动/未知旧委托，本地没有 `SUBMITTING_UNKNOWN`。
 
@@ -299,8 +316,9 @@ positions={"510300.SH":100}
 ```text
 18:00  FETCHED/ALREADY_FETCHED + READY_FOR_OFFLINE_SUBMIT + REGISTERED
 09:10  submitted/attempted_now/recovered（同日第二次运行 attempted_now 必须为 0）
-15:10  ATTEMPT_CLOSED，close.status 为 COMPLETE 或 RESIDUAL
-16:00  NO_RESIDUAL/NO_ATTEMPT/ALREADY_STAGED/RETRY_STAGED 之一
+14:55  CANCEL_REQUESTED/NO_ACTIVE_ORDERS/NO_ORDERS 之一，并保存 SHA-256 回执
+16:05  ATTEMPT_CLOSED，close.status 为 COMPLETE 或 RESIDUAL
+16:20  NO_RESIDUAL/NO_ATTEMPT/ALREADY_STAGED/RETRY_STAGED 之一
 ```
 
 若为 `RETRY_STAGED`，18:00 会拉取 Server 生成的差额批次，次一交易日 09:10 再离线

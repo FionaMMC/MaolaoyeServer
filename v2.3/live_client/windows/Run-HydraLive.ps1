@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("doctor", "ledger", "query", "preflight", "submit", "settle", "settle-close", "retry", "cash-flow")]
+    [ValidateSet("doctor", "ledger", "query", "preflight", "submit", "cancel-open", "settle", "settle-close", "retry", "cash-flow")]
     [string]$Command,
 
     [ValidatePattern("^\d{8}$")]
@@ -68,7 +68,7 @@ if ($Command -notin @("doctor", "ledger") -and -not $Date) {
 if ($Command -eq "retry" -and -not $NextDate) {
     throw "-retry requires -NextDate YYYYMMDD"
 }
-if ($MockState -and $Command -notin @("preflight", "submit", "settle", "settle-close", "retry", "cash-flow")) {
+if ($MockState -and $Command -notin @("preflight", "submit", "cancel-open", "settle", "settle-close", "retry", "cash-flow")) {
     throw "-MockState is not valid for this command"
 }
 if ($Command -eq "cash-flow" -and (

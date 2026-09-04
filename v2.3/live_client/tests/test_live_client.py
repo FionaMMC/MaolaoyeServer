@@ -377,8 +377,107 @@ def test_mock_qmt_full_query_submit_settle_cycle(tmp_path, monkeypatch):
     assert statuses == {"159915.SZ": "FILLED", "510300.SH": "PARTIAL"}
 
 
+def test_cancel_open_writes_receipt_without_inferring_terminal_state(
+    tmp_path, monkeypatch,
+):
+    cfg = _cfg(tmp_path)
+    _freeze_with_preflight(cfg)
+    monkeypatch.setattr(
+        cli, "LiveServerClient",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("cancel-open must not construct a server client")
+        ),
+    )
+    mock_path = tmp_path / "mock-state.json"
+    mock_path.write_text(json.dumps({
+        "account_id": cfg.account_id,
+        "available_cash": 10_000,
+        "positions": {},
+    }), encoding="utf-8")
+    cli.submit(cfg, "20260803", mock_path)
+
+    result = cli.cancel_open_orders(cfg, "20260803", mock_path)
+
+    assert result["status"] == "CANCEL_REQUESTED"
+    assert result["counts"] == {
+        "REQUESTED": 2,
+        "ALREADY_PENDING": 0,
+        "TERMINAL": 0,
+        "FAILED": 0,
+    }
+    assert len(result["cancel_receipt_sha256"]) == 64
+    evidence = Path(result["evidence_path"])
+    assert evidence.exists()
+    assert hashlib.sha256(evidence.read_bytes()).hexdigest() == result[
+        "cancel_receipt_sha256"
+    ]
+
+
+def test_cancel_open_reports_incomplete_if_any_request_fails(tmp_path):
+    cfg = _cfg(tmp_path)
+    _freeze_with_preflight(cfg)
+    mock_path = tmp_path / "mock-state.json"
+    mock_path.write_text(json.dumps({
+        "account_id": cfg.account_id,
+        "available_cash": 10_000,
+        "positions": {},
+        "cancel_fail_symbols": ["510300.SH"],
+    }), encoding="utf-8")
+    cli.submit(cfg, "20260803", mock_path)
+
+    result = cli.cancel_open_orders(cfg, "20260803", mock_path)
+
+    assert result["status"] == "CANCEL_INCOMPLETE"
+    assert result["counts"]["FAILED"] == 1
+    assert result["counts"]["REQUESTED"] == 1
+
+
+def test_cancel_open_refuses_ambiguous_local_submission(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    batch = _freeze_with_preflight(cfg)
+    state = LiveStateStore(cfg.state_db)
+    state.prepare_submission(
+        batch.orders[0]["order_id"], batch.batch_sha256,
+        gateway_module.live_order_remark(batch.orders[0]),
+    )
+    monkeypatch.setattr(
+        cli, "_gateway",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("ambiguous submission must block before QMT")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="禁止自动撤单"):
+        cli.cancel_open_orders(cfg, "20260803", None)
+
+
+def test_real_cancel_open_refuses_late_or_noncurrent_execution(
+    tmp_path, monkeypatch,
+):
+    cfg = _cfg(tmp_path, mode="live")
+    late = SimpleNamespace(
+        hour=14,
+        minute=57,
+        strftime=lambda _format: "20260803",
+    )
+    monkeypatch.setattr(
+        cli, "datetime",
+        SimpleNamespace(now=lambda: SimpleNamespace(astimezone=lambda: late)),
+    )
+    with pytest.raises(RuntimeError, match="14:57"):
+        cli.cancel_open_orders(cfg, "20260803", None)
+
+    late.hour = 14
+    late.minute = 55
+    with pytest.raises(RuntimeError, match="当日委托"):
+        cli.cancel_open_orders(cfg, "20260802", None)
+
+
 def test_settle_close_and_retry_are_noops_without_daily_batch(tmp_path):
     cfg = _cfg(tmp_path)
+    assert cli.cancel_open_orders(cfg, "20260803", None) == {
+        "status": "NO_ORDERS", "trade_date": "20260803",
+    }
     assert cli.settle_and_close(cfg, "20260803", None) == {
         "status": "NO_ORDERS", "trade_date": "20260803",
     }
@@ -453,6 +552,8 @@ def test_windows_runtime_separates_evening_preflight_from_morning_submit():
     assert "-Command preflight" not in morning
     assert "fallback Python is forbidden" in morning
     assert "trigger_pipeline.py" not in operations
+    assert "-Command cancel-open" in operations
+    assert "CANCEL_INCOMPLETE" not in operations
     assert "-Command settle-close" in operations
     assert "-Command retry" in operations
     assert "-Command preflight" in operations
@@ -471,7 +572,15 @@ def test_windows_runtime_separates_evening_preflight_from_morning_submit():
     assert '"Register-HydraLiveSubmitTask.ps1"' in installer
     assert 'RestartCount = 1' in task_set
     assert 'RestartMinutes = 5' in task_set
+    assert 'Hydra-Live-CancelOpen-1455' in task_set
+    assert 'Hydra-Live-SettleClose-1605' in task_set
+    assert 'Hydra-Live-Retry-1620' in task_set
+    assert 'Hydra-Live-SettleClose-1510' in task_set  # legacy removal list
+    assert 'Hydra-Live-Retry-1600' in task_set  # legacy removal list
+    assert 'Name = "Hydra-Live-SettleClose-1510";' not in task_set
+    assert 'Name = "Hydra-Live-Retry-1600";' not in task_set
     assert 'Disable = $true' in task_set
+    assert 'StartWhenAvailable = $false' in task_set
     assert task_set.index('Register-ScheduledTask') < task_set.index(
         '$legacyTasks | Disable-ScheduledTask'
     )
@@ -992,11 +1101,143 @@ def test_qmt_active_or_unknown_status_is_never_inferred_as_cancelled():
     )
     with pytest.raises(RuntimeError, match="尚未终结"):
         classify_qmt_settlement_status(constants, 50, 0, 100)
+    with pytest.raises(RuntimeError, match="尚未终结"):
+        classify_qmt_settlement_status(constants, 52, 25, 100)
     with pytest.raises(RuntimeError, match="未识别"):
         classify_qmt_settlement_status(constants, 999, 0, 100)
     assert classify_qmt_settlement_status(constants, 54, 0, 100) == "CANCELLED"
     assert classify_qmt_settlement_status(constants, 53, 25, 100) == "PARTIAL"
     assert classify_qmt_settlement_status(constants, 57, 0, 100) == "REJECTED"
+
+
+def _qmt_order(
+    *, order_id, status, remark, symbol="510300.SH", traded_volume=0,
+):
+    return SimpleNamespace(
+        account_id="LIVE_ACCOUNT_FOR_TEST",
+        stock_code=symbol,
+        order_id=order_id,
+        order_sysid=f"sys-{order_id}",
+        order_time=145500,
+        order_volume=100,
+        price=4.02,
+        traded_volume=traded_volume,
+        traded_price=4.01 if traded_volume else 0,
+        order_status=status,
+        status_msg=f"status-{status}",
+        strategy_name="hydra_live",
+        order_remark=remark,
+        order_type=23,
+    )
+
+
+def test_xt_cancel_open_only_requests_exact_active_hydra_orders(tmp_path):
+    constants = SimpleNamespace(
+        STOCK_BUY=23,
+        STOCK_SELL=24,
+        ORDER_UNREPORTED=48,
+        ORDER_WAIT_REPORTING=49,
+        ORDER_REPORTED=50,
+        ORDER_REPORTED_CANCEL=51,
+        ORDER_PARTSUCC_CANCEL=52,
+        ORDER_PART_CANCEL=53,
+        ORDER_CANCELED=54,
+        ORDER_PART_SUCC=55,
+        ORDER_SUCCEEDED=56,
+        ORDER_JUNK=57,
+        ORDER_UNKNOWN=255,
+    )
+    submissions = []
+    broker_orders = []
+    for index, status in enumerate((50, 52, 56, 255), start=1):
+        order = {
+            **_orders()[1],
+            "order_id": f"server-{index}",
+            "local_order_id": str(40 + index),
+            "submit_status": "SUBMITTED",
+        }
+        order["order_remark"] = gateway_module.live_order_remark(order)
+        submissions.append(order)
+        broker_orders.append(_qmt_order(
+            order_id=40 + index,
+            status=status,
+            remark=order["order_remark"],
+            traded_volume=100 if status == 56 else (25 if status == 52 else 0),
+        ))
+
+    class Trader:
+        cancelled = []
+
+        def query_stock_orders_async(self, _account, callback):
+            callback(broker_orders)
+
+        def query_stock_orders(self, _account, cancelable_only):
+            assert cancelable_only is True
+            # Even if a broker oddly includes UNKNOWN in this list, Hydra must
+            # not cancel a state it cannot classify.
+            return [broker_orders[0], broker_orders[3]]
+
+        def cancel_order_stock(self, _account, order_id):
+            self.cancelled.append(order_id)
+            return 0
+
+    gateway = object.__new__(XtQMTGateway)
+    gateway.cfg = _cfg(tmp_path)
+    gateway.trader = Trader()
+    gateway.account = object()
+    gateway.xtconstant = constants
+
+    results = gateway.cancel_open_orders(submissions)
+
+    assert gateway.trader.cancelled == [41]
+    assert [row["action"] for row in results] == [
+        "REQUESTED", "ALREADY_PENDING", "TERMINAL", "FAILED",
+    ]
+
+
+def test_xt_cancel_open_identity_mismatch_blocks_before_any_cancel(tmp_path):
+    constants = SimpleNamespace(
+        STOCK_BUY=23,
+        STOCK_SELL=24,
+        ORDER_REPORTED=50,
+        ORDER_REPORTED_CANCEL=51,
+        ORDER_PARTSUCC_CANCEL=52,
+        ORDER_PART_CANCEL=53,
+        ORDER_CANCELED=54,
+        ORDER_SUCCEEDED=56,
+        ORDER_JUNK=57,
+    )
+    submission = {
+        **_orders()[1],
+        "local_order_id": "42",
+        "submit_status": "SUBMITTED",
+    }
+    submission["order_remark"] = gateway_module.live_order_remark(submission)
+
+    class Trader:
+        cancelled = []
+
+        def query_stock_orders_async(self, _account, callback):
+            callback([_qmt_order(
+                order_id=42, status=50, remark="someone-else",
+            )])
+
+        def query_stock_orders(self, _account, _cancelable_only):
+            raise AssertionError("identity must be checked before cancelable query")
+
+        def cancel_order_stock(self, _account, order_id):
+            self.cancelled.append(order_id)
+            return 0
+
+    gateway = object.__new__(XtQMTGateway)
+    gateway.cfg = _cfg(tmp_path)
+    gateway.trader = Trader()
+    gateway.account = object()
+    gateway.xtconstant = constants
+
+    with pytest.raises(RuntimeError, match="禁止撤单"):
+        gateway.cancel_open_orders([submission])
+    assert gateway.trader.cancelled == []
 
 
 def test_xt_settlement_uses_async_order_cumulative_fill_not_trade_details():

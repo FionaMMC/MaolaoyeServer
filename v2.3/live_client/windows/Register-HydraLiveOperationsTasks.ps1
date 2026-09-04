@@ -6,14 +6,17 @@ $ErrorActionPreference = "Stop"
 $taskScript = "C:\hydra-live\scripts\Invoke-HydraLiveOperations.ps1"
 if (-not (Test-Path -LiteralPath $taskScript -PathType Leaf)) { throw "Operations script is missing: $taskScript" }
 $items = @(
-    @{ Name = "Hydra-Live-SettleClose-1510"; Stage = "settle-close"; Hour = 15; Minute = 10; LimitMinutes = 30; RestartCount = 1; RestartMinutes = 5 },
+    @{ Name = "Hydra-Live-CancelOpen-1455"; Stage = "cancel-open"; Hour = 14; Minute = 55; LimitMinutes = 5; RestartCount = 0 },
     @{ Name = "Hydra-Live-MarketBackup-1530"; Stage = "market-backup"; Hour = 15; Minute = 30; LimitMinutes = 90; RestartCount = 0 },
-    @{ Name = "Hydra-Live-Retry-1600"; Stage = "retry"; Hour = 16; Minute = 0; LimitMinutes = 20; RestartCount = 0 },
+    @{ Name = "Hydra-Live-SettleClose-1605"; Stage = "settle-close"; Hour = 16; Minute = 5; LimitMinutes = 10; RestartCount = 1; RestartMinutes = 5 },
+    @{ Name = "Hydra-Live-Retry-1620"; Stage = "retry"; Hour = 16; Minute = 20; LimitMinutes = 20; RestartCount = 0 },
     @{ Name = "Hydra-Live-QueryPreflight-1800"; Stage = "query-preflight"; Hour = 18; Minute = 0; LimitMinutes = 30; RestartCount = 0 }
 )
 $legacyNames = @(
     "Hydra-Live-Settle-1510",
+    "Hydra-Live-SettleClose-1510",
     "Hydra-Live-Trigger-1600",
+    "Hydra-Live-Retry-1600",
     "Hydra-Live-Query-1800"
 )
 $legacyTasks = @($legacyNames | ForEach-Object {
@@ -38,6 +41,7 @@ try {
             ExecutionTimeLimit = New-TimeSpan -Minutes $item.LimitMinutes
             MultipleInstances = "IgnoreNew"
             AllowStartIfOnBatteries = $false
+            StartWhenAvailable = $false
             Disable = $true
         }
         if ($item.RestartCount -gt 0) {

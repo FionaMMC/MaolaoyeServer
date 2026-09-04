@@ -52,7 +52,7 @@ try {
     $submitLines = @(& $runner -Command submit -Date $TradeDate -PythonExe $pythonExe 2>&1)
     $submitOutput = $submitLines | Out-String
     Add-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) submit succeeded`n$submitOutput"
-    Send-WeComNotification "[Hydra live] $TradeDate submit completed; review the 15:10 order-result notification."
+    Send-WeComNotification "[Hydra live] $TradeDate submit completed; review the 14:55 cancel request and 16:05 final settlement notifications."
 } catch {
     $message = "$phase failed: $($_.Exception.Message)"
     Add-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) $message"

@@ -134,6 +134,7 @@ def classify_qmt_settlement_status(
             getattr(constants, "ORDER_WAIT_REPORTING", None),
             getattr(constants, "ORDER_REPORTED", None),
             getattr(constants, "ORDER_REPORTED_CANCEL", None),
+            getattr(constants, "ORDER_PARTSUCC_CANCEL", None),
             getattr(constants, "ORDER_PART_SUCC", None),
             getattr(constants, "ORDER_UNKNOWN", None),
         )
@@ -147,7 +148,6 @@ def classify_qmt_settlement_status(
         value
         for value in (
             getattr(constants, "ORDER_CANCELED", None),
-            getattr(constants, "ORDER_PARTSUCC_CANCEL", None),
             getattr(constants, "ORDER_PART_CANCEL", None),
         )
         if value is not None
@@ -239,6 +239,30 @@ class MockQMTGateway:
                 "symbol": row["symbol"],
                 "direction": row["direction"],
                 **dict(row.get("execution_meta") or {}),
+            })
+        return results
+
+    def cancel_open_orders(self, submissions: list[dict]) -> list[dict]:
+        """Synthetic cancellation acknowledgements for offline tests only."""
+        failed = set(self.payload.get("cancel_fail_symbols", []))
+        terminal = set(self.payload.get("terminal_symbols", []))
+        results = []
+        for row in submissions:
+            if row["symbol"] in terminal:
+                action = "TERMINAL"
+                detail = "mock order already terminal"
+            elif row["symbol"] in failed:
+                action = "FAILED"
+                detail = "mock configured cancellation failure"
+            else:
+                action = "REQUESTED"
+                detail = "mock cancellation request accepted"
+            results.append({
+                "order_id": row["order_id"],
+                "local_order_id": str(row["local_order_id"]),
+                "symbol": row["symbol"],
+                "action": action,
+                "detail": detail,
             })
         return results
 
@@ -474,7 +498,170 @@ class XtQMTGateway:
             raise RuntimeError("QMT 尚未连接")
         result = self.trader.cancel_order_stock(self.account, int(order_id))
         if result != 0:
-            raise RuntimeError(f"QMT canary 撤单指令失败: {result}")
+            raise RuntimeError(f"QMT 撤单指令失败: {result}")
+
+    def _validate_live_order_for_cancel(
+        self, qmt_order: BrokerOrderSnapshot, submission: dict,
+    ) -> None:
+        """Prove broker ownership before allowing a formal Hydra cancellation."""
+        expected_type = (
+            self.xtconstant.STOCK_BUY
+            if submission["direction"] == "BUY"
+            else self.xtconstant.STOCK_SELL
+        )
+        expected_remark = str(submission.get("order_remark") or "")
+        if expected_remark != live_order_remark(submission):
+            raise RuntimeError(
+                "本地 Hydra 撤单 remark 缺失或与冻结订单不一致，禁止撤单: "
+                f"{submission['order_id']}"
+            )
+        mismatches = []
+        if qmt_order.account_id != self.cfg.account_id:
+            mismatches.append("account")
+        if qmt_order.stock_code != submission["symbol"]:
+            mismatches.append("symbol")
+        if qmt_order.order_volume != int(submission["quantity"]):
+            mismatches.append("quantity")
+        if abs(qmt_order.price - float(submission["limit_price"])) > 1e-6:
+            mismatches.append("limit_price")
+        if qmt_order.strategy_name != "hydra_live":
+            mismatches.append("strategy_name")
+        if qmt_order.order_remark != expected_remark:
+            mismatches.append("order_remark")
+        if qmt_order.order_type and qmt_order.order_type != expected_type:
+            mismatches.append("direction")
+        if mismatches:
+            raise RuntimeError(
+                "QMT 委托与本地 Hydra 提交记录不一致，禁止撤单: "
+                f"{submission['order_id']} ({','.join(mismatches)})"
+            )
+
+    def cancel_open_orders(self, submissions: list[dict]) -> list[dict]:
+        """Request cancellation only for exact, still-active Hydra submissions.
+
+        This method deliberately does not infer a terminal state from a successful
+        cancellation call.  QMT returning zero only acknowledges the request; the
+        later settlement task must observe an explicit terminal broker status.
+        """
+        if (
+            self.trader is None
+            or self.account is None
+            or self.xtconstant is None
+        ):
+            raise RuntimeError("QMT 尚未连接")
+        raw_orders = self._query_orders_for_settlement()
+        order_map = {
+            int(getattr(order, "order_id")): _broker_order_snapshot(order)
+            for order in raw_orders
+        }
+        matched = []
+        for submission in submissions:
+            local_id = int(submission["local_order_id"])
+            qmt_order = order_map.get(local_id)
+            if qmt_order is None:
+                raise RuntimeError(f"QMT 委托列表缺少本地订单: {local_id}")
+            self._validate_live_order_for_cancel(qmt_order, submission)
+            matched.append((submission, qmt_order))
+
+        terminal_statuses = {
+            value for value in (
+                getattr(self.xtconstant, "ORDER_PART_CANCEL", None),
+                getattr(self.xtconstant, "ORDER_CANCELED", None),
+                getattr(self.xtconstant, "ORDER_SUCCEEDED", None),
+                getattr(self.xtconstant, "ORDER_JUNK", None),
+            ) if value is not None
+        }
+        cancel_pending_statuses = {
+            value for value in (
+                getattr(self.xtconstant, "ORDER_REPORTED_CANCEL", None),
+                getattr(self.xtconstant, "ORDER_PARTSUCC_CANCEL", None),
+            ) if value is not None
+        }
+        requestable_statuses = {
+            value for value in (
+                getattr(self.xtconstant, "ORDER_UNREPORTED", None),
+                getattr(self.xtconstant, "ORDER_WAIT_REPORTING", None),
+                getattr(self.xtconstant, "ORDER_REPORTED", None),
+                getattr(self.xtconstant, "ORDER_PART_SUCC", None),
+            ) if value is not None
+        }
+        cancellable_candidates = [
+            (submission, order)
+            for submission, order in matched
+            if order.traded_volume < int(submission["quantity"])
+            and order.order_status in requestable_statuses
+        ]
+        cancelable_ids: set[int] = set()
+        if cancellable_candidates:
+            cancelable_ids = {
+                order.order_id for order in self.cancelable_orders()
+            }
+
+        results = []
+        for submission, order in matched:
+            common = {
+                "order_id": submission["order_id"],
+                "local_order_id": str(order.order_id),
+                "symbol": submission["symbol"],
+                "qmt_status": order.order_status,
+                "qmt_status_msg": order.status_msg,
+                "filled_quantity": order.traded_volume,
+            }
+            if (
+                order.traded_volume >= int(submission["quantity"])
+                or order.order_status in terminal_statuses
+            ):
+                results.append({
+                    **common,
+                    "action": "TERMINAL",
+                    "detail": "QMT order already terminal; cancellation not sent",
+                })
+                continue
+            if order.order_status in cancel_pending_statuses:
+                results.append({
+                    **common,
+                    "action": "ALREADY_PENDING",
+                    "detail": "QMT cancellation already pending",
+                })
+                continue
+            if order.order_status not in requestable_statuses:
+                results.append({
+                    **common,
+                    "action": "FAILED",
+                    "detail": "QMT order status is unknown or not cancellable",
+                })
+                continue
+            if order.order_id not in cancelable_ids:
+                results.append({
+                    **common,
+                    "action": "FAILED",
+                    "detail": "active QMT order is absent from cancelable-only query",
+                })
+                continue
+            try:
+                result = self.trader.cancel_order_stock(
+                    self.account, int(order.order_id),
+                )
+            except Exception as exc:
+                results.append({
+                    **common,
+                    "action": "FAILED",
+                    "detail": f"QMT cancellation call raised {type(exc).__name__}",
+                })
+                continue
+            if result == 0:
+                results.append({
+                    **common,
+                    "action": "REQUESTED",
+                    "detail": "QMT accepted cancellation request; terminal status pending",
+                })
+            else:
+                results.append({
+                    **common,
+                    "action": "FAILED",
+                    "detail": f"QMT cancellation request returned {result}",
+                })
+        return results
 
     def submit(self, order: dict) -> SubmissionResult:
         if (

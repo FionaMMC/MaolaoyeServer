@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("settle-close", "market-backup", "retry", "query-preflight")]
+    [ValidateSet("cancel-open", "settle-close", "market-backup", "retry", "query-preflight")]
     [string]$Stage
 )
 
@@ -61,6 +61,12 @@ $pythonExe = $requiredPython
 $today = Get-Date -Format "yyyyMMdd"
 try {
     switch ($Stage) {
+        "cancel-open" {
+            $output = @(& $runner -Command cancel-open -Date $today -PythonExe $pythonExe 2>&1) | Out-String
+            if ($output -notmatch '"status"\s*:\s*"(CANCEL_REQUESTED|NO_ACTIVE_ORDERS|NO_ORDERS)"') {
+                throw "cancel-open returned no complete cancellation-request receipt"
+            }
+        }
         "settle-close" {
             $output = @(& $runner -Command settle-close -Date $today -PythonExe $pythonExe 2>&1) | Out-String
             if ($output -notmatch '"status"\s*:\s*"(ATTEMPT_CLOSED|NO_ORDERS)"') { throw "settle-close returned no terminal receipt" }
@@ -95,7 +101,12 @@ try {
         }
     }
     Add-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) $Stage succeeded`n$output"
-    Send-WeComNotification "[Hydra live] $Stage completed for $today."
+    if ($Stage -eq "cancel-open") {
+        Send-WeComNotification "[Hydra live] cancel-open request phase completed for $today; final broker status remains pending until the 16:05 settlement task."
+    }
+    else {
+        Send-WeComNotification "[Hydra live] $Stage completed for $today."
+    }
 } catch {
     $message = "$Stage failed: $($_.Exception.Message)"
     Add-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) $message"

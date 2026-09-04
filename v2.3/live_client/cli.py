@@ -1,4 +1,4 @@
-"""Hydra live client CLI：query → preflight → offline submit → settle。"""
+"""Hydra live client CLI：query → preflight → offline submit → cancel/settle。"""
 from __future__ import annotations
 
 import argparse
@@ -352,6 +352,87 @@ def settle(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> d
     return {"trade_date": trade_date, "results": len(results), "server": data}
 
 
+def _write_cancel_evidence(
+    cfg: LiveClientConfig, trade_date: str, payload: dict,
+) -> tuple[str, Path]:
+    body = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(body.encode()).hexdigest()
+    evidence_dir = cfg.log_dir / "evidence"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    path = evidence_dir / f"cancel-open-{trade_date}-{digest}.json"
+    if path.exists():
+        if path.read_text(encoding="utf-8") != body:
+            raise RuntimeError("同名 cancel-open evidence 内容不一致")
+    else:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(body)
+    return digest, path
+
+
+def cancel_open_orders(
+    cfg: LiveClientConfig, trade_date: str, mock_state: Path | None,
+) -> dict:
+    """Request EOD cancellation for this frozen Hydra batch and nothing else."""
+    if cfg.mode == "live":
+        now = datetime.now().astimezone()
+        if trade_date != now.strftime("%Y%m%d"):
+            raise RuntimeError("cancel-open 只能处理 QMT 当日委托")
+        if (now.hour, now.minute) >= (14, 57):
+            raise RuntimeError("cancel-open 已错过 14:57 交易所撤单截止时间")
+    state = LiveStateStore(cfg.state_db)
+    if not state.has_batch(trade_date):
+        return {"status": "NO_ORDERS", "trade_date": trade_date}
+    batch = _load_frozen_batch(cfg, trade_date, state)
+    submissions = state.submissions_for_date(trade_date)
+    unresolved = [
+        row for row in submissions
+        if row["submit_status"] in {"PREPARED", "SUBMITTING_UNKNOWN"}
+    ]
+    if unresolved:
+        raise RuntimeError("本地仍有提交状态不确定的订单，禁止自动撤单")
+    submitted = [
+        row for row in submissions if row["submit_status"] == "SUBMITTED"
+    ]
+    if submitted:
+        gateway = _gateway(cfg, mock_state)
+        gateway.connect()
+        try:
+            results = gateway.cancel_open_orders(submitted)
+        finally:
+            gateway.close()
+    else:
+        results = []
+    counts = {
+        action: sum(row["action"] == action for row in results)
+        for action in ("REQUESTED", "ALREADY_PENDING", "TERMINAL", "FAILED")
+    }
+    if counts["FAILED"]:
+        status = "CANCEL_INCOMPLETE"
+    elif counts["REQUESTED"] or counts["ALREADY_PENDING"]:
+        status = "CANCEL_REQUESTED"
+    else:
+        status = "NO_ACTIVE_ORDERS"
+    receipt = {
+        "status": status,
+        "trade_date": trade_date,
+        "batch_sha256": batch.batch_sha256,
+        "target_id": batch.orders[0]["target_id"],
+        "rebalance_id": batch.rebalance_id,
+        "recorded_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "counts": counts,
+        "results": results,
+    }
+    receipt_sha256, evidence_path = _write_cancel_evidence(
+        cfg, trade_date, receipt,
+    )
+    return {
+        **receipt,
+        "cancel_receipt_sha256": receipt_sha256,
+        "evidence_path": str(evidence_path),
+    }
+
+
 def _batch_attempt_id(batch) -> str:
     attempt_ids = {str(order.get("attempt_id") or "") for order in batch.orders}
     if len(attempt_ids) != 1 or "" in attempt_ids:
@@ -456,7 +537,7 @@ def stage_residual_retry(
     if close_receipt is None:
         if not state.has_batch(source_trade_date):
             return {"status": "NO_ATTEMPT", "trade_date": source_trade_date}
-        raise RuntimeError("没有 15:10 Hydra close 回执，禁止生成补单")
+        raise RuntimeError("没有日终 Hydra close 回执，禁止生成补单")
     closed = close_receipt["payload"]
     if closed["status"] == "COMPLETE":
         return {"status": "NO_RESIDUAL", "trade_date": source_trade_date}
@@ -708,10 +789,14 @@ def show_strategy_ledger(cfg: LiveClientConfig) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Hydra independent live client")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("query", "preflight", "submit", "settle", "settle-close"):
+    for name in (
+        "query", "preflight", "submit", "cancel-open", "settle", "settle-close",
+    ):
         command = sub.add_parser(name)
         command.add_argument("--date", required=True)
-        if name in {"preflight", "submit", "settle", "settle-close"}:
+        if name in {
+            "preflight", "submit", "cancel-open", "settle", "settle-close",
+        }:
             command.add_argument("--mock-state", type=Path)
     retry = sub.add_parser("retry")
     retry.add_argument("--date", required=True)
@@ -756,6 +841,8 @@ def main() -> None:
             result = preflight(cfg, args.date, args.mock_state)
         elif args.command == "submit":
             result = submit(cfg, args.date, args.mock_state)
+        elif args.command == "cancel-open":
+            result = cancel_open_orders(cfg, args.date, args.mock_state)
         elif args.command == "settle":
             result = settle(cfg, args.date, args.mock_state)
         elif args.command == "settle-close":
