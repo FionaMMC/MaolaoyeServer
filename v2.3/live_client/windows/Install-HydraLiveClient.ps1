@@ -154,8 +154,9 @@ if ($git) {
 $releasesRoot = Join-Path $InstallRoot "releases"
 $configRoot = Join-Path $InstallRoot "config"
 $binRoot = Join-Path $InstallRoot "bin"
+$scriptsRoot = Join-Path $InstallRoot "scripts"
 $backupRoot = Join-Path $InstallRoot "backups"
-foreach ($directory in @($releasesRoot, $configRoot, $binRoot, $backupRoot)) {
+foreach ($directory in @($releasesRoot, $configRoot, $binRoot, $scriptsRoot, $backupRoot)) {
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
 }
 
@@ -223,6 +224,13 @@ $installedRunner = Join-Path $binRoot "Run-HydraLive.ps1"
 $oldPointer = $null
 $hadPointer = Test-Path -LiteralPath $activePointer -PathType Leaf
 $hadRunner = Test-Path -LiteralPath $installedRunner -PathType Leaf
+$runtimeScriptNames = @(
+    "Invoke-HydraLiveSubmit.ps1",
+    "Invoke-HydraLiveOperations.ps1",
+    "Register-HydraLiveOperationsTasks.ps1",
+    "hydra_live_market_backup.py"
+)
+$existingRuntimeScripts = @{}
 if ($hadPointer) {
     $oldPointer = Get-Content -LiteralPath $activePointer -Raw -Encoding UTF8
 }
@@ -239,6 +247,14 @@ if ($hadRunner) {
     Copy-Item -LiteralPath $installedRunner -Destination (
         Join-Path $backup "Run-HydraLive.ps1"
     )
+}
+foreach ($name in $runtimeScriptNames) {
+    $installed = Join-Path $scriptsRoot $name
+    $exists = Test-Path -LiteralPath $installed -PathType Leaf
+    $existingRuntimeScripts[$name] = $exists
+    if ($exists) {
+        Copy-Item -LiteralPath $installed -Destination (Join-Path $backup $name)
+    }
 }
 
 $stateDb = Get-HydraEnvValue -Path $EnvFile -Name "HYDRA_LIVE_STATE_DB"
@@ -277,6 +293,13 @@ Copy-Item -LiteralPath (Join-Path $releaseRoot "live_client\windows\Run-HydraLiv
 Move-Item -LiteralPath $runnerTemporary -Destination $installedRunner -Force
 Set-Content -LiteralPath $pointerTemporary -Value $SourceCommit -Encoding ASCII
 Move-Item -LiteralPath $pointerTemporary -Destination $activePointer -Force
+foreach ($name in $runtimeScriptNames) {
+    $source = Join-Path $releaseRoot "live_client\windows\$name"
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+        throw "Release runtime script is missing: $name"
+    }
+    Copy-Item -LiteralPath $source -Destination (Join-Path $scriptsRoot $name) -Force
+}
 
 try {
     & $installedRunner -Command doctor -InstallRoot $InstallRoot `
@@ -294,6 +317,15 @@ catch {
         Copy-Item -LiteralPath (Join-Path $backup "Run-HydraLive.ps1") `
             -Destination $installedRunner -Force
     }
+    foreach ($name in $runtimeScriptNames) {
+        $installed = Join-Path $scriptsRoot $name
+        if ($existingRuntimeScripts[$name]) {
+            Copy-Item -LiteralPath (Join-Path $backup $name) -Destination $installed -Force
+        }
+        else {
+            Remove-Item -LiteralPath $installed -Force -ErrorAction SilentlyContinue
+        }
+    }
     throw "Local config doctor failed; active release was rolled back: $($_.Exception.Message)"
 }
 
@@ -307,4 +339,5 @@ catch {
     offline_acceptance = "PASS"
     local_doctor = "PASS"
     tasks_modified = $false
+    runtime_scripts_installed = $true
 } | ConvertTo-Json

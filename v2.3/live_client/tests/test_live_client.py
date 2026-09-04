@@ -9,13 +9,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from live_client import cli, state as state_module
+from live_client import cli, gateway as gateway_module, state as state_module
 from live_client.config import LiveClientConfig
 from live_client.core import validate_account_capacity, validate_order_batch
 from live_client.gateway import (
     AccountSnapshot,
     MockQMTGateway,
     SubmissionResult,
+    XtQMTGateway,
     classify_qmt_settlement_status,
 )
 from live_client.offline_acceptance import run_acceptance
@@ -273,7 +274,7 @@ def test_auto_risk_uses_qmt_nav_and_records_immutable_snapshot(tmp_path):
 
 
 def test_mock_qmt_full_query_submit_settle_cycle(tmp_path, monkeypatch):
-    cfg = _cfg(tmp_path)
+    cfg = _cfg(tmp_path, retry_execution_raw_sha256="b" * 64)
     orders = _orders()
 
     class FakeServer:
@@ -303,6 +304,32 @@ def test_mock_qmt_full_query_submit_settle_cycle(tmp_path, monkeypatch):
                 "cash_diff": 0.0,
             }
 
+        def close_attempt(self, payload):
+            assert payload["attempt_id"] == "ha_test"
+            return {
+                "target_id": "ht_test",
+                "rebalance_id": "hr_test",
+                "attempt_id": "ha_test",
+                "execution_domain": "live",
+                "status": "RESIDUAL",
+                "residual_after": {"510300.SH": 100},
+            }
+
+        def stage_retry(self, payload):
+            assert payload["rebalance_id"] == "hr_test"
+            assert payload["trade_date"] == "20260804"
+            assert payload["execution_raw_sha256"] == "b" * 64
+            return {
+                "target_id": "ht_test",
+                "rebalance_id": "hr_test",
+                "attempt_id": "ha_retry",
+                "batch_id": "hb_retry",
+                "batch_sha256": "c" * 64,
+                "execution_domain": "live",
+                "trade_date": "20260804",
+                "order_count": 1,
+            }
+
     monkeypatch.setattr(cli, "LiveServerClient", FakeServer)
     mock_path = tmp_path / "mock-state.json"
     mock_path.write_text(json.dumps({
@@ -315,7 +342,10 @@ def test_mock_qmt_full_query_submit_settle_cycle(tmp_path, monkeypatch):
     queried = cli.query(cfg, "20260803")
     preflight = cli.preflight(cfg, "20260803", mock_path)
     submitted = cli.submit(cfg, "20260803", mock_path)
-    settled = cli.settle(cfg, "20260803", mock_path)
+    settled = cli.settle_and_close(cfg, "20260803", mock_path)
+    retried = cli.stage_residual_retry(
+        cfg, "20260803", "20260804", mock_path,
+    )
 
     assert queried["orders"] == 2
     assert len(preflight["preflight_receipt_sha256"]) == 64
@@ -329,10 +359,117 @@ def test_mock_qmt_full_query_submit_settle_cycle(tmp_path, monkeypatch):
         "recovered": 0,
         "already_recorded": 0,
     }
-    assert settled["results"] == 2
+    assert settled["settlement"]["results"] == 2
+    assert settled["close"]["status"] == "RESIDUAL"
+    assert retried["status"] == "RETRY_STAGED"
+    assert retried["retry"]["order_count"] == 1
     assert FakeServer.pushed[0] == "20260803"
     statuses = {row["symbol"]: row["status"] for row in FakeServer.pushed[1]}
     assert statuses == {"159915.SZ": "FILLED", "510300.SH": "PARTIAL"}
+
+
+def test_settle_close_and_retry_are_noops_without_daily_batch(tmp_path):
+    cfg = _cfg(tmp_path)
+    assert cli.settle_and_close(cfg, "20260803", None) == {
+        "status": "NO_ORDERS", "trade_date": "20260803",
+    }
+    assert cli.stage_residual_retry(cfg, "20260803", "20260804", None) == {
+        "status": "NO_ATTEMPT", "trade_date": "20260803",
+    }
+
+
+def test_complete_server_close_never_stages_retry(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path, retry_execution_raw_sha256="b" * 64)
+    batch = validate_order_batch(_orders(), "20260803", cfg)
+    state = LiveStateStore(cfg.state_db)
+    state.save_batch(batch)
+    state.record_workflow_receipt("close", "20260803", {
+        "trade_date": "20260803",
+        "attempt_id": "ha_test",
+        "rebalance_id": "hr_test",
+        "status": "COMPLETE",
+        "residual_after": {},
+        "evidence_sha256": "a" * 64,
+        "evidence_path": "test",
+    })
+    monkeypatch.setattr(
+        cli, "_gateway",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("COMPLETE must not open QMT or stage a retry")
+        ),
+    )
+    assert cli.stage_residual_retry(
+        cfg, "20260803", "20260804", None,
+    )["status"] == "NO_RESIDUAL"
+
+
+def test_windows_runtime_separates_evening_preflight_from_morning_submit():
+    windows = Path(cli.__file__).parent / "windows"
+    morning = (windows / "Invoke-HydraLiveSubmit.ps1").read_text(encoding="utf-8")
+    operations = (windows / "Invoke-HydraLiveOperations.ps1").read_text(encoding="utf-8")
+    assert "-Command submit" in morning
+    assert "-Command preflight" not in morning
+    assert "fallback Python is forbidden" in morning
+    assert "trigger_pipeline.py" not in operations
+    assert "-Command settle-close" in operations
+    assert "-Command retry" in operations
+    assert "-Command preflight" in operations
+
+
+def test_qmt_connection_retries_only_before_broker_use(tmp_path, monkeypatch):
+    import xtquant.xttrader as xttrader_module
+    import xtquant.xttype as xttype_module
+
+    outcomes = iter((-1, 0))
+    created = []
+
+    class FakeTrader:
+        def __init__(self, *_args):
+            self.stopped = False
+            created.append(self)
+
+        def register_callback(self, _callback):
+            pass
+
+        def start(self):
+            pass
+
+        def connect(self):
+            return next(outcomes)
+
+        def subscribe(self, _account):
+            return 0
+
+        def stop(self):
+            self.stopped = True
+
+    monkeypatch.setattr(xttrader_module, "XtQuantTrader", FakeTrader)
+    monkeypatch.setattr(xttrader_module, "XtQuantTraderCallback", lambda: object())
+    monkeypatch.setattr(
+        xttype_module, "StockAccount", lambda account_id: SimpleNamespace(account_id=account_id),
+    )
+    monkeypatch.setattr(gateway_module.time, "sleep", lambda _seconds: None)
+
+    gateway = XtQMTGateway(_cfg(tmp_path))
+    gateway.connect()
+    assert len(created) == 2
+    assert created[0].stopped is True
+    gateway.close()
+    assert created[1].stopped is True
+
+
+def test_live_market_backup_propagates_upload_failure(monkeypatch):
+    from client import market_push
+
+    monkeypatch.setattr(market_push, "_wechat_alert", lambda _message: None)
+    monkeypatch.setattr(market_push, "_wechat_notify", lambda _message: None)
+    monkeypatch.setattr(
+        market_push, "_push_to_server", lambda *_args, **_kwargs: False,
+    )
+    assert market_push._push(
+        {"stocks": [{}], "etfs": [], "indexes": []},
+        "20260904", live_backup=True,
+    ) is False
 
 
 def test_client_emergency_stop_blocks_even_mock_submission(tmp_path):
@@ -621,6 +758,47 @@ def test_qmt_active_or_unknown_status_is_never_inferred_as_cancelled():
     assert classify_qmt_settlement_status(constants, 54, 0, 100) == "CANCELLED"
     assert classify_qmt_settlement_status(constants, 53, 25, 100) == "PARTIAL"
     assert classify_qmt_settlement_status(constants, 57, 0, 100) == "REJECTED"
+
+
+def test_xt_settlement_uses_async_order_cumulative_fill_not_trade_details():
+    class Trader:
+        def query_stock_orders_async(self, _account, callback):
+            callback([SimpleNamespace(
+                order_id=42, traded_volume=100, traded_price=4.638,
+                order_status=56,
+            )])
+
+        def query_stock_trades(self, _account):
+            raise AssertionError("settlement must not call query_stock_trades")
+
+    gateway = object.__new__(XtQMTGateway)
+    gateway.trader = Trader()
+    gateway.account = object()
+    gateway.xtconstant = SimpleNamespace(ORDER_SUCCEEDED=56)
+    rows = gateway.settlement_results([{
+        "order_id": "server-order-1", "local_order_id": "42",
+        "quantity": 100, "symbol": "510300.SH", "direction": "BUY",
+        "execution_meta": {"qmt_order_id": "42"},
+    }])
+
+    assert rows == [{
+        "order_id": "server-order-1", "filled_quantity": 100,
+        "filled_price": 4.638, "status": "FILLED",
+        "symbol": "510300.SH", "direction": "BUY", "qmt_order_id": "42",
+    }]
+
+
+def test_xt_settlement_order_query_times_out_instead_of_hanging():
+    class Trader:
+        def query_stock_orders_async(self, _account, _callback):
+            return None
+
+    gateway = object.__new__(XtQMTGateway)
+    gateway.trader = Trader()
+    gateway.account = object()
+
+    with pytest.raises(RuntimeError, match="拒绝结算"):
+        gateway._query_orders_for_settlement(timeout_seconds=0.01)
 
 
 def test_qmt_snapshot_keeps_total_and_sellable_positions_separate(tmp_path):

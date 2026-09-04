@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
+import os
 from dataclasses import replace
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
@@ -275,6 +277,156 @@ def settle(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> d
     return {"trade_date": trade_date, "results": len(results), "server": data}
 
 
+def _batch_attempt_id(batch) -> str:
+    attempt_ids = {str(order.get("attempt_id") or "") for order in batch.orders}
+    if len(attempt_ids) != 1 or "" in attempt_ids:
+        raise RuntimeError("冻结批次缺少唯一 Hydra attempt_id")
+    return next(iter(attempt_ids))
+
+
+def _write_reconciliation_evidence(
+    cfg: LiveClientConfig, trade_date: str, attempt_id: str, snapshot,
+) -> tuple[str, Path]:
+    payload = {
+        "account_alias": cfg.account_alias,
+        "account_fingerprint": cfg.expected_account_sha256,
+        "attempt_id": attempt_id,
+        "available_cash": snapshot.available_cash,
+        "positions": dict(sorted(snapshot.positions.items())),
+        "total_asset": snapshot.total_asset,
+        "trade_date": trade_date,
+    }
+    body = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(body.encode()).hexdigest()
+    evidence_dir = cfg.log_dir / "evidence"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    path = evidence_dir / f"reconcile-{trade_date}-{attempt_id}-{digest}.json"
+    if path.exists():
+        if path.read_text(encoding="utf-8") != body:
+            raise RuntimeError("同名 reconciliation evidence 内容不一致")
+    else:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(body)
+    return digest, path
+
+
+def settle_and_close(
+    cfg: LiveClientConfig, trade_date: str, mock_state: Path | None,
+) -> dict:
+    """Push terminal order state, reconcile QMT, then close the Hydra attempt."""
+    state = LiveStateStore(cfg.state_db)
+    if not state.has_batch(trade_date):
+        return {"status": "NO_ORDERS", "trade_date": trade_date}
+    settlement = settle(cfg, trade_date, mock_state)
+    batch = _load_frozen_batch(cfg, trade_date, state)
+    attempt_id = _batch_attempt_id(batch)
+    gateway = _gateway(cfg, mock_state)
+    gateway.connect()
+    try:
+        snapshot = gateway.account_snapshot()
+    finally:
+        gateway.close()
+    evidence_sha256, evidence_path = _write_reconciliation_evidence(
+        cfg, trade_date, attempt_id, snapshot,
+    )
+    server = LiveServerClient(
+        cfg.server_base_url, cfg.api_key, execution_domain=cfg.execution_domain,
+    )
+    reconciliation = _require_server_reconciled(server, cfg, snapshot)
+    closed = server.close_attempt({
+        "execution_domain": "live",
+        "account_alias": cfg.account_alias,
+        "attempt_id": attempt_id,
+        "actual_cash": snapshot.available_cash,
+        "actual_positions": snapshot.positions,
+        "reconciliation_evidence_sha256": evidence_sha256,
+    })
+    receipt = {
+        "trade_date": trade_date,
+        "attempt_id": attempt_id,
+        "rebalance_id": closed["rebalance_id"],
+        "status": closed["status"],
+        "residual_after": closed.get("residual_after") or {},
+        "evidence_sha256": evidence_sha256,
+        "evidence_path": str(evidence_path),
+    }
+    receipt_sha256 = state.record_workflow_receipt("close", trade_date, receipt)
+    return {
+        "status": "ATTEMPT_CLOSED",
+        "settlement": settlement,
+        "reconciliation": reconciliation,
+        "close": receipt,
+        "close_receipt_sha256": receipt_sha256,
+    }
+
+
+def stage_residual_retry(
+    cfg: LiveClientConfig, source_trade_date: str, next_trade_date: str,
+    mock_state: Path | None,
+) -> dict:
+    """Stage only a residual explicitly returned by the Hydra close endpoint."""
+    state = LiveStateStore(cfg.state_db)
+    previous_retry = state.workflow_receipt("retry", source_trade_date)
+    if previous_retry is not None:
+        return {"status": "ALREADY_STAGED", **previous_retry["payload"]}
+    close_receipt = state.workflow_receipt("close", source_trade_date)
+    if close_receipt is None:
+        if not state.has_batch(source_trade_date):
+            return {"status": "NO_ATTEMPT", "trade_date": source_trade_date}
+        raise RuntimeError("没有 15:10 Hydra close 回执，禁止生成补单")
+    closed = close_receipt["payload"]
+    if closed["status"] == "COMPLETE":
+        return {"status": "NO_RESIDUAL", "trade_date": source_trade_date}
+    if closed["status"] != "RESIDUAL" or not closed.get("residual_after"):
+        raise RuntimeError("Hydra close 回执没有有效 RESIDUAL")
+    if not cfg.retry_execution_raw_sha256:
+        raise RuntimeError("缺少 HYDRA_LIVE_RETRY_EXECUTION_RAW_SHA256")
+
+    gateway = _gateway(cfg, mock_state)
+    gateway.connect()
+    try:
+        snapshot = gateway.account_snapshot()
+    finally:
+        gateway.close()
+    evidence_sha256, evidence_path = _write_reconciliation_evidence(
+        cfg, source_trade_date, closed["attempt_id"], snapshot,
+    )
+    server = LiveServerClient(
+        cfg.server_base_url, cfg.api_key, execution_domain=cfg.execution_domain,
+    )
+    reconciliation = _require_server_reconciled(server, cfg, snapshot)
+    staged = server.stage_retry({
+        "execution_domain": "live",
+        "account_alias": cfg.account_alias,
+        "rebalance_id": closed["rebalance_id"],
+        "trade_date": next_trade_date,
+        "execution_raw_sha256": cfg.retry_execution_raw_sha256,
+        "actual_cash": snapshot.available_cash,
+        "actual_positions": snapshot.positions,
+        "reconciliation_evidence_sha256": evidence_sha256,
+    })
+    receipt = {
+        "source_trade_date": source_trade_date,
+        "next_trade_date": next_trade_date,
+        "attempt_id": staged["attempt_id"],
+        "rebalance_id": staged["rebalance_id"],
+        "batch_sha256": staged["batch_sha256"],
+        "order_count": staged["order_count"],
+        "evidence_sha256": evidence_sha256,
+        "evidence_path": str(evidence_path),
+    }
+    receipt_sha256 = state.record_workflow_receipt(
+        "retry", source_trade_date, receipt,
+    )
+    return {
+        "status": "RETRY_STAGED",
+        "reconciliation": reconciliation,
+        "retry": receipt,
+        "retry_receipt_sha256": receipt_sha256,
+    }
+
+
 def initialize_account(
     cfg: LiveClientConfig, evidence_sha256: str, mock_state: Path | None,
 ) -> dict:
@@ -400,11 +552,15 @@ def doctor(cfg: LiveClientConfig) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Hydra independent live client")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("query", "preflight", "submit", "settle"):
+    for name in ("query", "preflight", "submit", "settle", "settle-close"):
         command = sub.add_parser(name)
         command.add_argument("--date", required=True)
-        if name in {"preflight", "submit", "settle"}:
+        if name in {"preflight", "submit", "settle", "settle-close"}:
             command.add_argument("--mock-state", type=Path)
+    retry = sub.add_parser("retry")
+    retry.add_argument("--date", required=True)
+    retry.add_argument("--next-date", required=True)
+    retry.add_argument("--mock-state", type=Path)
     sub.add_parser("doctor")
     initialize = sub.add_parser("initialize-account")
     initialize.add_argument("--evidence-sha256", required=True)
@@ -438,6 +594,12 @@ def main() -> None:
             result = submit(cfg, args.date, args.mock_state)
         elif args.command == "settle":
             result = settle(cfg, args.date, args.mock_state)
+        elif args.command == "settle-close":
+            result = settle_and_close(cfg, args.date, args.mock_state)
+        elif args.command == "retry":
+            result = stage_residual_retry(
+                cfg, args.date, args.next_date, args.mock_state,
+            )
         elif args.command == "initialize-account":
             result = initialize_account(cfg, args.evidence_sha256, args.mock_state)
         elif args.command == "cash-flow":

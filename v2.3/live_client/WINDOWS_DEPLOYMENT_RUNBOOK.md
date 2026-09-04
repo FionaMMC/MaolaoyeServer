@@ -80,7 +80,7 @@ program and arguments in this form:
 -NoProfile -ExecutionPolicy Bypass -File "C:\hydra-live\bin\Run-HydraLive.ps1" -Command query -Date YYYYMMDD -PythonExe "C:\path\to\python.exe"
 ```
 
-Use `preflight`, `submit` or `settle` for the corresponding task. Replace
+Use `submit`, `settle-close` or `retry` for the corresponding task. Replace
 `YYYYMMDD` with the approved exchange trading date for that cycle. Do not put
 secrets in the task arguments. Configure Task Scheduler to reject overlapping
 runs; the runner also holds a per-command/per-date exclusive lock.
@@ -93,9 +93,10 @@ The mandatory boundary is:
    receipt for this exact frozen batch.
 3. T+1 09:10 `submit`: use the frozen SQLite batch and MiniQMT only. It must run
    even if the server is down; it never performs an integrity call to the server.
-4. T+1 close `settle`: read terminal QMT results and return them to the server. If
-   the server is unavailable, retain local evidence and retry settlement later;
-   never resubmit the orders.
+4. T+1 15:10 `settle-close`: read terminal QMT results, return them to the
+   server, create reconciliation evidence and close the Hydra attempt.
+5. T+1 16:00 `retry`: only a server-confirmed `RESIDUAL` can stage the next
+   Hydra attempt. Never call the ordinary StrategyPipeline live trigger.
 
 Do not combine `query`, `preflight` and `submit` in one scheduled action. Morning
 submit requires the exact frozen batch and its successful preflight receipt. If

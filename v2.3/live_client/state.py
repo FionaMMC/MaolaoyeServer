@@ -79,6 +79,14 @@ class LiveStateStore:
                 );
                 CREATE INDEX IF NOT EXISTS ix_preflight_batch
                     ON preflight_checks(batch_sha256, check_id);
+                CREATE TABLE IF NOT EXISTS workflow_receipts (
+                    phase TEXT NOT NULL,
+                    trade_date TEXT NOT NULL,
+                    payload_sha256 TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    PRIMARY KEY (phase, trade_date)
+                );
             """)
             columns = {
                 row[1] for row in conn.execute("PRAGMA table_info(submissions)").fetchall()
@@ -118,6 +126,14 @@ class LiveStateStore:
         if row is None:
             raise RuntimeError(f"本地没有 {trade_date} 的已核验订单批次")
         return json.loads(row[0])
+
+    def has_batch(self, trade_date: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM order_batches WHERE trade_date = ?",
+                (trade_date,),
+            ).fetchone()
+        return row is not None
 
     def assert_same_batch(self, batch: ValidatedBatch) -> None:
         local = self.load_batch(batch.trade_date)
@@ -163,6 +179,47 @@ class LiveStateStore:
             "payload": json.loads(row[0]),
             "payload_sha256": row[1],
             "checked_at": row[2],
+        }
+
+    def record_workflow_receipt(
+        self, phase: str, trade_date: str, payload: dict,
+    ) -> str:
+        body = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        payload_sha256 = hashlib.sha256(body.encode()).hexdigest()
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT payload_sha256, payload_json FROM workflow_receipts "
+                "WHERE phase = ? AND trade_date = ?",
+                (phase, trade_date),
+            ).fetchone()
+            if existing:
+                if existing != (payload_sha256, body):
+                    raise RuntimeError(
+                        f"{phase} {trade_date} 已存在不同工作流回执"
+                    )
+                return payload_sha256
+            conn.execute(
+                "INSERT INTO workflow_receipts VALUES (?, ?, ?, ?, ?)",
+                (phase, trade_date, payload_sha256, body, _now_iso()),
+            )
+            conn.commit()
+        return payload_sha256
+
+    def workflow_receipt(self, phase: str, trade_date: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT payload_sha256, payload_json, recorded_at "
+                "FROM workflow_receipts WHERE phase = ? AND trade_date = ?",
+                (phase, trade_date),
+            ).fetchone()
+        if row is None:
+            return None
+        if hashlib.sha256(row[1].encode()).hexdigest() != row[0]:
+            raise RuntimeError(f"{phase} {trade_date} 工作流回执 hash 校验失败")
+        return {
+            "payload_sha256": row[0],
+            "payload": json.loads(row[1]),
+            "recorded_at": row[2],
         }
 
     def record_risk_check(self, batch_sha256: str, payload: dict) -> bool:
