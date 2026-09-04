@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -251,12 +252,25 @@ class XtQMTGateway:
         from xtquant.xttype import StockAccount
 
         xtdata.data_dir = str(self.cfg.userdata_dir)
-        trader = XtQuantTrader(str(self.cfg.userdata_dir), self.cfg.session_id)
-        trader.register_callback(XtQuantTraderCallback())
-        trader.start()
-        if trader.connect() != 0:
-            trader.stop()
-            raise RuntimeError("QMT connect() 失败")
+        trader = None
+        # MiniQMT can reject an immediately repeated connection for the same
+        # session id after the preflight client has closed. Retry only this
+        # pre-broker connection step: no account state is written and no order
+        # API has been reached yet.
+        for attempt in range(3):
+            candidate = XtQuantTrader(
+                str(self.cfg.userdata_dir), self.cfg.session_id,
+            )
+            candidate.register_callback(XtQuantTraderCallback())
+            candidate.start()
+            if candidate.connect() == 0:
+                trader = candidate
+                break
+            candidate.stop()
+            if attempt < 2:
+                time.sleep(1)
+        if trader is None:
+            raise RuntimeError("QMT connect() 失败（连续 3 次）")
         account = StockAccount(self.cfg.account_id)
         if trader.subscribe(account) != 0:
             trader.stop()
