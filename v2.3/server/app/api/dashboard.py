@@ -433,6 +433,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         <option value="all">全部</option>
       </select>
       <a href="/dashboard/review">设计与风控审阅</a>
+      <a href="/dashboard/blueprint">三盘新架构 · 交互讲解</a>
       <button class="primary" onclick="refreshAll()">↻ 刷新</button>
     </div>
   </div>
