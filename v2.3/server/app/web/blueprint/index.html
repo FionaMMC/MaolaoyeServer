@@ -1,0 +1,482 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>三盘新架构 · Hydra Blueprint</title>
+    <link rel="stylesheet" href="/dashboard/blueprint/assets/blueprint.css" />
+    <script id="blueprint-catalog" type="application/json">
+      __BLUEPRINT_CATALOG__
+    </script>
+    <script defer src="/dashboard/blueprint/assets/model.js"></script>
+    <script defer src="/dashboard/blueprint/assets/blueprint.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">跳到主要内容</a>
+    <aside class="sidebar">
+      <a class="brand" href="/dashboard" aria-label="返回 Dashboard">
+        <svg viewBox="0 0 40 40" aria-hidden="true">
+          <path
+            d="M9 28V12l11 7 11-7v16M9 20l11 7 11-7"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.4"
+            stroke-linejoin="round"
+          />
+        </svg>
+        <span>HYDRA<small>ARCHITECTURE STUDIO</small></span>
+      </a>
+      <div class="side-caption">一起把规则讲清楚</div>
+      <nav class="section-nav" aria-label="新架构章节">
+        <a
+          href="#journey"
+          data-view="journey"
+          class="active"
+          aria-current="page"
+          ><span>01</span>一笔钱的旅程<i>↗</i></a
+        >
+        <a href="#worlds" data-view="worlds"
+          ><span>02</span>三个盘，一套规则<i>↗</i></a
+        >
+        <a href="#scenarios" data-view="scenarios"
+          ><span>03</span>遇到问题怎么办<i>↗</i></a
+        >
+        <a href="#gates" data-view="gates"
+          ><span>04</span>闸门与预案<i>26</i></a
+        >
+        <a href="#discussion" data-view="discussion"
+          ><span>05</span>取舍与讨论<i>↗</i></a
+        >
+      </nav>
+      <div class="side-note">
+        <span class="tiny-label">核心原则</span>
+        <p>管好下一步。<br />记清已发生。<br />局部问题，局部处理。</p>
+        <span class="status-pill"><i></i>拟议方案 · 非现网状态</span>
+      </div>
+      <div class="side-bottom">
+        <a href="/dashboard">← 返回 Dashboard</a
+        ><a href="/dashboard/review">查看旧系统审阅 ↗</a
+        ><span>BLUEPRINT 1.1 / 2026.09.07</span>
+      </div>
+    </aside>
+
+    <main id="main" class="main" tabindex="-1">
+      <header class="topbar">
+        <div class="breadcrumb">
+          Dashboard <span>/</span> 三盘新架构
+          <span class="edition">讨论模型</span>
+        </div>
+        <div class="top-actions">
+          <button class="text-button" id="glossary-button">
+            术语小抄 <span>?</span></button
+          ><button class="text-button" id="copy-link">分享这一幕 ↗</button
+          ><button class="outline-button" id="export-notes">
+            导出讲解与纪要 ↓
+          </button>
+        </div>
+      </header>
+      <div class="safety-notice">
+        <span class="notice-symbol">◇</span
+        ><span
+          >这里展示的是<span class="strong">拟议运行规则与示例资金</span
+          >，不是实时账户。演示不会下单、撤单、划款或改变现网闸门。</span
+        >
+      </div>
+
+      <section id="view-journey" class="view">
+        <div class="hero">
+          <div>
+            <div class="eyebrow"><span></span> FOLLOW THE MONEY</div>
+            <h1>每一笔钱，<br />都知道下一站。</h1>
+            <p class="hero-description">
+              从到账到收益，沿着一笔资金看懂：<br
+                class="desktop-break"
+              />谁来计算、谁能花钱、遇到问题谁继续。
+            </p>
+          </div>
+          <div class="hero-right">
+            <div class="hero-stamp">
+              三个盘<span>共用业务规则<br />不混用账户与事实</span>
+            </div>
+            <p>不必懂代码。<br />从“钱属于谁”开始就好。</p>
+            <a href="#worlds" class="inline-link" data-view="worlds"
+              >先看三盘的区别 <span>→</span></a
+            >
+          </div>
+        </div>
+
+        <div class="explorer-toolbar">
+          <div class="mode-switch" role="group" aria-label="切换演示盘">
+            <button data-mode="live" aria-pressed="true">
+              <i class="live-dot"></i>真实实盘</button
+            ><button data-mode="paper" aria-pressed="false">
+              <i class="paper-dot"></i>QMT 模拟盘</button
+            ><button data-mode="shadow" aria-pressed="false">
+              <i class="shadow-dot"></i>影子盘
+            </button>
+          </div>
+          <label class="scenario-select-label"
+            >情景
+            <select id="scenario-select" aria-label="选择演示情景"></select
+          ></label>
+        </div>
+        <div class="mode-explanation" id="mode-explanation"></div>
+
+        <div class="explorer">
+          <div class="flow-panel">
+            <div class="flow-heading">
+              <div>
+                <span class="tiny-label" id="phase-label">资金准备</span>
+                <h2 id="flow-stage-title">账户到账</h2>
+              </div>
+              <span class="counter" id="step-counter"
+                >01 <span>/ 10</span></span
+              >
+            </div>
+            <div
+              class="map-wrap"
+              id="flow-map"
+              aria-label="数据、资金与交易如何流转"
+            ></div>
+            <div class="map-legend">
+              <span><i class="legend-line data-line"></i>数据与决策</span
+              ><span><i class="legend-line cash-line"></i>资金归属</span
+              ><span><i class="legend-line order-line"></i>授权与回报</span
+              ><span class="legend-note">光点表示信息流，不表示金额比例</span>
+            </div>
+            <div class="playback">
+              <button
+                id="play"
+                class="primary-button"
+                aria-label="播放资金旅程"
+              >
+                <span id="play-icon">▶</span
+                ><span id="play-label">播放旅程</span></button
+              ><button id="previous" class="round-button" aria-label="上一步">
+                ←</button
+              ><button id="next" class="round-button" aria-label="下一步">
+                →</button
+              ><button id="reset" class="reset-button">重新开始</button
+              ><label class="speed-label"
+                >播放速度<select id="speed" aria-label="播放速度">
+                  <option value="4200">舒缓</option>
+                  <option value="2400">标准</option>
+                  <option value="1200">快速</option>
+                </select></label
+              >
+            </div>
+          </div>
+          <aside class="step-panel" aria-label="当前步骤说明">
+            <div class="step-overline">
+              <span id="step-time"></span
+              ><button class="small-text" id="discuss-step">
+                讨论这一步 ↗
+              </button>
+            </div>
+            <h2 id="step-title"></h2>
+            <p class="step-description" id="step-description"></p>
+            <div class="owner-line">
+              <span>这一步谁负责</span><strong id="step-owner"></strong>
+            </div>
+            <div class="auto-note">
+              <span class="auto-symbol">↻</span>
+              <div>
+                <strong>如何自己运行</strong>
+                <p id="step-auto"></p>
+              </div>
+            </div>
+            <div class="step-wallet" aria-label="这一刻的示例资金">
+              <span class="tiny-label">这一刻 · Hydra 自己的钱</span>
+              <div>
+                <span>账面现金<strong id="step-cash"></strong></span
+                ><span>已占用<strong id="step-held"></strong></span
+                ><span>净资产<strong id="step-nav"></strong></span>
+              </div>
+              <p id="step-money-note"></p>
+            </div>
+            <div class="step-gates">
+              <span class="tiny-label">这一步的关键闸门</span>
+              <div id="stage-gates"></div>
+            </div>
+            <details class="io-details">
+              <summary>展开：输入、产物与异常预案</summary>
+              <dl>
+                <dt>拿到什么</dt>
+                <dd id="step-input"></dd>
+                <dt>留下什么证据</dt>
+                <dd id="step-output"></dd>
+                <dt>出问题时</dt>
+                <dd id="step-failure"></dd>
+              </dl>
+            </details>
+          </aside>
+        </div>
+
+        <div
+          class="stage-timeline"
+          id="timeline"
+          role="group"
+          aria-label="选择旅程步骤"
+        ></div>
+        <div class="scenario-callout" id="scenario-callout" hidden></div>
+
+        <section class="money-section" aria-label="演示资金账本">
+          <div class="section-heading">
+            <div>
+              <span class="eyebrow small">THE MONEY NEVER DISAPPEARS</span>
+              <h2>钱换了位置，不会多算一次。</h2>
+            </div>
+            <span class="example-label" id="money-caption"
+              >可复算教学示例 · 非真实余额</span
+            >
+          </div>
+          <div class="money-grid">
+            <div class="reserve-card">
+              <span class="tiny-label" id="reserve-label">未分配储备</span
+              ><strong id="reserve-value">¥19,211,000</strong>
+              <p>未明确划拨的资金<br />不属于 Hydra</p>
+              <div class="reserve-mark" aria-hidden="true">↗</div>
+            </div>
+            <div class="wallet-card">
+              <div class="wallet-title">
+                <span><i></i>Hydra 自己的钱包</span
+                ><span id="wallet-quality">演示归属账</span>
+              </div>
+              <div class="wallet-metrics">
+                <div>
+                  <span>账面现金</span><strong id="cash-value"></strong>
+                </div>
+                <div>
+                  <span>持仓市值</span><strong id="position-value"></strong>
+                </div>
+                <div>
+                  <span>策略净资产</span><strong id="nav-value"></strong>
+                </div>
+              </div>
+              <div class="cash-split">
+                <span id="free-bar"></span><span id="held-bar"></span>
+              </div>
+              <div class="cash-breakdown">
+                <span
+                  ><i class="free-key"></i>未承诺 <b id="free-value"></b></span
+                ><span
+                  ><i class="held-key"></i>占用 / 准备金 <b id="held-value"></b
+                ></span>
+              </div>
+              <p class="wallet-caption" id="money-explanation"></p>
+            </div>
+            <div class="result-card">
+              <span class="tiny-label">策略投资损益</span
+              ><strong id="pnl-value"></strong>
+              <div class="result-row">
+                <span>外部资本划拨</span><b id="capital-value"></b>
+              </div>
+              <div class="result-row">
+                <span>累计示例费用</span><b id="fee-value"></b>
+              </div>
+              <p>入金不算利润<br />预留也不是损失</p>
+            </div>
+          </div>
+          <div class="balance-check">
+            <span id="conservation-label"></span
+            ><button id="show-math" class="small-text">看计算明细 ↗</button>
+          </div>
+          <div class="runtime-status" id="runtime-status"></div>
+        </section>
+        <section class="quick-scenarios">
+          <div class="section-heading">
+            <div>
+              <h2>如果事情没有按计划发生呢？</h2>
+              <p>点一个情景，看该停什么、又该让什么继续。</p>
+            </div>
+            <a href="#scenarios" data-view="scenarios" class="inline-link"
+              >全部情景 →</a
+            >
+          </div>
+          <div class="quick-grid" id="quick-grid"></div>
+        </section>
+      </section>
+
+      <section id="view-worlds" class="view" hidden>
+        <div class="page-heading">
+          <span class="eyebrow">ONE CORE · THREE WORLDS</span>
+          <h1>三种盘。<br />不是三套互相打架的系统。</h1>
+          <p>业务核心可以相同；钱的真假、成交的来源和写入的权限，必须分开。</p>
+        </div>
+        <div id="world-cards" class="world-cards"></div>
+        <div class="core-band">
+          <span class="tiny-label">三个盘共享</span>
+          <h2>数据口径 · 策略协议 · 资金归属 · 状态与恢复 · 净值计算</h2>
+          <p>
+            不同的“执行插头”，接入同一套可验证的业务规则。Shadow
+            没有通向真实柜台的插头。
+          </p>
+        </div>
+        <div class="section-heading">
+          <div>
+            <h2>谁计算，谁执行，谁记账？</h2>
+            <p>服务器不是一个做所有事的大进程。Windows 也不重新决定策略。</p>
+          </div>
+        </div>
+        <div class="ownership-map" id="ownership-map"></div>
+        <div class="section-heading">
+          <div>
+            <h2>自动运行，靠的是状态，不是赌时间。</h2>
+            <p>定时任务负责叫醒；前一步的证据齐了，工作流才继续。</p>
+          </div>
+        </div>
+        <div class="day-flow" id="day-flow"></div>
+        <div class="editorial-note">
+          <span>特别提醒</span>
+          <p>
+            撤单与下单时间必须遵守实际券商、市场、品种和订单类型的政策。这里的“晚间
+            / 次日 / 收尾”是工作顺序，不是已确认的现网任务时间表。
+          </p>
+        </div>
+      </section>
+
+      <section id="view-scenarios" class="view" hidden>
+        <div class="page-heading">
+          <span class="eyebrow">RESILIENCE BY DESIGN</span>
+          <h1>遇到问题，<br />系统不必一起停下来。</h1>
+          <p>
+            真正的稳健，是知道受影响的是一张单、一份额度，还是整个物理账户。
+          </p>
+        </div>
+        <div class="scenario-filters" role="group" aria-label="情景分类">
+          <button data-category="all" aria-pressed="true">全部</button
+          ><button data-category="cash">资金变化</button
+          ><button data-category="orders">成交与撤单</button
+          ><button data-category="runtime">运行故障</button
+          ><button data-category="data">数据问题</button
+          ><button data-category="accounting">财务收尾</button>
+        </div>
+        <div id="scenario-grid" class="scenario-grid"></div>
+        <div class="editorial-note">
+          <span>不是无条件放行</span>
+          <p>
+            可信事实要保留，不代表立即相信其归属或允许花钱。当影响无法隔离，确实需要暂停该账户新增风险；但回报、核对和恢复通道仍需保留。
+          </p>
+        </div>
+      </section>
+
+      <section id="view-gates" class="view" hidden>
+        <div class="page-heading">
+          <span class="eyebrow">26 BOUNDARIES · NOT 26 SWITCHES</span>
+          <h1>闸门要守边界，<br />不是给整台服务器踩刹车。</h1>
+          <p>
+            每项都说清楚：在防什么、只挡哪里、什么继续、怎样恢复。点开可以逐条讨论。
+          </p>
+        </div>
+        <div class="gate-toolbar">
+          <label class="search-label"
+            ><span>⌕</span
+            ><input
+              id="gate-search"
+              type="search"
+              placeholder="试试：入金、部分成交、G09…"
+              aria-label="搜索闸门" /></label
+          ><label
+            >如何调整<select id="gate-kind">
+              <option value="all">全部调整方式</option>
+              <option value="keep">保留硬边界</option>
+              <option value="change">改实现 / 缩范围</option>
+              <option value="remove">移除错误阻断</option>
+              <option value="soften">改成独立提示</option>
+              <option value="clarify">补清边界</option>
+            </select></label
+          ><label
+            >适用盘<select id="gate-mode">
+              <option value="all">全部盘</option>
+              <option value="live">实盘</option>
+              <option value="paper">QMT 模拟盘</option>
+              <option value="shadow">影子盘</option>
+            </select></label
+          >
+        </div>
+        <div class="gate-count" id="gate-count"></div>
+        <div id="gate-grid" class="gate-grid"></div>
+      </section>
+
+      <section id="view-discussion" class="view" hidden>
+        <div class="page-heading">
+          <span class="eyebrow">MAKE THE TRADE-OFFS VISIBLE</span>
+          <h1>把取舍摆在桌面上，<br />一起决定怎么运行。</h1>
+          <p>
+            把架构画出来后，我们也修订了几处容易误解的边界。这里记录方案讨论，不批准任何真实交易。
+          </p>
+        </div>
+        <div class="discussion-notice">
+          <span id="notes-status">讨论草稿只在本浏览器保存 · 尚未共享</span
+          ><button class="outline-button" id="connect-notes">
+            连接共享讨论
+          </button>
+        </div>
+        <div id="revision-grid" class="revision-grid"></div>
+        <div class="section-heading">
+          <div>
+            <h2>本次讨论纪要</h2>
+            <p>“同意方案”只是设计意见，不会打开任何生产开关。</p>
+          </div>
+          <button class="outline-button" id="export-notes-bottom">
+            导出纪要 ↓
+          </button>
+        </div>
+        <div id="minutes" class="minutes"></div>
+        <div class="roadmap">
+          <span class="tiny-label">建议实施顺序</span>
+          <h2>先修清楚，再拆清楚。</h2>
+          <div class="roadmap-steps">
+            <div>
+              <b>01</b><strong>先修契约</strong>
+              <p>事实接收、资金占用、订单终态、回执恢复。</p>
+            </div>
+            <div>
+              <b>02</b><strong>再隔离运行</strong>
+              <p>API 与计算分开，任务靠持久状态接续。</p>
+            </div>
+            <div>
+              <b>03</b><strong>副本迁移与验证</strong>
+              <p>资金守恒、未决保留，Windows 场景验收。</p>
+            </div>
+            <div>
+              <b>04</b><strong>逐账户切换</strong>
+              <p>只有一个正式写入者，观察后再退旧路径。</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <footer>
+        <span>HYDRA / ARCHITECTURE STUDIO</span>
+        <p>设计基线 2026.09.07 · 规则模型 v1.1 · 不是部署或实盘验收证明</p>
+        <a href="/dashboard/review">对照旧系统审阅 ↗</a>
+      </footer>
+    </main>
+
+    <dialog id="detail-dialog" aria-labelledby="dialog-title">
+      <div class="dialog-header">
+        <span class="tiny-label" id="dialog-kicker"></span
+        ><button class="round-button" id="close-dialog" aria-label="关闭详情">
+          ×
+        </button>
+      </div>
+      <h2 id="dialog-title"></h2>
+      <div id="dialog-body"></div>
+    </dialog>
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+    <div
+      id="player-announcement"
+      class="sr-only"
+      role="status"
+      aria-live="polite"
+    ></div>
+    <noscript
+      ><div class="noscript">
+        交互讲解需要启用
+        JavaScript。核心规则：真实到账先留证并归储备；策略只用自己划拨资本及盈亏；预留不改变净资产；未知委托不盲目重发。所有演示都不连接交易接口。
+      </div></noscript
+    >
+  </body>
+</html>

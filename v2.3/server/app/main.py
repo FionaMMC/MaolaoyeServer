@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 from app.api import (
     admin,
+    architecture_blueprint,
     architecture_review,
     canary,
     admin_query,
@@ -177,6 +178,7 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
     app.include_router(ops.router, tags=["ops"])
     app.include_router(dashboard.router, tags=["dashboard"])
     app.include_router(architecture_review.router, tags=["architecture-review"])
+    app.include_router(architecture_blueprint.router, tags=["architecture-blueprint"])
 
     if settings_override is not None:
         app.dependency_overrides[get_settings] = lambda: settings_override

@@ -215,6 +215,7 @@ _REVIEW_HTML_TEMPLATE = r"""<!DOCTYPE html>
           <button class="btn primary" onclick="connectNotes()">连接批注</button>
           <button class="btn" onclick="exportMarkdown()">导出纪要</button>
           <a class="btn" href="/dashboard">返回 Dashboard</a>
+          <a class="btn" href="/dashboard/blueprint">探索三盘新架构 →</a>
         </div>
       </div>
       <div class="sync"><span><i id="sync-dot" class="dot"></i><span id="sync-text">材料可离线阅读；连接 API Key 后启用共享批注</span></span><span id="session-rev">—</span></div>
