@@ -4,8 +4,10 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import sys
+import logging
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -21,6 +23,22 @@ from live_client.gateway import (
 )
 from live_client.offline_acceptance import run_acceptance
 from live_client.state import LiveStateStore
+
+
+@pytest.fixture
+def xtquant_stub(monkeypatch):
+    """Unit tests inject the SDK surface; never import a real Windows trader."""
+    package = ModuleType("xtquant")
+    package.__path__ = []
+    monkeypatch.setitem(sys.modules, "xtquant", package)
+    for name in ("xttrader", "xttype", "xtconstant", "xtdata"):
+        module = ModuleType(f"xtquant.{name}")
+        setattr(package, name, module)
+        monkeypatch.setitem(sys.modules, module.__name__, module)
+    package.xttrader.XtQuantTrader = object
+    package.xttrader.XtQuantTraderCallback = lambda: object()
+    package.xttype.StockAccount = lambda account_id: SimpleNamespace(account_id=account_id)
+    return package
 
 
 def _cfg(tmp_path: Path, **changes) -> LiveClientConfig:
@@ -374,7 +392,7 @@ def test_mock_qmt_full_query_submit_settle_cycle(tmp_path, monkeypatch):
     assert retried["retry"]["order_count"] == 1
     assert FakeServer.pushed[0] == "20260803"
     statuses = {row["symbol"]: row["status"] for row in FakeServer.pushed[1]}
-    assert statuses == {"159915.SZ": "FILLED", "510300.SH": "PARTIAL"}
+    assert statuses == {"159915.SZ": "FILLED", "510300.SH": "CANCELLED"}
 
 
 def test_cancel_open_writes_receipt_without_inferring_terminal_state(
@@ -590,7 +608,7 @@ def test_windows_runtime_separates_evening_preflight_from_morning_submit():
     assert '$legacyEnabledBefore' in task_set
 
 
-def test_qmt_connection_retries_only_before_broker_use(tmp_path, monkeypatch):
+def test_qmt_connection_retries_only_before_broker_use(tmp_path, monkeypatch, xtquant_stub):
     import xtquant.xttrader as xttrader_module
     import xtquant.xttype as xttype_module
 
@@ -636,7 +654,7 @@ def test_qmt_connection_retries_only_before_broker_use(tmp_path, monkeypatch):
     assert gateway.xtdata is None
 
 
-def test_qmt_connect_exception_cleans_up_each_candidate(tmp_path, monkeypatch):
+def test_qmt_connect_exception_cleans_up_each_candidate(tmp_path, monkeypatch, xtquant_stub):
     import xtquant.xttrader as xttrader_module
 
     created = []
@@ -671,7 +689,7 @@ def test_qmt_connect_exception_cleans_up_each_candidate(tmp_path, monkeypatch):
 
 
 def test_qmt_subscribe_exception_cleans_up_connected_trader(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, xtquant_stub,
 ):
     import xtquant.xttrader as xttrader_module
 
@@ -708,7 +726,12 @@ def test_qmt_subscribe_exception_cleans_up_connected_trader(
     assert gateway.trader is None
 
 
-def test_live_market_backup_propagates_upload_failure(monkeypatch):
+def test_live_market_backup_propagates_upload_failure(monkeypatch, tmp_path, xtquant_stub):
+    # The collector's import normally initializes production config/logging.
+    # This test exercises only upload failure propagation, with no private env.
+    monkeypatch.setitem(sys.modules, "config", SimpleNamespace(
+        QMT_USERDATA_DIR=str(tmp_path), setup_logger=lambda _: logging.getLogger("backup-test"),
+    ))
     from client import market_push
 
     monkeypatch.setattr(market_push, "_wechat_alert", lambda _message: None)
@@ -1106,7 +1129,7 @@ def test_qmt_active_or_unknown_status_is_never_inferred_as_cancelled():
     with pytest.raises(RuntimeError, match="未识别"):
         classify_qmt_settlement_status(constants, 999, 0, 100)
     assert classify_qmt_settlement_status(constants, 54, 0, 100) == "CANCELLED"
-    assert classify_qmt_settlement_status(constants, 53, 25, 100) == "PARTIAL"
+    assert classify_qmt_settlement_status(constants, 53, 25, 100) == "CANCELLED"
     assert classify_qmt_settlement_status(constants, 57, 0, 100) == "REJECTED"
 
 

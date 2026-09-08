@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -153,7 +154,9 @@ def classify_qmt_settlement_status(
         if value is not None
     }
     if qmt_status in cancelled:
-        return "PARTIAL" if filled_quantity > 0 else "CANCELLED"
+        # PARTIAL means still active at the server. Preserve partial fills but
+        # report the broker-confirmed terminal lifecycle separately.
+        return "CANCELLED"
     raise RuntimeError(f"QMT 委托状态未识别: {qmt_status}")
 
 
@@ -222,6 +225,16 @@ class MockQMTGateway:
     def find_existing_submission(self, order: dict) -> SubmissionResult | None:
         return None
 
+    def confirmed_sell_fills(self, submissions: list[dict]) -> dict[str, dict]:
+        """Only explicit mock evidence funds buys; submit acknowledgement does not."""
+        evidence = self.payload.get("confirmed_sell_fills", {})
+        return {
+            row["order_id"]: dict(evidence.get(row["order_id"], {
+                "filled_quantity": 0, "filled_price": 0.0,
+            }))
+            for row in submissions
+        }
+
     def settlement_results(self, submissions: list[dict]) -> list[dict]:
         fill_ratios = dict(self.payload.get("fill_ratios", {}))
         results = []
@@ -229,7 +242,7 @@ class MockQMTGateway:
             ratio = float(fill_ratios.get(row["symbol"], 1.0))
             quantity = int(row["quantity"] * ratio)
             status = "FILLED" if quantity >= row["quantity"] else (
-                "PARTIAL" if quantity > 0 else "CANCELLED"
+                "CANCELLED"
             )
             results.append({
                 "order_id": row["order_id"],
@@ -241,6 +254,9 @@ class MockQMTGateway:
                 **dict(row.get("execution_meta") or {}),
             })
         return results
+
+    def settlement_observations(self, submissions: list[dict]) -> dict:
+        return {"results": self.settlement_results(submissions), "pending_order_ids": [], "issues": []}
 
     def cancel_open_orders(self, submissions: list[dict]) -> list[dict]:
         """Synthetic cancellation acknowledgements for offline tests only."""
@@ -784,6 +800,42 @@ class XtQMTGateway:
             )
         return rows
 
+    def confirmed_sell_fills(self, submissions: list[dict]) -> dict[str, dict]:
+        """Read owned cumulative fills even while a sell remains active.
+
+        A reported order/limit price is not proceeds. Require exact broker
+        identity and actual cumulative filled volume/average price, without
+        pretending an active partial fill is a terminal order.
+        """
+        rows = self._query_orders_for_settlement()
+        order_map = {}
+        for raw in rows:
+            broker = _broker_order_snapshot(raw)
+            if broker.order_id in order_map:
+                raise RuntimeError("QMT 委托查询存在重复 broker order id")
+            order_map[broker.order_id] = broker
+        result = {}
+        for submission in submissions:
+            if submission["direction"] != "SELL":
+                raise RuntimeError("只有策略自身卖出成交可计入队列资金")
+            broker = order_map.get(int(submission["local_order_id"]))
+            if broker is None:
+                raise RuntimeError("QMT 缺少本地卖出委托，不能推测卖出到账")
+            self._validate_live_order_for_cancel(broker, submission)
+            if broker.order_type != self.xtconstant.STOCK_SELL:
+                raise RuntimeError("QMT 成交来源必须明确为卖出委托")
+            if not 0 <= broker.traded_volume <= int(submission["quantity"]):
+                raise RuntimeError("QMT 累计卖出成交量非法")
+            if broker.traded_volume and (
+                not math.isfinite(broker.traded_price) or broker.traded_price <= 0
+            ):
+                raise RuntimeError("QMT 累计卖出成交价非法")
+            result[submission["order_id"]] = {
+                "filled_quantity": broker.traded_volume,
+                "filled_price": broker.traded_price if broker.traded_volume else 0.0,
+            }
+        return result
+
     def settlement_results(self, submissions: list[dict]) -> list[dict]:
         if self.trader is None or self.account is None:
             raise RuntimeError("QMT 尚未连接")
@@ -811,10 +863,62 @@ class XtQMTGateway:
             results.append({
                 "order_id": row["order_id"],
                 "filled_quantity": qty,
-                "filled_price": round(average_price, 4) if qty else 0.0,
+                "filled_price": average_price if qty else 0.0,
                 "status": status,
                 "symbol": row["symbol"],
                 "direction": row["direction"],
                 **dict(row.get("execution_meta") or {}),
             })
         return results
+
+    def settlement_observations(self, submissions: list[dict]) -> dict:
+        """Ingest independently verifiable facts without waiting for every order.
+
+        Identity mismatches/missing orders remain explicit unresolved issues.
+        They do not discard another order's confirmed fill. Active partial fills
+        are PARTIAL; time alone never manufactures a cancellation.
+        """
+        if self.trader is None or self.account is None:
+            raise RuntimeError("QMT 尚未连接")
+        raw_orders = self._query_orders_for_settlement()
+        by_id: dict[int, list] = {}
+        for raw in raw_orders:
+            by_id.setdefault(int(raw.order_id), []).append(raw)
+        results, pending, issues = [], [], []
+        for row in submissions:
+            try:
+                matches = by_id.get(int(row["local_order_id"]), [])
+                if len(matches) != 1:
+                    raise RuntimeError("券商委托缺失或委托号重复")
+                broker = _broker_order_snapshot(matches[0])
+                self._validate_live_order_for_cancel(broker, row)
+                quantity, price = broker.traded_volume, broker.traded_price
+                if not 0 <= quantity <= int(row["quantity"]):
+                    raise RuntimeError("券商累计成交数量非法")
+                if quantity and (not math.isfinite(price) or price <= 0):
+                    raise RuntimeError("券商累计成交价格非法")
+                try:
+                    status = classify_qmt_settlement_status(
+                        self.xtconstant, broker.order_status, quantity, int(row["quantity"]),
+                    )
+                except RuntimeError as exc:
+                    pending.append(row["order_id"])
+                    issues.append({"order_id": row["order_id"], "reason": str(exc)})
+                    if not quantity:
+                        continue
+                    status = "PARTIAL"
+                results.append({
+                    **dict(row.get("execution_meta") or {}),
+                    "order_id": row["order_id"],
+                    "filled_quantity": quantity,
+                    # Broker VWAP may have more precision than a price tick.
+                    # Rounding it here creates cash and slippage discrepancies.
+                    "filled_price": price if quantity else 0.0,
+                    "status": status,
+                    "symbol": row["symbol"], "direction": row["direction"],
+                    "qmt_order_id": str(broker.order_id),
+                })
+            except (RuntimeError, ValueError, TypeError) as exc:
+                pending.append(row["order_id"])
+                issues.append({"order_id": row["order_id"], "reason": str(exc)})
+        return {"results": results, "pending_order_ids": sorted(set(pending)), "issues": issues}

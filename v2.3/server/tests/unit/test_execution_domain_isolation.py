@@ -233,3 +233,65 @@ def test_live_strategy_ledger_read_is_scoped_to_authorized_account(tmp_path):
         headers=headers,
     )
     assert denied.status_code == 403
+
+
+def test_qmt_cash_facts_record_with_trading_gates_closed_and_no_strategy(tmp_path):
+    from app.models import AccountCashObservation
+
+    client, sf = _client_and_sf(tmp_path)
+    # live_cash_flow_ingest_enabled and live generation remain false by default.
+    body = {
+        "execution_domain": "live", "account_alias": "hydra-live",
+        "source": "qmt-cash-ledger", "source_event_id": "broker-event-1",
+        "event_type": "WITHDRAWAL", "amount": "-500.00",
+        "observed_at": "2026-09-08T15:10:00+08:00", "evidence_sha256": "a" * 64,
+        "qmt_cash_balance": "-10.00", "qmt_available_cash": "0.00",
+    }
+    headers = {"Authorization": "Bearer LIVE_ONLY"}
+    first = client.post("/accounts/cash-observations", json=body, headers=headers)
+    assert first.status_code == 200
+    assert first.json()["data"]["status"] == "RECORDED_UNALLOCATED"
+    assert not first.json()["data"]["strategy_balance_changed"]
+    replay = client.post("/accounts/cash-observations", json=body, headers=headers)
+    assert replay.json()["data"]["already_recorded"]
+    assert replay.json()["data"]["observation_id"] == first.json()["data"]["observation_id"]
+    for change in ({"account_alias": "other"}, {"execution_domain": "paper"}):
+        response = client.post("/accounts/cash-observations", json={**body, **change}, headers=headers)
+        assert response.status_code == 403
+    assert client.post("/accounts/cash-observations", json=body).status_code == 401
+    with sf() as session:
+        assert session.query(AccountCashObservation).count() == 1
+        assert session.query(InstanceState).count() == 0
+        assert session.query(CashFlowJournal).count() == 0
+
+
+def test_capital_movements_are_additive_and_cannot_cross_ownership(tmp_path):
+    client, sf = _client_and_sf(tmp_path)
+    with sf() as session:
+        session.add(InstanceState(
+            instance_id="hydra", execution_domain="live", account_alias="hydra-live",
+            ledger_mode="attributed", virtual_cash=211_000,
+            virtual_positions={"510300.SH": 100}, last_update="2026-09-08T15:10:00+08:00",
+        ))
+        session.commit()
+    body = {
+        "execution_domain": "live", "account_alias": "hydra-live", "instance_id": "hydra",
+        "action": "INCREASE", "amount": "10000.00", "event_date": "20260908",
+        "qmt_cash_balance": "19000000.00", "snapshot_time": "2026-09-08T15:10:00+08:00",
+        "source_event_id": "add-1", "evidence_sha256": "b" * 64,
+    }
+    headers = {"Authorization": "Bearer LIVE_ONLY"}
+    response = client.post("/accounts/capital-movements", json=body, headers=headers)
+    assert response.status_code == 200 and response.json()["code"] == 0
+    assert response.json()["data"]["target_policy"] == "NEXT_UNFROZEN_TARGET"
+    assert client.post("/accounts/capital-movements", json=body, headers=headers).json()["data"]["already_applied"]
+    assert client.post("/accounts/capital-movements", json={**body, "account_alias": "other"}, headers=headers).status_code == 403
+    missing = client.post("/accounts/capital-movements", json={
+        **body, "source_event_id": "add-2", "instance_id": "uninitialized",
+    }, headers=headers)
+    assert missing.status_code == 404  # G08 retained for allocation, not fact ingestion.
+    with sf() as session:
+        state = session.get(InstanceState, "hydra")
+        assert state.virtual_cash == 221_000
+        assert state.virtual_positions == {"510300.SH": 100}
+        assert session.query(CashFlowJournal).count() == 1

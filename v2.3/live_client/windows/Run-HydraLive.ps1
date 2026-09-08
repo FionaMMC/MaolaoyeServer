@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("doctor", "ledger", "query", "preflight", "submit", "cancel-open", "settle", "settle-close", "retry", "cash-flow")]
+    [ValidateSet("doctor", "ledger", "query", "preflight", "submit", "cancel-open", "settle", "settle-close", "close-window", "retry", "cash-flow")]
     [string]$Command,
 
     [ValidatePattern("^\d{8}$")]
@@ -9,6 +9,8 @@ param(
 
     [ValidatePattern("^\d{8}$")]
     [string]$NextDate,
+
+    [string]$ExecutionDeadlineAt,
 
     [string]$InstallRoot = "C:\hydra-live",
     [string]$EnvFile,
@@ -67,6 +69,12 @@ if ($Command -notin @("doctor", "ledger") -and -not $Date) {
 }
 if ($Command -eq "retry" -and -not $NextDate) {
     throw "-retry requires -NextDate YYYYMMDD"
+}
+if ($Command -eq "close-window" -and -not $ExecutionDeadlineAt) {
+    throw "-close-window requires an explicit zoned -ExecutionDeadlineAt"
+}
+if ($ExecutionDeadlineAt -and $Command -ne "close-window") {
+    throw "-ExecutionDeadlineAt is only valid for close-window"
 }
 if ($MockState -and $Command -notin @("preflight", "submit", "cancel-open", "settle", "settle-close", "retry", "cash-flow")) {
     throw "-MockState is not valid for this command"
@@ -135,6 +143,9 @@ try {
     }
     if ($NextDate) {
         $arguments += @("--next-date", $NextDate)
+    }
+    if ($ExecutionDeadlineAt) {
+        $arguments += @("--execution-deadline-at", $ExecutionDeadlineAt)
     }
     if ($MockState) {
         $arguments += @("--mock-state", $MockState)

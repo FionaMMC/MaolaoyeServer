@@ -10,6 +10,8 @@ from app.exceptions import APIError, ErrorCode
 from app.models import CashFlowJournal, InstanceState
 from app.schemas.cash_flow import CashFlowRequest, CashFlowResponseData
 from app.services.ownership import OwnershipOverlap, validate_no_owned_symbol_overlap
+from app.services.ledger_transaction import begin_ledger_transaction
+from app.services.strategy_capital import SOURCE as CAPITAL_MOVEMENT_SOURCE, StrategyCapitalService
 
 
 def _now_iso() -> str:
@@ -17,14 +19,20 @@ def _now_iso() -> str:
 
 
 class CashFlowService:
-    def __init__(self, session_factory):
+    def __init__(self, session_factory, *, commission_rate=0.0003, min_commission=5.0):
         self.session_factory = session_factory
+        self.capital_service = StrategyCapitalService(
+            session_factory, commission_rate=commission_rate, min_commission=min_commission,
+        )
 
     def apply(self, req: CashFlowRequest) -> CashFlowResponseData:
         if not math.isfinite(req.amount):
             raise APIError(ErrorCode.BAD_REQUEST, "cash flow amount 必须为有限数")
+        if req.source == CAPITAL_MOVEMENT_SOURCE:
+            raise APIError(ErrorCode.BAD_REQUEST, "该 source 保留给 /accounts/capital-movements")
 
         with self.session_factory() as session:
+            begin_ledger_transaction(session, req.execution_domain, req.account_alias)
             existing = session.execute(
                 select(CashFlowJournal).where(
                     CashFlowJournal.execution_domain == req.execution_domain,
@@ -127,16 +135,31 @@ class CashFlowService:
                             f"切换 attributed 后标的归属冲突: {exc}",
                             http_status=409,
                         ) from exc
+                if req.event_type == "CAPITAL_DEALLOCATION":
+                    protected = self.capital_service._protected_buy_cash(session, req)
+                    if cash_after < float(protected):
+                        raise APIError(
+                            ErrorCode.BAD_REQUEST,
+                            "减资不能动用未终局买单保护现金；请待成交/撤单事实后重试",
+                            http_status=409,
+                        )
+                elif req.event_type == "CAPITAL_ALLOCATION":
+                    self.capital_service.check_physical_snapshot(session, req)
+                    self.capital_service.check_account_attribution(session, req)
                 peers = session.execute(select(InstanceState).where(
                     InstanceState.execution_domain == req.execution_domain,
                     InstanceState.account_alias == req.account_alias,
                 )).scalars().all()
                 account_ledger_cash_after = sum(
                     cash_after if peer.instance_id == state.instance_id
-                    else float(peer.virtual_cash)
+                    else max(0.0, float(peer.virtual_cash))
                     for peer in peers
                 )
-                if account_ledger_cash_after > float(req.qmt_cash) + 1.0:
+                income_suspense = (
+                    float(self.capital_service.unattributed_income_cash(session, req))
+                    if req.event_type == "CAPITAL_ALLOCATION" else 0.0
+                )
+                if account_ledger_cash_after > float(req.qmt_cash) - income_suspense + 1.0:
                     raise APIError(
                         ErrorCode.BAD_REQUEST,
                         "资本划拨后各策略现金合计超过 QMT 可用现金",

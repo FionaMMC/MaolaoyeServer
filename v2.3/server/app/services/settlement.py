@@ -15,6 +15,7 @@ from app.models import (
     Trade,
 )
 from app.schemas.trade_result import TradeResult, TradeResultResponseData
+from app.services.ledger_transaction import begin_ledger_transaction
 
 logger = logging.getLogger(__name__)
 
@@ -103,8 +104,12 @@ class SettlementService:
         duplicate = 0
         unmatched: list[str] = []
         unmatched_candidates: dict[str, list[str]] = {}
+        rejected_observations: dict[str, str] = {}
 
         with self.session_factory() as session:
+            # Take the participating monetary-writer lock before reading cash.
+            # A batch can cover several accounts; no broker call runs here.
+            begin_ledger_transaction(session, execution_domain, None)
             for result in results:
                 order = session.get(Order, result.order_id)
                 account_allowed = (
@@ -138,6 +143,24 @@ class SettlementService:
                         )
                     continue
 
+                if result.status == "NOT_SUBMITTED":
+                    known_execution = session.get(ExecutionQualityObservation, order.order_id)
+                    known_fill = session.execute(select(Trade.id).where(
+                        Trade.order_id == order.order_id,
+                        Trade.execution_domain == execution_domain,
+                        Trade.filled_quantity > 0,
+                    ).limit(1)).first()
+                    if (
+                        known_fill is not None
+                        or (known_execution is not None and known_execution.qmt_order_id)
+                        or order.status in {"PARTIAL", "FILLED", "CANCELLED"}
+                    ):
+                        # Absence of a broker ID in this message cannot erase
+                        # earlier evidence that a broker order already existed.
+                        rejected_observations[order.order_id] = "NOT_SUBMITTED_CONFLICTS_WITH_BROKER_EVIDENCE"
+                        logger.error("拒绝矛盾的未提交声明，保留原委托义务: order=%s", order.order_id)
+                        continue
+
                 # ── 幂等守卫（P0-1 / 5/12 重复结算事故）──────────────────────
                 # 同一笔成交回报被重复推送（客户端网络重试 / 全量重推）时绝不能
                 # 二次入账。幂等键 = order_id + filled_time + filled_quantity +
@@ -151,6 +174,9 @@ class SettlementService:
                         Trade.filled_time == result.filled_time,
                         Trade.filled_quantity == result.filled_quantity,
                         Trade.filled_price == result.filled_price,
+                        # Same cumulative fill can later become terminal (e.g.
+                        # QMT 55 -> 53). Ingest that status without booking twice.
+                        Trade.status == result.status,
                     )
                 ).first()
                 if already is not None:
@@ -179,6 +205,15 @@ class SettlementService:
                         "settle stale cumulative report ignored: order=%s qty=%s < prior=%s",
                         result.order_id, result.filled_quantity, previous_qty,
                     )
+                    continue
+                if (
+                    result.filled_quantity == previous_qty
+                    and order.status in {"FILLED", "CANCELLED", "REJECTED", "NOT_SUBMITTED"}
+                    and result.status == "PARTIAL"
+                ):
+                    # An out-of-order active observation cannot resurrect an
+                    # already terminal order with no additional filled units.
+                    duplicate += 1
                     continue
                 delta_qty = int(result.filled_quantity) - previous_qty
                 previous_notional = (
@@ -245,6 +280,7 @@ class SettlementService:
             matched_count=matched,
             unmatched_order_ids=unmatched,
             unmatched_candidates=unmatched_candidates,
+            rejected_observations=rejected_observations,
         )
 
     # ── 内部 ────────────────────────────────────────────────────────────

@@ -38,7 +38,7 @@ def _authorize(auth: AuthContext, execution_domain: str, account_alias: str) -> 
     "/targets/stage",
     response_model=APIResponse[HydraRelayResponseData],
 )
-async def stage_hydra_target(
+def stage_hydra_target(
     req: HydraTargetRequest,
     auth: AuthContext = Depends(verify_api_key),
     service: HydraRelayService = Depends(get_hydra_relay_service),
@@ -52,7 +52,7 @@ async def stage_hydra_target(
     "/rebalances/retry",
     response_model=APIResponse[HydraRelayResponseData],
 )
-async def stage_hydra_retry(
+def stage_hydra_retry(
     req: HydraRetryRequest,
     auth: AuthContext = Depends(verify_api_key),
     service: HydraRelayService = Depends(get_hydra_relay_service),
@@ -66,7 +66,7 @@ async def stage_hydra_retry(
     "/attempts/close",
     response_model=APIResponse[HydraAttemptCloseResponseData],
 )
-async def close_hydra_attempt(
+def close_hydra_attempt(
     req: HydraAttemptCloseRequest,
     auth: AuthContext = Depends(verify_api_key),
     service: HydraRelayService = Depends(get_hydra_relay_service),

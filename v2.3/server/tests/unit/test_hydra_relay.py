@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+from datetime import datetime
 
 import pandas as pd
 import pytest
@@ -177,6 +178,110 @@ def test_stage_initial_is_content_idempotent_and_auditable(tmp_path):
         assert all(order.execution_reference_price in {2.0, 4.0} for order in orders)
         # 买入限价按 0.001 tick 向下保守舍入。
         assert {order.limit_price for order in orders} == {2.01, 4.02}
+
+
+def test_deadline_closes_workflow_without_fabricating_broker_terminal(tmp_path):
+    from app.models import HydraWorkflowClosure
+    from app.services.orders_queue import OrdersQueueService
+
+    service, sf, _, model_sha, raw_sha, actions_sha, calendar_sha = _setup(
+        tmp_path, live_enabled=True, state_domain="live",
+    )
+    initial = service.stage_initial(_target(
+        model_sha, raw_sha, actions_sha, calendar_sha,
+        execution_domain="live", account_alias="hydra-live", instance_id="live_hydra",
+    ))
+    service.live_enabled = False
+    req = HydraAttemptCloseRequest(
+        execution_domain="live", account_alias="hydra-live", attempt_id=initial.attempt_id,
+        actual_cash=999.0, actual_positions={}, reconciliation_evidence_sha256="a" * 64,
+        close_mode="execution_deadline",
+        execution_deadline_at=datetime.fromisoformat("2026-08-03T15:00:00+08:00"),
+    )
+    closed = service.close_attempt(req)
+    assert closed.status == "CLOSED_PENDING_BROKER"
+    assert closed.workflow_closed and not closed.broker_finalized and not closed.retry_ready
+    assert len(closed.unresolved_order_ids) == 2
+    assert closed.residual_after == {}  # no executable residual from unreconciled snapshot
+    assert service.close_attempt(req) == closed
+    assert OrdersQueueService(sf).list_pending("20260803", execution_domain="live") == []
+    with sf() as session:
+        assert session.query(HydraWorkflowClosure).count() == 1
+        assert {row.status for row in session.query(Order)} == {"PENDING"}
+        assert session.get(InstanceState, "live_hydra").virtual_cash == 1_000_000
+        assert session.get(HydraExecutionAttempt, initial.attempt_id).residual_after is None
+
+    with pytest.raises(APIError, match="尚有未决订单"):
+        service.close_attempt(req.model_copy(update={
+            "close_mode": "broker_final", "execution_deadline_at": None,
+        }))
+    # Actual terminal reports, not wall-clock expiry, release the obligations.
+    with sf() as session:
+        for order in session.query(Order):
+            order.status = "CANCELLED"
+        session.commit()
+    final = service.close_attempt(req.model_copy(update={
+        "close_mode": "broker_final", "execution_deadline_at": None,
+        "actual_cash": 1_000_000.0, "reconciliation_evidence_sha256": "b" * 64,
+    }))
+    assert final.status == "RESIDUAL" and final.retry_ready
+    # A lost response can be replayed even after subsequent finalization.
+    assert service.close_attempt(req) == closed
+
+
+def test_deadline_close_with_final_orders_does_not_demand_immediate_ledger_match(tmp_path):
+    service, sf, _, model_sha, raw_sha, actions_sha, calendar_sha = _setup(tmp_path)
+    initial = service.stage_initial(_target(model_sha, raw_sha, actions_sha, calendar_sha))
+    with sf() as session:
+        for order in session.query(Order):
+            order.status = "CANCELLED"
+        session.commit()
+    closed = service.close_attempt(HydraAttemptCloseRequest(
+        account_alias="hydra-paper", attempt_id=initial.attempt_id,
+        actual_cash=999, actual_positions={}, reconciliation_evidence_sha256="c" * 64,
+        close_mode="execution_deadline", execution_deadline_at="2026-08-03T15:00:00+08:00",
+    ))
+    assert closed.status == "CLOSED_PENDING_RECONCILIATION"
+    assert closed.broker_finalized and not closed.retry_ready
+
+
+@pytest.mark.parametrize("deadline", ["2099-08-03T15:00:00+08:00", "2026-08-04T15:00:00+08:00"])
+def test_deadline_close_rejects_future_or_wrong_attempt_day(tmp_path, deadline):
+    service, sf, _, model_sha, raw_sha, actions_sha, calendar_sha = _setup(tmp_path)
+    initial = service.stage_initial(_target(model_sha, raw_sha, actions_sha, calendar_sha))
+    with pytest.raises(APIError):
+        service.close_attempt(HydraAttemptCloseRequest(
+            account_alias="hydra-paper", attempt_id=initial.attempt_id,
+            actual_cash=1_000_000, actual_positions={}, reconciliation_evidence_sha256="a" * 64,
+            close_mode="execution_deadline", execution_deadline_at=deadline,
+        ))
+    with sf() as session:
+        assert session.get(HydraExecutionAttempt, initial.attempt_id).status == "PENDING"
+
+
+def test_deadline_close_does_not_cross_accounts(tmp_path):
+    service, _, _, model_sha, raw_sha, actions_sha, calendar_sha = _setup(tmp_path)
+    initial = service.stage_initial(_target(model_sha, raw_sha, actions_sha, calendar_sha))
+    with pytest.raises(APIError, match="不存在或跨域"):
+        service.close_attempt(HydraAttemptCloseRequest(
+            account_alias="other", attempt_id=initial.attempt_id,
+            actual_cash=1, actual_positions={}, reconciliation_evidence_sha256="a" * 64,
+            close_mode="execution_deadline", execution_deadline_at="2026-08-03T15:00:00+08:00",
+        ))
+
+
+def test_unknown_broker_status_stays_an_obligation(tmp_path):
+    service, sf, _, model_sha, raw_sha, actions_sha, calendar_sha = _setup(tmp_path)
+    initial = service.stage_initial(_target(model_sha, raw_sha, actions_sha, calendar_sha))
+    with sf() as session:
+        for order in session.query(Order):
+            order.status = "EXPIRED_BY_CLOCK"
+        session.commit()
+    with pytest.raises(APIError, match="尚有未决订单"):
+        service.close_attempt(HydraAttemptCloseRequest(
+            account_alias="hydra-paper", attempt_id=initial.attempt_id,
+            actual_cash=1_000_000, actual_positions={}, reconciliation_evidence_sha256="a" * 64,
+        ))
 
 
 def test_live_auto_risk_allows_zero_static_caps_and_persists_nav_snapshot(tmp_path):

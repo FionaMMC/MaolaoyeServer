@@ -168,6 +168,65 @@ def test_settle_marks_order_status(tmp_path: Path):
         assert s.get(Order, "oid1").status == "PARTIAL"
 
 
+def test_same_cumulative_fill_can_become_cancelled_without_double_booking(tmp_path):
+    sf = _factory(tmp_path)
+    _seed(sf)
+    svc = _make_svc(sf)
+    partial = TradeResult(
+        order_id="oid1", filled_quantity=100, filled_price=10,
+        filled_time="2026-04-30T14:00:00+08:00", status="PARTIAL",
+    )
+    svc.settle("20260430", [partial])
+    with sf() as s:
+        before = s.get(InstanceState, "real_A_m").virtual_cash
+    terminal = partial.model_copy(update={"status": "CANCELLED"})
+    assert svc.settle("20260430", [terminal]).matched_count == 1
+    assert svc.settle("20260430", [terminal]).matched_count == 0
+    # Later delivery of the old active state must not resurrect the order.
+    svc.settle("20260430", [partial.model_copy(update={
+        "filled_time": "2026-04-30T14:01:00+08:00",
+    })])
+    with sf() as s:
+        assert s.get(Order, "oid1").status == "CANCELLED"
+        assert s.get(InstanceState, "real_A_m").virtual_cash == before
+        assert s.query(Trade).count() == 2
+
+
+def test_unsubmitted_cash_deferred_order_records_no_broker_execution(tmp_path):
+    sf = _factory(tmp_path)
+    _seed(sf)
+    svc = _make_svc(sf)
+    result = TradeResult(
+        order_id="oid1", filled_quantity=0, filled_price=0,
+        status="NOT_SUBMITTED", not_submitted_reason="INSUFFICIENT_CASH",
+    )
+    assert svc.settle("20260430", [result]).matched_count == 1
+    with sf() as s:
+        assert s.get(Order, "oid1").status == "NOT_SUBMITTED"
+        assert s.get(InstanceState, "real_A_m").virtual_cash == 1_000_000
+
+
+def test_not_submitted_cannot_erase_known_unfilled_broker_order(tmp_path):
+    sf = _factory(tmp_path)
+    _seed(sf)
+    svc = _make_svc(sf)
+    svc.settle("20260430", [TradeResult(
+        order_id="oid1", filled_quantity=0, filled_price=0,
+        status="PARTIAL", qmt_order_id="broker-123",
+    )])
+    rejected = svc.settle("20260430", [TradeResult(
+        order_id="oid1", filled_quantity=0, filled_price=0,
+        status="NOT_SUBMITTED", not_submitted_reason="INSUFFICIENT_CASH",
+    )])
+    assert rejected.matched_count == 0
+    assert rejected.rejected_observations == {
+        "oid1": "NOT_SUBMITTED_CONFLICTS_WITH_BROKER_EVIDENCE",
+    }
+    with sf() as session:
+        assert session.get(Order, "oid1").status == "PARTIAL"
+        assert session.get(ExecutionQualityObservation, "oid1").qmt_order_id == "broker-123"
+
+
 def test_settle_buy_updates_virtual_state_proportionally(tmp_path: Path):
     """成交 300 股全部 fill；按 100:200 比例拆 → 100/200 给 m/r 实例。"""
     sf = _factory(tmp_path)

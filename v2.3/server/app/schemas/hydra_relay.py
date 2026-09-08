@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -116,9 +117,27 @@ class HydraAttemptCloseRequest(BaseModel):
     execution_domain: ExecutionDomain = "paper"
     account_alias: str = Field(min_length=1, max_length=100)
     attempt_id: str
-    actual_cash: float = Field(ge=0)
-    actual_positions: dict[str, int]
+    actual_cash: float | None = Field(default=None, ge=0)
+    actual_positions: dict[str, int] | None = None
     reconciliation_evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    # Legacy callers retain final-reconciliation semantics. New callers can end
+    # the operational window without asserting a broker cancellation.
+    close_mode: Literal["broker_final", "execution_deadline"] = "broker_final"
+    execution_deadline_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_close_mode(self) -> "HydraAttemptCloseRequest":
+        if self.actual_cash is not None and not math.isfinite(self.actual_cash):
+            raise ValueError("actual_cash 必须是有限数")
+        if self.close_mode == "execution_deadline":
+            deadline = self.execution_deadline_at
+            if deadline is None or deadline.utcoffset() is None:
+                raise ValueError("到期 Close 必须提供带时区的 execution_deadline_at")
+        elif self.execution_deadline_at is not None:
+            raise ValueError("broker_final 不接受 execution_deadline_at")
+        elif self.actual_cash is None or self.actual_positions is None:
+            raise ValueError("broker_final 必须提供实际现金与持仓；到期收尾不要求 QMT 在线")
+        return self
 
 
 class HydraAttemptCloseResponseData(BaseModel):
@@ -126,8 +145,17 @@ class HydraAttemptCloseResponseData(BaseModel):
     rebalance_id: str
     attempt_id: str
     execution_domain: ExecutionDomain
-    status: Literal["COMPLETE", "RESIDUAL"]
+    status: Literal[
+        "COMPLETE", "RESIDUAL", "CLOSED_PENDING_BROKER",
+        "CLOSED_PENDING_RECONCILIATION",
+    ]
     residual_after: dict[str, int]
+    workflow_closed: bool = True
+    broker_finalized: bool = True
+    retry_ready: bool = False
+    unresolved_order_ids: list[str] = Field(default_factory=list)
+    provisional_residual: dict[str, int] = Field(default_factory=dict)
+    closure_receipt_id: str | None = None
 
 
 class HydraRelayResponseData(BaseModel):

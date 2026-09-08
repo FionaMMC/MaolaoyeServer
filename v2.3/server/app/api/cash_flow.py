@@ -15,7 +15,7 @@ router = APIRouter()
 
 
 @router.post("/cash-flows", response_model=APIResponse[CashFlowResponseData])
-async def post_cash_flow(
+def post_cash_flow(
     req: CashFlowRequest,
     auth: AuthContext = Depends(verify_api_key),
     settings: Settings = Depends(get_settings),

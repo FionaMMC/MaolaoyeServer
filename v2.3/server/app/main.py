@@ -16,6 +16,8 @@ from app.api import (
     admin_query,
     account_initialization,
     cash_flow,
+    strategy_capital,
+    account_cash_observation,
     dashboard,
     health,
     hydra_relay,
@@ -169,6 +171,8 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
     app.include_router(orders.router, tags=["orders"])
     app.include_router(trade_result.router, tags=["trade-result"])
     app.include_router(cash_flow.router, tags=["cash-flow"])
+    app.include_router(strategy_capital.router, tags=["strategy-capital"])
+    app.include_router(account_cash_observation.router, tags=["account-cash-observations"])
     app.include_router(account_initialization.router, tags=["account-initialization"])
     app.include_router(hydra_relay.router, tags=["hydra-relay"])
     app.include_router(live_trigger.router, tags=["hydra-live-trigger"])

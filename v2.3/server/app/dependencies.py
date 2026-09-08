@@ -68,8 +68,13 @@ def get_orders_queue_service(
 
 def get_cash_flow_service(
     sf: sessionmaker = Depends(get_session_factory),
+    settings: Settings = Depends(get_settings),
 ) -> CashFlowService:
-    return CashFlowService(session_factory=sf)
+    return CashFlowService(
+        session_factory=sf,
+        commission_rate=settings.stock_commission_rate,
+        min_commission=settings.stock_min_commission,
+    )
 
 
 def get_account_initialization_service(

@@ -59,6 +59,7 @@ if ([string]::IsNullOrWhiteSpace($requiredPython) -or -not (Test-Path -LiteralPa
 }
 $pythonExe = $requiredPython
 $today = Get-Date -Format "yyyyMMdd"
+$operationPending = $false
 try {
     switch ($Stage) {
         "cancel-open" {
@@ -69,7 +70,8 @@ try {
         }
         "settle-close" {
             $output = @(& $runner -Command settle-close -Date $today -PythonExe $pythonExe 2>&1) | Out-String
-            if ($output -notmatch '"status"\s*:\s*"(ATTEMPT_CLOSED|NO_ORDERS)"') { throw "settle-close returned no terminal receipt" }
+            $operationPending = $output -match '"status"\s*:\s*"WAITING_FOR_BROKER"'
+            if (-not $operationPending -and $output -notmatch '"status"\s*:\s*"(ATTEMPT_CLOSED|NO_ORDERS)"') { throw "settle-close returned no recognized receipt" }
         }
         "market-backup" {
             if ([string]::IsNullOrWhiteSpace($env:HYDRA_LIVE_DATA_BACKUP_API_KEY)) { throw "HYDRA_LIVE_DATA_BACKUP_API_KEY is not configured" }
@@ -100,8 +102,12 @@ try {
             }
         }
     }
-    Add-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) $Stage succeeded`n$output"
-    if ($Stage -eq "cancel-open") {
+    $operationState = if ($operationPending) { "pending broker evidence" } else { "succeeded" }
+    Add-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) $Stage $operationState`n$output"
+    if ($operationPending) {
+        Send-WeComNotification "[Hydra live] $Stage recorded available facts for $today; some orders still need broker confirmation. No final Close or residual orders were created. Review the pending-order report before the next execution cycle." $true
+    }
+    elseif ($Stage -eq "cancel-open") {
         Send-WeComNotification "[Hydra live] cancel-open request phase completed for $today; final broker status remains pending until the 16:05 settlement task."
     }
     else {

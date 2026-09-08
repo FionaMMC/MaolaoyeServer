@@ -7,6 +7,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 from live_client.core import ValidatedBatch
@@ -86,6 +87,11 @@ class LiveStateStore:
                     payload_json TEXT NOT NULL,
                     recorded_at TEXT NOT NULL,
                     PRIMARY KEY (phase, trade_date)
+                );
+                CREATE TABLE IF NOT EXISTS confirmed_sell_fills (
+                    order_id TEXT PRIMARY KEY,
+                    filled_quantity INTEGER NOT NULL,
+                    gross_amount TEXT NOT NULL
                 );
             """)
             columns = {
@@ -293,11 +299,51 @@ class LiveStateStore:
             changed = conn.execute(
                 """UPDATE submissions
                    SET submit_status = 'SUBMITTING_UNKNOWN', submitted_at = ?
-                   WHERE order_id = ? AND submit_status = 'PREPARED'""",
+                   WHERE order_id = ? AND submit_status IN ('PREPARED', 'DEFERRED_CASH')""",
                 (_now_iso(), order_id),
             ).rowcount
             conn.commit()
         return changed == 1
+
+    def defer_for_cash(self, order_id: str, readiness: dict) -> None:
+        """Record a resumable order for which the broker was never called."""
+        body = json.dumps(readiness, sort_keys=True, separators=(",", ":"))
+        with self._connect() as conn:
+            changed = conn.execute(
+                """UPDATE submissions SET submit_status = 'DEFERRED_CASH', detail = ?
+                   WHERE order_id = ? AND submit_status IN ('PREPARED', 'DEFERRED_CASH')""",
+                (body, order_id),
+            ).rowcount
+            if changed != 1:
+                raise RuntimeError("只能将尚未调用 QMT 的订单放入等资金队列")
+
+    def close_deferred(self, trade_date: str) -> None:
+        """Explicit workflow close ends only definitely-not-submitted orders."""
+        batch = self.load_batch(trade_date)
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE submissions SET submit_status = 'NOT_SUBMITTED'
+                   WHERE batch_sha256 = ? AND submit_status = 'DEFERRED_CASH'""",
+                (batch["batch_sha256"],),
+            )
+
+    def observe_sell_fills(self, fills: dict[str, dict]) -> None:
+        """Reject regressing cumulative broker evidence, including on restart."""
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for order_id, fill in fills.items():
+                quantity = int(fill["filled_quantity"])
+                gross = Decimal(str(fill["filled_price"])) * quantity
+                previous = conn.execute(
+                    "SELECT filled_quantity, gross_amount FROM confirmed_sell_fills WHERE order_id = ?",
+                    (order_id,),
+                ).fetchone()
+                if previous and (quantity < previous[0] or gross < Decimal(previous[1])):
+                    raise RuntimeError("QMT 累计卖出成交证据倒退，等待核实后继续买入")
+                conn.execute(
+                    "INSERT OR REPLACE INTO confirmed_sell_fills VALUES (?, ?, ?)",
+                    (order_id, quantity, str(gross)),
+                )
 
     def complete_submission(
         self, order_id: str, local_order_id: str | None, status: str,
@@ -325,7 +371,7 @@ class LiveStateStore:
                 if not same:
                     raise RuntimeError(f"order_id 已有不同提交终态: {order_id}")
                 return False
-            if row["submit_status"] not in {"PREPARED", "SUBMITTING_UNKNOWN"}:
+            if row["submit_status"] not in {"PREPARED", "DEFERRED_CASH", "SUBMITTING_UNKNOWN"}:
                 raise RuntimeError(
                     f"order_id 本地提交状态不可完成: {order_id} {row['submit_status']}"
                 )

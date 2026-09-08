@@ -45,9 +45,9 @@ class LiveServerClient:
         body = response.json()
         if body.get("code") != 0:
             raise RuntimeError(f"POST /trade-result 失败: {body}")
-        unmatched = body.get("data", {}).get("unmatched_order_ids") or []
-        if unmatched:
-            raise RuntimeError(f"成交回报存在 unmatched order_id: {unmatched}")
+        # Partial ingestion is a business result, not a transport failure. The
+        # caller keeps unmatched/conflicting IDs pending and must not finalize
+        # the attempt; accepted facts must remain observable to that caller.
         return body["data"]
 
     def initialize_account(self, payload: dict) -> dict:

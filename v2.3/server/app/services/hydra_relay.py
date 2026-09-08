@@ -31,6 +31,10 @@ from app.schemas.hydra_relay import (
 from app.services.hydra_data import HydraDataStore
 from app.services.blacklist import BlacklistService
 from app.services.reconcile import ReconcileService
+from app.services.ledger_transaction import begin_ledger_transaction
+from app.services.hydra_closure import (
+    TERMINAL_ORDER_STATUSES, close_execution_window, unresolved_orders,
+)
 
 
 def _now_iso() -> str:
@@ -181,6 +185,7 @@ class HydraRelayService:
         prices = raw_as_of.set_index("symbol")["close"].astype(float).to_dict()
 
         with self.session_factory() as session:
+            begin_ledger_transaction(session, req.execution_domain, req.account_alias)
             existing_target = session.execute(
                 select(HydraTarget).where(
                     HydraTarget.execution_domain == req.execution_domain,
@@ -340,6 +345,7 @@ class HydraRelayService:
                 "retry execution raw 必须来自 trade_date 之前的已冻结数据",
             )
         with self.session_factory() as session:
+            begin_ledger_transaction(session, req.execution_domain, req.account_alias)
             rebalance = session.get(HydraRebalance, req.rebalance_id)
             if (
                 rebalance is None
@@ -408,9 +414,9 @@ class HydraRelayService:
     def close_attempt(
         self, req: HydraAttemptCloseRequest,
     ) -> HydraAttemptCloseResponseData:
-        if req.execution_domain == "live":
-            self._gate_live()
+        # Stopping NEW orders must never stop closure or ingestion of facts.
         with self.session_factory() as session:
+            begin_ledger_transaction(session, req.execution_domain, req.account_alias)
             attempt = session.get(HydraExecutionAttempt, req.attempt_id)
             if (
                 attempt is None
@@ -418,6 +424,9 @@ class HydraRelayService:
                 or attempt.account_alias != req.account_alias
             ):
                 raise APIError(ErrorCode.BAD_REQUEST, "attempt 不存在或跨域", http_status=404)
+            if req.close_mode == "execution_deadline":
+                rebalance = session.get(HydraRebalance, attempt.rebalance_id)
+                return close_execution_window(session, attempt, rebalance, req)
             if attempt.status in {"COMPLETE", "RESIDUAL"}:
                 if attempt.posttrade_reconciliation_sha256 != req.reconciliation_evidence_sha256:
                     raise APIError(
@@ -433,6 +442,7 @@ class HydraRelayService:
                     execution_domain=req.execution_domain,
                     status=attempt.status,
                     residual_after=dict(attempt.residual_after or {}),
+                    retry_ready=attempt.status == "RESIDUAL",
                 )
             self._assert_rebalance_has_no_unresolved(session, attempt.rebalance_id)
             rebalance = session.get(HydraRebalance, attempt.rebalance_id)
@@ -503,6 +513,7 @@ class HydraRelayService:
                 execution_domain=req.execution_domain,
                 status=status,
                 residual_after=residual,
+                retry_ready=status == "RESIDUAL",
             )
 
     def _create_attempt(
@@ -821,7 +832,7 @@ class HydraRelayService:
             .join(RawSignal, RawSignal.signal_id == OrderSignalMap.signal_id)
             .where(RawSignal.instance_id == instance_id)
             .where(Order.execution_domain == domain)
-            .where(Order.status.in_(("PENDING", "PARTIAL")))
+            .where(Order.status.not_in(TERMINAL_ORDER_STATUSES))
             .limit(1)
         ).first()
         if unresolved:
@@ -829,12 +840,7 @@ class HydraRelayService:
 
     @staticmethod
     def _assert_rebalance_has_no_unresolved(session, rebalance_id: str) -> None:
-        unresolved = session.execute(
-            select(Order.order_id)
-            .where(Order.rebalance_id == rebalance_id)
-            .where(Order.status.in_(("PENDING", "PARTIAL")))
-            .limit(1)
-        ).first()
+        unresolved = unresolved_orders(session, rebalance_id)
         if unresolved:
             raise APIError(ErrorCode.BAD_REQUEST, "前一 attempt 尚有未决订单", http_status=409)
 

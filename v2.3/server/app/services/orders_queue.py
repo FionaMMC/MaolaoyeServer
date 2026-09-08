@@ -6,7 +6,7 @@ from typing import Iterable
 
 from sqlalchemy import case, select
 
-from app.models import Order, OrderSignalMap
+from app.models import HydraExecutionAttempt, Order, OrderSignalMap
 from app.schemas.orders import OrderItem
 from app.services.aggregate import AggregatedOrder, OrderSignalMapping
 
@@ -66,6 +66,16 @@ class OrdersQueueService:
                 .where(Order.valid_date == valid_date)
                 .where(Order.execution_domain == execution_domain)
                 .where(Order.status == "PENDING")
+                .where(
+                    Order.attempt_id.is_(None)
+                    | Order.attempt_id.not_in(
+                        select(HydraExecutionAttempt.attempt_id).where(
+                            HydraExecutionAttempt.status.in_((
+                                "CLOSED_PENDING_BROKER", "CLOSED_PENDING_RECONCILIATION",
+                            )),
+                        ),
+                    ),
+                )
                 .order_by(
                     case((Order.direction == "SELL", 0), else_=1),
                     Order.created_at,

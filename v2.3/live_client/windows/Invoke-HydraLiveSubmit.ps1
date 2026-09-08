@@ -51,8 +51,14 @@ try {
     # client re-hashes the frozen batch and requires last night's PASS receipt.
     $submitLines = @(& $runner -Command submit -Date $TradeDate -PythonExe $pythonExe 2>&1)
     $submitOutput = $submitLines | Out-String
-    Add-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) submit succeeded`n$submitOutput"
-    Send-WeComNotification "[Hydra live] $TradeDate submit completed; review the 14:55 cancel request and 16:05 final settlement notifications."
+    Add-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) submit queue pass returned`n$submitOutput"
+    if ($submitOutput -match '"status"\s*:\s*"WAITING_FOR_CASH"') {
+        Send-WeComNotification "[Hydra live] $TradeDate sell-first queue is waiting for confirmed funds. Cash-constrained buys were NOT submitted. Resume the same approved queue within its execution window; do not create duplicate orders."
+    } elseif ($submitOutput -match '"status"\s*:\s*"EXECUTION_WINDOW_CLOSED"') {
+        Send-WeComNotification "[Hydra live] $TradeDate execution window is already closed; no new broker submission was attempted. Existing broker orders still require reconciliation."
+    } else {
+        Send-WeComNotification "[Hydra live] $TradeDate submit completed; review the 14:55 cancel request and 16:05 final settlement notifications."
+    }
 } catch {
     $message = "$phase failed: $($_.Exception.Message)"
     Add-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) $message"

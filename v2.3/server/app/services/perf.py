@@ -5,7 +5,7 @@ import logging
 
 from sqlalchemy import select
 
-from app.models import InstanceState, PerfSnapshot
+from app.models import CashFlowJournal, InstanceState, PerfSnapshot
 from app.storage.parquet import ParquetStore
 
 logger = logging.getLogger(__name__)
@@ -93,7 +93,12 @@ class PerfService:
         today_nav: float,
         execution_domain: str = "paper",
     ) -> float | None:
-        """跟昨日（数据库里上一条快照）算日收益率。无昨日返回 None。"""
+        """End-of-period-flow-adjusted return since the preceding snapshot.
+
+        Capital movements and external deposits/withdrawals are not performance.
+        Dividends remain investment income. This compatibility calculation
+        assumes flows occur at period end; it is not intraday time-weighted NAV.
+        """
         prev = session.execute(
             select(PerfSnapshot)
             .where(PerfSnapshot.instance_id == instance_id)
@@ -104,4 +109,15 @@ class PerfService:
         ).scalar_one_or_none()
         if prev is None or prev.nav == 0:
             return None
-        return round((today_nav - prev.nav) / prev.nav, 6)
+        flows = session.execute(select(CashFlowJournal.amount).where(
+            CashFlowJournal.instance_id == instance_id,
+            CashFlowJournal.execution_domain == execution_domain,
+            CashFlowJournal.status == "APPLIED",
+            CashFlowJournal.event_type.in_((
+                "DEPOSIT", "WITHDRAWAL", "CAPITAL_ALLOCATION", "CAPITAL_DEALLOCATION",
+            )),
+            CashFlowJournal.event_date > prev.date,
+            CashFlowJournal.event_date <= date_str,
+        )).scalars().all()
+        net_external_flow = sum(float(amount) for amount in flows)
+        return round((today_nav - prev.nav - net_external_flow) / prev.nav, 6)

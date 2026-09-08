@@ -7,7 +7,7 @@ import json
 import logging
 import os
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
@@ -18,6 +18,7 @@ from live_client.core import (
     validate_order_batch,
 )
 from live_client.gateway import MockQMTGateway, XtQMTGateway, live_order_remark
+from live_client.execution_queue import account_submission_lock, cash_readiness
 from live_client.http_client import LiveServerClient
 from live_client.state import LiveStateStore
 
@@ -160,7 +161,14 @@ def preflight(
 
 def submit(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> dict:
     cfg.require_submission_enabled()
+    with account_submission_lock(cfg.userdata_dir, cfg.expected_account_sha256):
+        return _submit_locked(cfg, trade_date, mock_state)
+
+
+def _submit_locked(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> dict:
     state = LiveStateStore(cfg.state_db)
+    if state.workflow_receipt("close-window-intent", trade_date) is not None:
+        return {"status": "EXECUTION_WINDOW_CLOSED", "trade_date": trade_date}
     # The batch was independently hashed and frozen during query.  Re-validate
     # the local bytes, but make no server call in the trading-critical path.
     frozen_batch = _load_frozen_batch(cfg, trade_date, state)
@@ -189,13 +197,25 @@ def submit(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> d
             row["order_id"]: row
             for row in state.submissions_for_date(trade_date)
         }
+        initial_risk = state.risk_check(frozen_batch.batch_sha256)
+        cost_policy = (initial_risk or {}).get("execution_cost_policy") or (
+            preflight_receipt["payload"].get("risk", {}).get("execution_cost_policy")
+        ) or {
+            "execution_cost_reserve_bps": cfg.execution_cost_reserve_bps,
+            "execution_min_commission": cfg.execution_min_commission,
+        }
+        execution_cfg = replace(
+            cfg,
+            execution_cost_reserve_bps=float(cost_policy["execution_cost_reserve_bps"]),
+            execution_min_commission=float(cost_policy["execution_min_commission"]),
+        )
         if existing_rows:
-            if state.risk_check(frozen_batch.batch_sha256) is None:
+            if initial_risk is None:
                 raise RuntimeError("本地已有提交意图但缺少初始风控快照")
             remaining_orders = tuple(
                 order for order in frozen_batch.orders
                 if existing_rows.get(order["order_id"], {}).get("submit_status")
-                in {None, "PREPARED"}
+                in {None, "PREPARED", "DEFERRED_CASH"}
             )
             capacity_batch = replace(frozen_batch, orders=remaining_orders)
         else:
@@ -219,15 +239,17 @@ def submit(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> d
                         "managed_sellable_positions"
                     ].items()
                 },
-                cfg,
+                execution_cfg,
                 float(frozen_risk["qmt_total_asset"]),
+                enforce_projected_cash=False,
             )
             physical_risk = validate_account_capacity(
                 capacity_batch,
                 snapshot.available_cash,
                 snapshot.sellable_positions,
-                cfg,
+                execution_cfg,
                 snapshot.total_asset,
+                enforce_projected_cash=False,
             )
             risk_snapshot = {
                 "capacity_scope": "attributed",
@@ -239,13 +261,32 @@ def submit(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> d
                 capacity_batch,
                 snapshot.available_cash,
                 snapshot.sellable_positions,
-                cfg,
+                execution_cfg,
                 snapshot.total_asset,
+                enforce_projected_cash=False,
             )
-        if not existing_rows:
+        if initial_risk is None:
+            risk_snapshot["execution_cost_policy"] = cost_policy
+            risk_snapshot["execution_queue_initial_cash"] = (
+                float(frozen_reconciliation["managed_cash"])
+                if cfg.ledger_mode == "attributed" else snapshot.available_cash
+            )
             state.record_risk_check(frozen_batch.batch_sha256, risk_snapshot)
+            initial_risk = risk_snapshot
+        initial_owned_cash = initial_risk.get("execution_queue_initial_cash")
+        if initial_owned_cash is None:
+            # Compatibility with pre-queue evidence, never with fresh total
+            # account cash after part of a batch has already been submitted.
+            initial_owned_cash = (
+                float(frozen_reconciliation["managed_cash"])
+                if cfg.ledger_mode == "attributed"
+                else initial_risk["qmt_available_cash"]
+            )
         submitted = rejected = submitted_now = 0
         attempted_now = recovered = already_recorded = 0
+        deferred = []
+        physical_queue_cash = None
+        observed_sell_proceeds = 0.0
         for order in sorted(
             frozen_batch.orders,
             key=lambda item: (item["direction"] != "SELL", item["symbol"]),
@@ -254,11 +295,11 @@ def submit(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> d
             local = state.prepare_submission(
                 order["order_id"], frozen_batch.batch_sha256, remark,
             )
-            if local["submit_status"] in {"SUBMITTED", "REJECTED"}:
+            if local["submit_status"] in {"SUBMITTED", "REJECTED", "NOT_SUBMITTED"}:
                 already_recorded += 1
                 if local["submit_status"] == "SUBMITTED":
                     submitted += 1
-                else:
+                elif local["submit_status"] == "REJECTED":
                     rejected += 1
                 continue
 
@@ -277,11 +318,55 @@ def submit(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> d
                     f"order_id {order['order_id']} 曾进入 QMT 调用但未找到确定回报；"
                     "为防重复下单，禁止自动重试，请按 remark 核对券商委托"
                 )
-            if local["submit_status"] != "PREPARED":
+            if local["submit_status"] not in {"PREPARED", "DEFERRED_CASH"}:
                 raise RuntimeError(
                     f"order_id 本地提交状态非法: {order['order_id']} "
                     f"{local['submit_status']}"
                 )
+            if order["direction"] == "BUY":
+                current_rows = state.submissions_for_date(trade_date)
+                sell_rows = [row for row in current_rows if (
+                    row["direction"] == "SELL" and row["submit_status"] == "SUBMITTED"
+                )]
+                confirmed_fills = (
+                    gateway.confirmed_sell_fills(sell_rows) if sell_rows else {}
+                )
+                state.observe_sell_fills(confirmed_fills)
+                current = gateway.account_snapshot()
+                if current.account_id != cfg.account_id:
+                    raise RuntimeError("QMT account_id 二次校验失败")
+                readiness = cash_readiness(
+                    order, initial_owned_cash=initial_owned_cash,
+                    qmt_available_cash=current.available_cash,
+                    submissions=current_rows, confirmed_sell_fills=confirmed_fills,
+                    reserve_bps=execution_cfg.execution_cost_reserve_bps,
+                    min_commission=execution_cfg.execution_min_commission,
+                )
+                if physical_queue_cash is None:
+                    physical_queue_cash = current.available_cash
+                else:
+                    physical_queue_cash += max(
+                        0.0,
+                        readiness["confirmed_sell_proceeds"] - observed_sell_proceeds,
+                    )
+                observed_sell_proceeds = readiness["confirmed_sell_proceeds"]
+                # A lagging QMT asset snapshot must not make the same physical
+                # cash available twice within this queue pass. New external
+                # inflows/unfreezes can be picked up on the next explicit pass.
+                readiness = cash_readiness(
+                    order, initial_owned_cash=initial_owned_cash,
+                    qmt_available_cash=max(0.0, min(
+                        current.available_cash, physical_queue_cash,
+                    )),
+                    submissions=current_rows, confirmed_sell_fills=confirmed_fills,
+                    reserve_bps=execution_cfg.execution_cost_reserve_bps,
+                    min_commission=execution_cfg.execution_min_commission,
+                )
+                readiness["physical_qmt_available_cash"] = current.available_cash
+                if not readiness["ready"]:
+                    state.defer_for_cash(order["order_id"], readiness)
+                    deferred.append({"order_id": order["order_id"], **readiness})
+                    continue
             if not state.claim_submission(order["order_id"]):
                 raise RuntimeError(
                     f"order_id {order['order_id']} 已被另一进程认领，拒绝并发下单"
@@ -298,9 +383,11 @@ def submit(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> d
             if result.status == "SUBMITTED":
                 submitted += 1
                 submitted_now += 1
+                if order["direction"] == "BUY":
+                    physical_queue_cash -= readiness["required_cash"]
             else:
                 rejected += 1
-        return {
+        result = {
             "trade_date": trade_date,
             "batch_sha256": frozen_batch.batch_sha256,
             "submitted": submitted,
@@ -310,29 +397,54 @@ def submit(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> d
             "recovered": recovered,
             "already_recorded": already_recorded,
         }
+        if deferred:
+            result.update(status="WAITING_FOR_CASH", deferred_cash=deferred)
+        return result
     finally:
         gateway.close()
 
 
-def settle(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> dict:
+def settle(
+    cfg: LiveClientConfig, trade_date: str, mock_state: Path | None,
+    *, close_deferred: bool = False,
+) -> dict:
     state = LiveStateStore(cfg.state_db)
+    if close_deferred:
+        # settle-close is the explicit end of this execution workflow. Unlike a
+        # broker rejection, this proves these orders never entered order_stock.
+        with account_submission_lock(cfg.userdata_dir, cfg.expected_account_sha256):
+            state.close_deferred(trade_date)
     submissions = state.submissions_for_date(trade_date)
     submitted = [row for row in submissions if row["submit_status"] == "SUBMITTED"]
     rejected = [row for row in submissions if row["submit_status"] == "REJECTED"]
+    not_submitted = [row for row in submissions if row["submit_status"] == "NOT_SUBMITTED"]
     unresolved = [
         row for row in submissions
         if row["submit_status"] in {"PREPARED", "SUBMITTING_UNKNOWN"}
     ]
-    if unresolved:
-        raise RuntimeError("本地仍有提交状态不确定的订单，拒绝结算")
-    if not submitted and not rejected:
+    if not submissions:
         raise RuntimeError("本地没有可结算的订单")
     results = []
+    pending = [row["order_id"] for row in unresolved]
+    pending.extend(row["order_id"] for row in submissions if row["submit_status"] == "DEFERRED_CASH")
+    issues = [{"order_id": row["order_id"], "reason": "本地提交状态待核实"} for row in unresolved]
     if submitted:
         gateway = _gateway(cfg, mock_state)
-        gateway.connect()
         try:
-            results.extend(gateway.settlement_results(submitted))
+            gateway.connect()
+            # Legacy/mock adapters retain the list contract. The real adapter
+            # now reports independently validated open-order fills as well.
+            observation_method = getattr(gateway, "settlement_observations", None)
+            if observation_method is None:
+                results.extend(gateway.settlement_results(submitted))
+            else:
+                observations = observation_method(submitted)
+                results.extend(observations["results"])
+                pending.extend(observations["pending_order_ids"])
+                issues.extend(observations["issues"])
+        except RuntimeError as exc:
+            pending.extend(row["order_id"] for row in submitted)
+            issues.append({"reason": str(exc)})
         finally:
             gateway.close()
     results.extend({
@@ -344,12 +456,29 @@ def settle(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> d
         "direction": row["direction"],
         **dict(row.get("execution_meta") or {}),
     } for row in rejected)
-    data = LiveServerClient(
-        cfg.server_base_url, cfg.api_key, execution_domain=cfg.execution_domain,
-    ).push_trade_results(
-        trade_date, results,
-    )
-    return {"trade_date": trade_date, "results": len(results), "server": data}
+    results.extend({
+        "order_id": row["order_id"],
+        "filled_quantity": 0,
+        "filled_price": 0.0,
+        "status": "NOT_SUBMITTED",
+        "symbol": row["symbol"],
+        "direction": row["direction"],
+        "not_submitted_reason": "INSUFFICIENT_CASH",
+    } for row in not_submitted)
+    data = None
+    if results:
+        data = LiveServerClient(
+            cfg.server_base_url, cfg.api_key, execution_domain=cfg.execution_domain,
+        ).push_trade_results(trade_date, results)
+        # An accepted HTTP response with unmatched facts is not a completed
+        # settlement; keep the missing ownership link visible to the caller.
+        pending.extend(data.get("unmatched_order_ids", []))
+        pending.extend(data.get("rejected_observations", {}).keys())
+    return {
+        "trade_date": trade_date, "results": len(results), "server": data,
+        "pending_order_ids": sorted(set(pending)), "issues": issues,
+        "status": "FACTS_RECORDED_PENDING" if pending else "FACTS_RECORDED",
+    }
 
 
 def _write_cancel_evidence(
@@ -440,6 +569,77 @@ def _batch_attempt_id(batch) -> str:
     return next(iter(attempt_ids))
 
 
+def close_execution_window(
+    cfg: LiveClientConfig, trade_date: str, execution_deadline_at: str,
+) -> dict:
+    """End the local execution window without requiring a broker response.
+
+    This is a workflow fact, never a claim that open broker orders are cancelled
+    or that their funds/positions are available to another attempt.
+    """
+    deadline = datetime.fromisoformat(execution_deadline_at)
+    if deadline.utcoffset() is None:
+        raise ValueError("execution-deadline-at 必须带时区")
+    if deadline.astimezone(timezone(timedelta(hours=8))).strftime("%Y%m%d") != trade_date:
+        raise ValueError("execution-deadline-at 必须属于该订单的中国交易日")
+    if deadline > datetime.now(timezone.utc):
+        raise ValueError("尚未到 execution-deadline-at，不能提前关闭执行窗口")
+    state = LiveStateStore(cfg.state_db)
+    batch = validate_frozen_batch(
+        state.load_batch(trade_date), trade_date, cfg,
+        enforce_execution_policy=False,
+    )
+    attempt_id = _batch_attempt_id(batch)
+    intent = {
+        "trade_date": trade_date,
+        "batch_sha256": batch.batch_sha256,
+        "attempt_id": attempt_id,
+        "target_id": batch.orders[0]["target_id"],
+        "rebalance_id": batch.rebalance_id,
+        "account_alias": cfg.account_alias,
+        "account_fingerprint": cfg.expected_account_sha256,
+        "execution_domain": cfg.execution_domain,
+        "close_mode": "execution_deadline",
+        "execution_deadline_at": deadline.isoformat(),
+    }
+    with account_submission_lock(cfg.userdata_dir, cfg.expected_account_sha256):
+        # If HTTP fails, the local window stays closed. Repeating this command
+        # resends the same idempotent intent, not any broker order.
+        intent_sha256 = state.record_workflow_receipt(
+            "close-window-intent", trade_date, intent,
+        )
+        state.close_deferred(trade_date)
+        existing = state.workflow_receipt("close-window", trade_date)
+        if existing is not None:
+            return existing["payload"]
+    closed = LiveServerClient(
+        cfg.server_base_url, cfg.api_key, execution_domain=cfg.execution_domain,
+    ).close_attempt({
+        "execution_domain": cfg.execution_domain,
+        "account_alias": cfg.account_alias,
+        "attempt_id": attempt_id,
+        "close_mode": "execution_deadline",
+        "execution_deadline_at": deadline.isoformat(),
+        "reconciliation_evidence_sha256": intent_sha256,
+    })
+    if any(closed.get(key) != intent[key] for key in (
+        "attempt_id", "target_id", "rebalance_id", "execution_domain",
+    )):
+        raise RuntimeError("Close-window 回执与本地冻结批次不一致")
+    if closed.get("status") not in {
+        "CLOSED_PENDING_BROKER", "CLOSED_PENDING_RECONCILIATION", "COMPLETE", "RESIDUAL",
+    }:
+        raise RuntimeError("Close-window 回执状态非法")
+    receipt = {
+        **intent,
+        "workflow_intent_sha256": intent_sha256,
+        "status": closed["status"],
+        "close": closed,
+    }
+    state.record_workflow_receipt("close-window", trade_date, receipt)
+    return receipt
+
+
 def _write_reconciliation_evidence(
     cfg: LiveClientConfig, trade_date: str, attempt_id: str, snapshot,
 ) -> tuple[str, Path]:
@@ -474,7 +674,9 @@ def settle_and_close(
     state = LiveStateStore(cfg.state_db)
     if not state.has_batch(trade_date):
         return {"status": "NO_ORDERS", "trade_date": trade_date}
-    settlement = settle(cfg, trade_date, mock_state)
+    settlement = settle(cfg, trade_date, mock_state, close_deferred=True)
+    if settlement["pending_order_ids"]:
+        return {"status": "WAITING_FOR_BROKER", "settlement": settlement}
     batch = _load_frozen_batch(cfg, trade_date, state)
     attempt_id = _batch_attempt_id(batch)
     gateway = _gateway(cfg, mock_state)
@@ -802,6 +1004,9 @@ def main() -> None:
     retry.add_argument("--date", required=True)
     retry.add_argument("--next-date", required=True)
     retry.add_argument("--mock-state", type=Path)
+    close_window = sub.add_parser("close-window")
+    close_window.add_argument("--date", required=True)
+    close_window.add_argument("--execution-deadline-at", required=True)
     sub.add_parser("doctor")
     sub.add_parser("ledger")
     initialize = sub.add_parser("initialize-account")
@@ -851,6 +1056,8 @@ def main() -> None:
             result = stage_residual_retry(
                 cfg, args.date, args.next_date, args.mock_state,
             )
+        elif args.command == "close-window":
+            result = close_execution_window(cfg, args.date, args.execution_deadline_at)
         elif args.command == "initialize-account":
             result = initialize_account(cfg, args.evidence_sha256, args.mock_state)
         elif args.command == "cash-flow":

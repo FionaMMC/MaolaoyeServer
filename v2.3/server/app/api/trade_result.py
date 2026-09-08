@@ -17,7 +17,7 @@ router = APIRouter()
     "/trade-result",
     response_model=APIResponse[TradeResultResponseData],
 )
-async def push_trade_result(
+def push_trade_result(
     req: TradeResultRequest,
     auth: AuthContext = Depends(verify_api_key),
     service: SettlementService = Depends(get_settlement_service),

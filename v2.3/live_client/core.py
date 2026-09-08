@@ -5,8 +5,10 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass
+from decimal import Decimal
 
 from live_client.config import LiveClientConfig
+from live_client.execution_queue import buy_reservation_cents, fee_reserve
 
 
 @dataclass(frozen=True)
@@ -33,8 +35,9 @@ class ValidatedBatch:
 
 def validate_order_batch(
     orders: list[dict], trade_date: str, cfg: LiveClientConfig,
+    *, enforce_execution_policy: bool = True,
 ) -> ValidatedBatch:
-    if cfg.risk_mode == "disabled":
+    if enforce_execution_policy and cfg.risk_mode == "disabled":
         raise ValueError("client 风控模式 disabled，拒绝接收 live 批次")
     if not orders:
         raise ValueError("订单批次为空")
@@ -61,7 +64,7 @@ def validate_order_batch(
             raise ValueError("订单批次含重复 order_id")
         seen_order_ids.add(order.get("order_id"))
         symbol = order.get("symbol")
-        if symbol not in cfg.allowed_symbols:
+        if enforce_execution_policy and symbol not in cfg.allowed_symbols:
             raise ValueError(f"订单标的超出 client ETF 白名单: {symbol}")
         direction = order.get("direction")
         if direction not in {"BUY", "SELL"}:
@@ -76,11 +79,11 @@ def validate_order_batch(
         if not all(math.isfinite(value) and value > 0 for value in (reference, limit)):
             raise ValueError("订单原价参考/限价非法")
         offset_bps = abs(limit / reference - 1) * 10_000
-        if offset_bps > cfg.effective_price_offset_bps + 0.01:
+        if enforce_execution_policy and offset_bps > cfg.effective_price_offset_bps + 0.01:
             raise ValueError("订单限价偏离超过 client 上限")
         notional = quantity * limit
         if (
-            cfg.risk_mode == "static"
+            enforce_execution_policy and cfg.risk_mode == "static"
             and notional > cfg.max_single_order_notional
         ):
             raise ValueError("订单单笔金额超过 client 上限")
@@ -99,9 +102,9 @@ def validate_order_batch(
         cfg.auto_max_daily_orders
         if cfg.risk_mode == "auto" else cfg.max_daily_orders
     )
-    if len(orders) > order_cap:
+    if enforce_execution_policy and len(orders) > order_cap:
         raise ValueError("订单数超过 client 日上限")
-    if cfg.risk_mode == "static":
+    if enforce_execution_policy and cfg.risk_mode == "static":
         if buy > cfg.max_daily_buy_notional:
             raise ValueError("买入金额超过 client 日上限")
         if sell > cfg.max_daily_sell_notional:
@@ -135,11 +138,15 @@ def validate_order_batch(
 
 def validate_frozen_batch(
     payload: dict, trade_date: str, cfg: LiveClientConfig,
+    *, enforce_execution_policy: bool = True,
 ) -> ValidatedBatch:
     """Re-validate an immutable locally stored batch without server access."""
     if not isinstance(payload, dict) or not isinstance(payload.get("orders"), list):
         raise ValueError("本地冻结批次格式非法")
-    batch = validate_order_batch(payload["orders"], trade_date, cfg)
+    batch = validate_order_batch(
+        payload["orders"], trade_date, cfg,
+        enforce_execution_policy=enforce_execution_policy,
+    )
     if payload != batch.as_payload():
         raise ValueError("本地冻结批次元数据或内容校验失败")
     return batch
@@ -147,8 +154,14 @@ def validate_frozen_batch(
 
 def validate_account_capacity(
     batch: ValidatedBatch, cash: float, positions: dict[str, int],
-    cfg: LiveClientConfig, total_asset: float,
+    cfg: LiveClientConfig, total_asset: float, *, enforce_projected_cash: bool = True,
 ) -> dict:
+    """Validate plan feasibility, not whether an unfilled sell funds a buy now.
+
+    At execution time cash is checked for each buy against fresh broker cash
+    and confirmed strategy proceeds. A temporary shortage must not prevent the
+    preceding, already-approved sell leg from being submitted.
+    """
     available_cash = float(cash)
     nav = float(total_asset)
     if not math.isfinite(available_cash) or available_cash < 0:
@@ -157,6 +170,7 @@ def validate_account_capacity(
         raise ValueError("QMT 总资产非法")
     holdings = {code: int(qty) for code, qty in positions.items()}
     buy = sell = 0.0
+    estimated_sell_fees = estimated_buy_fees = 0.0
     single_notionals = []
     for order in sorted(batch.orders, key=lambda item: item["direction"] != "SELL"):
         symbol = order["symbol"]
@@ -167,12 +181,20 @@ def validate_account_capacity(
             if holdings.get(symbol, 0) < qty:
                 raise ValueError(f"QMT 可卖持仓不足: {symbol}")
             holdings[symbol] = holdings.get(symbol, 0) - qty
-            available_cash += notional * 0.999
+            estimated_fee = float(fee_reserve(
+                Decimal(str(notional)), reserve_bps=cfg.execution_cost_reserve_bps,
+                min_commission=cfg.execution_min_commission,
+            ))
+            estimated_sell_fees += estimated_fee
+            available_cash += notional - estimated_fee
             sell += notional
         else:
-            # 额外保留 0.1% 交易成本/价格误差缓冲。
-            required = notional * 1.001
-            if available_cash < required:
+            required = buy_reservation_cents(
+                order, reserve_bps=cfg.execution_cost_reserve_bps,
+                min_commission=cfg.execution_min_commission,
+            ) / 100
+            estimated_buy_fees += required - notional
+            if enforce_projected_cash and available_cash < required:
                 raise ValueError(f"QMT 可用资金不足: {symbol}")
             available_cash -= required
             buy += notional
@@ -187,7 +209,7 @@ def validate_account_capacity(
         effective = {
             "max_single_order_notional": round(max_single, 6),
             "max_daily_buy_notional": round(
-                (float(cash) + sell * 0.999) / 1.001, 6,
+                max(0, float(cash) + sell - estimated_sell_fees - estimated_buy_fees), 6,
             ),
             "max_daily_sell_notional": round(nav * multiplier, 6),
             "max_daily_turnover_notional": round(max_turnover, 6),
@@ -208,7 +230,7 @@ def validate_account_capacity(
         "sell_notional": round(sell, 6),
         "postcheck_available_cash": round(available_cash, 6),
         "cash_capacity_buy_notional": round(
-            (float(cash) + sell * 0.999) / 1.001, 6,
+            max(0, float(cash) + sell - estimated_sell_fees - estimated_buy_fees), 6,
         ),
         "max_daily_orders": (
             cfg.auto_max_daily_orders
@@ -216,5 +238,9 @@ def validate_account_capacity(
         ),
         "max_price_offset_bps": cfg.effective_price_offset_bps,
         "buffer_bps": cfg.auto_buffer_bps if cfg.risk_mode == "auto" else 0.0,
+        "execution_cost_policy": {
+            "execution_cost_reserve_bps": cfg.execution_cost_reserve_bps,
+            "execution_min_commission": cfg.execution_min_commission,
+        },
         **effective,
     }

@@ -97,6 +97,8 @@ class LiveClientConfig:
     # Same-machine is the conservative default.  A separate Windows host has
     # no shared QMT account/session/filesystem/Task Scheduler namespace.
     paper_client_colocated: bool = True
+    execution_cost_reserve_bps: float = 10.0
+    execution_min_commission: float = 5.0
 
     @classmethod
     def from_env(cls) -> "LiveClientConfig":
@@ -187,11 +189,21 @@ class LiveClientConfig:
             paper_client_colocated=_bool(
                 "HYDRA_LIVE_PAPER_CLIENT_COLOCATED", True,
             ),
+            execution_cost_reserve_bps=_nonnegative_float(
+                "HYDRA_LIVE_EXECUTION_COST_RESERVE_BPS", 10.0,
+            ),
+            execution_min_commission=_nonnegative_float(
+                "HYDRA_LIVE_EXECUTION_MIN_COMMISSION", 5.0,
+            ),
         )
         cfg.validate_startup()
         return cfg
 
     def validate_startup(self) -> None:
+        if any(not math.isfinite(value) or value < 0 for value in (
+            self.execution_cost_reserve_bps, self.execution_min_commission,
+        )):
+            raise ValueError("执行费用预留必须为非负有限数")
         if self.mode not in {"mock_qmt", "live"}:
             raise ValueError("HYDRA_LIVE_MODE 必须是 mock_qmt/live")
         if self.execution_domain not in {"paper", "live"}:
