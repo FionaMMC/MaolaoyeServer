@@ -20,7 +20,13 @@ from app.schemas.hydra_relay import (
 )
 
 # Unknown statuses are obligations, not implicit permission to reuse resources.
-TERMINAL_ORDER_STATUSES = frozenset({"FILLED", "CANCELLED", "REJECTED", "NOT_SUBMITTED"})
+TERMINAL_ORDER_STATUSES = frozenset({"FILLED", "CANCELLED", "REJECTED", "NOT_SUBMITTED", "EXPIRED_BY_POLICY"})
+
+
+def has_policy_expired_orders(session, rebalance_id: str) -> bool:
+    return session.execute(select(Order.order_id).where(
+        Order.rebalance_id == rebalance_id, Order.status == "EXPIRED_BY_POLICY",
+    ).limit(1)).first() is not None
 
 
 def unresolved_orders(session, rebalance_id: str) -> list[str]:
@@ -65,7 +71,8 @@ def close_execution_window(session, attempt, rebalance, req: HydraAttemptCloseRe
         execution_domain=req.execution_domain,
         status=status,
         residual_after=dict(attempt.residual_after or {}) if final else {},
-        broker_finalized=not unresolved,
+        broker_finalized=not unresolved and not has_policy_expired_orders(session, rebalance.rebalance_id),
+        effective_finalized=not unresolved,
         retry_ready=final and status == "RESIDUAL" and not unresolved,
         unresolved_order_ids=unresolved,
         # An account snapshot may include several owners. Do not label this as

@@ -23,11 +23,11 @@ from app.models.capital_movement_receipt import CapitalMovementReceipt
 from app.models.account_cash_observation import AccountCashObservation
 from app.schemas.strategy_capital import CapitalMovementRequest, CapitalMovementResponseData
 from app.services.ledger_transaction import begin_ledger_transaction
+from app.services.hydra_closure import TERMINAL_ORDER_STATUSES
 
 SOURCE = "strategy-capital-movement-v1"
-# Workflow expiry is deliberately absent. Only broker terminal states release
-# the remaining order obligation in this compatibility implementation.
-BROKER_TERMINAL = frozenset({"FILLED", "CANCELLED", "REJECTED", "NOT_SUBMITTED"})
+# Workflow-only closure is absent; approved effective order expiry is included.
+BROKER_TERMINAL = TERMINAL_ORDER_STATUSES
 
 
 def _cash(value) -> Decimal:

@@ -21,6 +21,7 @@ from live_client.gateway import MockQMTGateway, XtQMTGateway, live_order_remark
 from live_client.execution_queue import account_submission_lock, cash_readiness
 from live_client.http_client import LiveServerClient
 from live_client.state import LiveStateStore
+from live_client.qmt_day_order_policy import CHINA_TIMEZONE, EXPIRATION_POLICY_ID
 
 
 def _logger(cfg: LiveClientConfig) -> logging.Logger:
@@ -165,9 +166,43 @@ def submit(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> d
         return _submit_locked(cfg, trade_date, mock_state)
 
 
+def _policy_window_elapsed(trade_date: str) -> bool:
+    deadline = datetime.strptime(trade_date, "%Y%m%d").replace(
+        hour=15, tzinfo=CHINA_TIMEZONE,
+    )
+    return datetime.now(CHINA_TIMEZONE) >= deadline
+
+
+def _seal_policy_window(cfg, state, trade_date: str) -> bool:
+    """Caller holds the local account lock. No server/broker authorization."""
+    existing = state.workflow_receipt("policy-expiry-window", trade_date)
+    if existing is None and (cfg.mode != "live" or not _policy_window_elapsed(trade_date)):
+        return False
+    state.record_workflow_receipt("policy-expiry-window", trade_date, {
+        "trade_date": trade_date,
+        "account_alias": cfg.account_alias,
+        "account_fingerprint": cfg.expected_account_sha256,
+        "expiration_policy_id": EXPIRATION_POLICY_ID,
+        "execution_deadline_at": datetime.strptime(trade_date, "%Y%m%d").replace(
+            hour=15, tzinfo=CHINA_TIMEZONE,
+        ).isoformat(),
+    })
+    if state.has_batch(trade_date):
+        batch = validate_frozen_batch(
+            state.load_batch(trade_date), trade_date, cfg, enforce_execution_policy=False,
+        )
+        for order in batch.orders:
+            state.prepare_submission(order["order_id"], batch.batch_sha256, live_order_remark(order))
+        state.expire_unsubmitted(trade_date)
+    return True
+
+
 def _submit_locked(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> dict:
     state = LiveStateStore(cfg.state_db)
-    if state.workflow_receipt("close-window-intent", trade_date) is not None:
+    if (
+        state.workflow_receipt("close-window-intent", trade_date) is not None
+        or _seal_policy_window(cfg, state, trade_date)
+    ):
         return {"status": "EXECUTION_WINDOW_CLOSED", "trade_date": trade_date}
     # The batch was independently hashed and frozen during query.  Re-validate
     # the local bytes, but make no server call in the trading-critical path.
@@ -367,6 +402,11 @@ def _submit_locked(cfg: LiveClientConfig, trade_date: str, mock_state: Path | No
                     state.defer_for_cash(order["order_id"], readiness)
                     deferred.append({"order_id": order["order_id"], **readiness})
                     continue
+            if _seal_policy_window(cfg, state, trade_date):
+                return {
+                    "status": "EXECUTION_WINDOW_CLOSED", "trade_date": trade_date,
+                    "submitted_now": submitted_now, "attempted_now": attempted_now,
+                }
             if not state.claim_submission(order["order_id"]):
                 raise RuntimeError(
                     f"order_id {order['order_id']} 已被另一进程认领，拒绝并发下单"
@@ -409,6 +449,10 @@ def settle(
     *, close_deferred: bool = False,
 ) -> dict:
     state = LiveStateStore(cfg.state_db)
+    if cfg.mode == "live" and _policy_window_elapsed(trade_date):
+        # Seal locally BEFORE observing an expiry and before contacting server.
+        with account_submission_lock(cfg.userdata_dir, cfg.expected_account_sha256):
+            _seal_policy_window(cfg, state, trade_date)
     if close_deferred:
         # settle-close is the explicit end of this execution workflow. Unlike a
         # broker rejection, this proves these orders never entered order_stock.
@@ -463,7 +507,10 @@ def settle(
         "status": "NOT_SUBMITTED",
         "symbol": row["symbol"],
         "direction": row["direction"],
-        "not_submitted_reason": "INSUFFICIENT_CASH",
+        "not_submitted_reason": (
+            "EXECUTION_WINDOW_EXPIRED" if row.get("detail") == "EXECUTION_WINDOW_EXPIRED"
+            else "INSUFFICIENT_CASH"
+        ),
     } for row in not_submitted)
     data = None
     if results:
@@ -474,6 +521,14 @@ def settle(
         # settlement; keep the missing ownership link visible to the caller.
         pending.extend(data.get("unmatched_order_ids", []))
         pending.extend(data.get("rejected_observations", {}).keys())
+        if data.get("local_batch_review_required"):
+            # Facts were accepted. A successor already frozen locally cannot
+            # be revoked by the server; make this affected workflow explicit.
+            pending.extend(row["order_id"] for row in results)
+            issues.append({
+                "reason": "LATE_FILL_REQUIRES_LOCAL_BATCH_REVIEW",
+                "invalidated_attempt_ids": data.get("invalidated_attempt_ids", []),
+            })
     return {
         "trade_date": trade_date, "results": len(results), "server": data,
         "pending_order_ids": sorted(set(pending)), "issues": issues,
@@ -634,6 +689,8 @@ def close_execution_window(
         **intent,
         "workflow_intent_sha256": intent_sha256,
         "status": closed["status"],
+        "broker_finalized": closed.get("broker_finalized", True),
+        "effective_finalized": closed.get("effective_finalized", True),
         "close": closed,
     }
     state.record_workflow_receipt("close-window", trade_date, receipt)
@@ -712,6 +769,8 @@ def settle_and_close(
         "target_id": closed["target_id"],
         "rebalance_id": closed["rebalance_id"],
         "status": closed["status"],
+        "broker_finalized": closed.get("broker_finalized", True),
+        "effective_finalized": closed.get("effective_finalized", True),
         "residual_after": closed.get("residual_after") or {},
         "evidence_sha256": evidence_sha256,
         "evidence_path": str(evidence_path),

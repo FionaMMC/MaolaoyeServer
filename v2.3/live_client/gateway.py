@@ -11,6 +11,7 @@ from threading import Event
 from typing import Any
 
 from live_client.config import LiveClientConfig
+from live_client.qmt_day_order_policy import day_order_expiration
 
 
 @dataclass(frozen=True)
@@ -875,12 +876,14 @@ class XtQMTGateway:
         """Ingest independently verifiable facts without waiting for every order.
 
         Identity mismatches/missing orders remain explicit unresolved issues.
-        They do not discard another order's confirmed fill. Active partial fills
-        are PARTIAL; time alone never manufactures a cancellation.
+        They do not discard another order's confirmed fill. The approved broker
+        convention may classify same-day raw 50 as EXPIRED_BY_POLICY at 15:00;
+        it retains raw evidence and is never called a broker cancellation.
         """
         if self.trader is None or self.account is None:
             raise RuntimeError("QMT 尚未连接")
         raw_orders = self._query_orders_for_settlement()
+        observed_at = datetime.now(timezone.utc)
         by_id: dict[int, list] = {}
         for raw in raw_orders:
             by_id.setdefault(int(raw.order_id), []).append(raw)
@@ -897,8 +900,16 @@ class XtQMTGateway:
                     raise RuntimeError("券商累计成交数量非法")
                 if quantity and (not math.isfinite(price) or price <= 0):
                     raise RuntimeError("券商累计成交价格非法")
+                expiration = day_order_expiration(
+                    qmt_status=broker.order_status,
+                    filled_quantity=quantity,
+                    ordered_quantity=int(row["quantity"]),
+                    valid_date=str(row.get("valid_date") or ""),
+                    observed_at=observed_at,
+                    broker_order_time=broker.order_time,
+                )
                 try:
-                    status = classify_qmt_settlement_status(
+                    status = expiration["status"] if expiration else classify_qmt_settlement_status(
                         self.xtconstant, broker.order_status, quantity, int(row["quantity"]),
                     )
                 except RuntimeError as exc:
@@ -917,6 +928,7 @@ class XtQMTGateway:
                     "status": status,
                     "symbol": row["symbol"], "direction": row["direction"],
                     "qmt_order_id": str(broker.order_id),
+                    **(expiration or {}),
                 })
             except (RuntimeError, ValueError, TypeError) as exc:
                 pending.append(row["order_id"])

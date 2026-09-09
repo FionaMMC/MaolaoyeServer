@@ -336,6 +336,8 @@ def test_mock_qmt_full_query_submit_settle_cycle(tmp_path, monkeypatch):
                 "execution_domain": "live",
                 "status": "RESIDUAL",
                 "residual_after": {"510300.SH": 100},
+                "broker_finalized": False,
+                "effective_finalized": True,
             }
 
         def stage_retry(self, payload):
@@ -370,6 +372,8 @@ def test_mock_qmt_full_query_submit_settle_cycle(tmp_path, monkeypatch):
     preflight = cli.preflight(cfg, "20260803", mock_path)
     submitted = cli.submit(cfg, "20260803", mock_path)
     settled = cli.settle_and_close(cfg, "20260803", mock_path)
+    assert settled["close"]["broker_finalized"] is False
+    assert settled["close"]["effective_finalized"] is True
     retried = cli.stage_residual_retry(
         cfg, "20260803", "20260804", mock_path,
     )

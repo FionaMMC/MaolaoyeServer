@@ -1803,7 +1803,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
           document.getElementById('orders-matrix').innerHTML = '<p class="loading">无订单数据</p>';
           return;
         }
-        const allStatuses = ['PENDING', 'FILLED', 'PARTIAL', 'CANCELLED', 'REJECTED'];
+        const allStatuses = ['PENDING', 'FILLED', 'PARTIAL', 'CANCELLED', 'REJECTED', 'NOT_SUBMITTED', 'EXPIRED_BY_POLICY'];
         let html = '<table><tr><th>Date</th><th>Group</th><th>Dir</th>';
         allStatuses.forEach(s => html += `<th class="num">${s}</th>`);
         html += '<th class="num">Total</th></tr>';

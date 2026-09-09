@@ -32,8 +32,10 @@ from app.services.hydra_data import HydraDataStore
 from app.services.blacklist import BlacklistService
 from app.services.reconcile import ReconcileService
 from app.services.ledger_transaction import begin_ledger_transaction
+from app.services.hydra_late_fills import unresolved_late_fill_review
 from app.services.hydra_closure import (
     TERMINAL_ORDER_STATUSES, close_execution_window, unresolved_orders,
+    has_policy_expired_orders,
 )
 
 
@@ -227,6 +229,14 @@ class HydraRelayService:
             state = self._validated_state(
                 session, req.instance_id, req.execution_domain, req.account_alias,
             )
+            if unresolved_late_fill_review(
+                session, req.instance_id, req.execution_domain, req.account_alias,
+            ):
+                raise APIError(
+                    ErrorCode.BAD_REQUEST,
+                    "本策略有迟到成交影响的旧执行包待核实；处理后再生成新目标",
+                    http_status=409,
+                )
             self._assert_no_unresolved(session, req.instance_id, req.execution_domain)
             positions = self._validate_positions(dict(state.virtual_positions or {}))
             unexpected_positions = sorted(set(positions) - self.allowed_symbols)
@@ -427,6 +437,13 @@ class HydraRelayService:
             if req.close_mode == "execution_deadline":
                 rebalance = session.get(HydraRebalance, attempt.rebalance_id)
                 return close_execution_window(session, attempt, rebalance, req)
+            late_fill_review = (attempt.risk_snapshot or {}).get("late_fill_review") or {}
+            if late_fill_review.get("requires_manual_resolution"):
+                raise APIError(
+                    ErrorCode.BAD_REQUEST,
+                    "迟到成交改变了已生成后继批次的依据；需核实并停止/替换本地旧包后恢复本调仓",
+                    http_status=409,
+                )
             if attempt.status in {"COMPLETE", "RESIDUAL"}:
                 if attempt.posttrade_reconciliation_sha256 != req.reconciliation_evidence_sha256:
                     raise APIError(
@@ -442,6 +459,7 @@ class HydraRelayService:
                     execution_domain=req.execution_domain,
                     status=attempt.status,
                     residual_after=dict(attempt.residual_after or {}),
+                    broker_finalized=not has_policy_expired_orders(session, attempt.rebalance_id),
                     retry_ready=attempt.status == "RESIDUAL",
                 )
             self._assert_rebalance_has_no_unresolved(session, attempt.rebalance_id)
@@ -513,6 +531,7 @@ class HydraRelayService:
                 execution_domain=req.execution_domain,
                 status=status,
                 residual_after=residual,
+                broker_finalized=not has_policy_expired_orders(session, attempt.rebalance_id),
                 retry_ready=status == "RESIDUAL",
             )
 

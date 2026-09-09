@@ -12,6 +12,7 @@ from app.models.raw_signal import RawSignal  # noqa: E402, F401
 from app.models.order import Order  # noqa: E402, F401
 from app.models.order_signal_map import OrderSignalMap  # noqa: E402, F401
 from app.models.trade import Trade  # noqa: E402, F401
+from app.models.order_status_evidence import OrderStatusEvidence  # noqa: E402, F401
 from app.models.perf_snapshot import PerfSnapshot  # noqa: E402, F401
 from app.models.cash_flow import CashFlowJournal  # noqa: E402, F401
 from app.models.daily_risk_snapshot import DailyRiskSnapshot  # noqa: E402, F401
@@ -42,6 +43,7 @@ __all__ = [
     "Order",
     "OrderSignalMap",
     "Trade",
+    "OrderStatusEvidence",
     "PerfSnapshot",
     "CashFlowJournal",
     "DailyRiskSnapshot",

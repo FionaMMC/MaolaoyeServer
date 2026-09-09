@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from app.models import (
     ExecutionQualityObservation,
+    HydraExecutionAttempt,
     InstanceState,
     Order,
     OrderSignalMap,
@@ -16,6 +17,8 @@ from app.models import (
 )
 from app.schemas.trade_result import TradeResult, TradeResultResponseData
 from app.services.ledger_transaction import begin_ledger_transaction
+from app.services.qmt_expiration import record_status_evidence, validate_policy_expiration
+from app.services.hydra_late_fills import invalidate_hydra_close_after_late_fill
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +108,8 @@ class SettlementService:
         unmatched: list[str] = []
         unmatched_candidates: dict[str, list[str]] = {}
         rejected_observations: dict[str, str] = {}
+        invalidated_attempt_ids: set[str] = set()
+        local_batch_review_required = False
 
         with self.session_factory() as session:
             # Take the participating monetary-writer lock before reading cash.
@@ -143,6 +148,20 @@ class SettlementService:
                         )
                     continue
 
+                policy_error = validate_policy_expiration(session, order, result, trade_date)
+                if policy_error:
+                    rejected_observations[order.order_id] = policy_error
+                    continue
+                record_status_evidence(session, order, result, _now_iso())
+                known_attempt = session.get(HydraExecutionAttempt, order.attempt_id) if order.attempt_id else None
+                known_review = ((known_attempt.risk_snapshot or {}).get("late_fill_review") or {}) if known_attempt else {}
+                if known_review.get("requires_manual_resolution"):
+                    # Surface an outstanding local-package review on replays,
+                    # too: the first HTTP acknowledgement may have been lost.
+                    local_batch_review_required = True
+                    invalidated_attempt_ids.add(order.attempt_id)
+                    invalidated_attempt_ids.update(known_review.get("affected_successor_attempt_ids", []))
+
                 if result.status == "NOT_SUBMITTED":
                     known_execution = session.get(ExecutionQualityObservation, order.order_id)
                     known_fill = session.execute(select(Trade.id).where(
@@ -153,7 +172,7 @@ class SettlementService:
                     if (
                         known_fill is not None
                         or (known_execution is not None and known_execution.qmt_order_id)
-                        or order.status in {"PARTIAL", "FILLED", "CANCELLED"}
+                        or order.status in {"PARTIAL", "FILLED", "CANCELLED", "EXPIRED_BY_POLICY"}
                     ):
                         # Absence of a broker ID in this message cannot erase
                         # earlier evidence that a broker order already existed.
@@ -208,7 +227,7 @@ class SettlementService:
                     continue
                 if (
                     result.filled_quantity == previous_qty
-                    and order.status in {"FILLED", "CANCELLED", "REJECTED", "NOT_SUBMITTED"}
+                    and order.status in {"FILLED", "CANCELLED", "REJECTED", "NOT_SUBMITTED", "EXPIRED_BY_POLICY"}
                     and result.status == "PARTIAL"
                 ):
                     # An out-of-order active observation cannot resurrect an
@@ -261,9 +280,18 @@ class SettlementService:
                     self._split_and_update_state(
                         session, order, delta_qty, delta_price, delta_fees,
                     )
+                    affected_ids = invalidate_hydra_close_after_late_fill(session, order, _now_iso())
+                    invalidated_attempt_ids.update(affected_ids)
+                    for attempt_id in affected_ids:
+                        affected = session.get(HydraExecutionAttempt, attempt_id)
+                        review = (affected.risk_snapshot or {}).get("late_fill_review") or {}
+                        local_batch_review_required |= bool(review.get("requires_manual_resolution"))
 
                 # 标记订单状态
-                order.status = result.status
+                if not (order.status == "EXPIRED_BY_POLICY" and result.status == "PARTIAL"):
+                    # Late positive fills are facts, not an extension of this
+                    # day order's lifetime. Preserve the effective expiry.
+                    order.status = result.status
                 matched += 1
 
             session.commit()
@@ -281,6 +309,8 @@ class SettlementService:
             unmatched_order_ids=unmatched,
             unmatched_candidates=unmatched_candidates,
             rejected_observations=rejected_observations,
+            invalidated_attempt_ids=sorted(invalidated_attempt_ids),
+            local_batch_review_required=local_batch_review_required,
         )
 
     # ── 内部 ────────────────────────────────────────────────────────────

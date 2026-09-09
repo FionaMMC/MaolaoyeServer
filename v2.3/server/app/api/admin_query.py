@@ -148,7 +148,7 @@ async def shadow_nav_history(
 )
 async def admin_orders(
     date: str | None = Query(None, min_length=8, max_length=8, pattern=r"^\d{8}$"),
-    status: str | None = Query(None, pattern=r"^(PENDING|FILLED|PARTIAL|CANCELLED|REJECTED)$"),
+    status: str | None = Query(None, pattern=r"^(PENDING|FILLED|PARTIAL|CANCELLED|REJECTED|NOT_SUBMITTED|EXPIRED_BY_POLICY)$"),
     account_group: str | None = None,
     direction: str | None = Query(None, pattern=r"^(BUY|SELL)$"),
     symbol: str | None = None,

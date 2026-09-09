@@ -9,6 +9,7 @@ from sqlalchemy import case, select
 from app.models import HydraExecutionAttempt, Order, OrderSignalMap
 from app.schemas.orders import OrderItem
 from app.services.aggregate import AggregatedOrder, OrderSignalMapping
+from app.services.ledger_transaction import begin_ledger_transaction
 
 
 def _now_iso() -> str:
@@ -61,6 +62,10 @@ class OrdersQueueService:
         allowed_account_aliases: tuple[str, ...] | None = None,
     ) -> list[OrderItem]:
         with self.session_factory() as session:
+            if execution_domain == "live":
+                # Serialize selection + delivery stamp against late-fill
+                # invalidation. There is no HTTP/QMT call inside this lock.
+                begin_ledger_transaction(session, execution_domain, None)
             stmt = (
                 select(Order)
                 .where(Order.valid_date == valid_date)

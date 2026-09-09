@@ -152,6 +152,7 @@ class HydraAttemptCloseResponseData(BaseModel):
     residual_after: dict[str, int]
     workflow_closed: bool = True
     broker_finalized: bool = True
+    effective_finalized: bool = True
     retry_ready: bool = False
     unresolved_order_ids: list[str] = Field(default_factory=list)
     provisional_residual: dict[str, int] = Field(default_factory=dict)

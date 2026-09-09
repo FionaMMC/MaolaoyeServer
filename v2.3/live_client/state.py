@@ -327,6 +327,18 @@ class LiveStateStore:
                 (batch["batch_sha256"],),
             )
 
+    def expire_unsubmitted(self, trade_date: str) -> None:
+        """End only proven pre-call intents; never reinterpret an ambiguous call."""
+        batch = self.load_batch(trade_date)
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE submissions SET submit_status = 'NOT_SUBMITTED',
+                   detail = 'EXECUTION_WINDOW_EXPIRED'
+                   WHERE batch_sha256 = ? AND submit_status IN ('PREPARED', 'DEFERRED_CASH')
+                   AND local_order_id IS NULL""",
+                (batch["batch_sha256"],),
+            )
+
     def observe_sell_fills(self, fills: dict[str, dict]) -> None:
         """Reject regressing cumulative broker evidence, including on restart."""
         with self._connect() as conn:
