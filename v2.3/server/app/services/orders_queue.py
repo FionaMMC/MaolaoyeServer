@@ -113,6 +113,10 @@ class OrdersQueueService:
                     batch_sha256=r.batch_sha256,
                     target_hash=r.target_hash,
                     execution_reference_price=r.execution_reference_price,
+                    execution_policy=(
+                        (session.get(HydraExecutionAttempt, r.attempt_id).risk_snapshot or {}).get("execution_policy")
+                        if r.attempt_id and session.get(HydraExecutionAttempt, r.attempt_id) else None
+                    ),
                     account_group=r.account_group,
                     symbol=r.symbol,
                     direction=r.direction,

@@ -1,5 +1,7 @@
 # Hydra 15:00 收盘结案规则与评审说明
 
+> 2026-09-10：15:00 raw-50 到期规则保留。最新相邻自然日、执行数据发布、自动现金等待和 15:10/16:00 日程，请先读 [执行政策交接单](HYDRA_EXECUTION_POLICY_REVIEW_HANDOFF_20260910.md)。本文的“下一交易日”须结合新的合格交易对限制理解；均不代表已经部署。
+
 日期：2026-09-09。基座为第一阶段重构提交 `f70be7cb`。本文说明本轮明确的业务合同、代码审阅点与部署边界；不代表生产已更新，不是交易指令。
 
 审阅分支：[codex/hydra-trading-core-review-20260909](https://github.com/FionaMMC/MaolaoyeServer/tree/codex/hydra-trading-core-review-20260909)。此分支同时包含完整第一阶段代码、[策略增减资与子账本迁移说明](STRATEGY_CAPITAL_MOVEMENTS_MIGRATION_20260908.md)、先卖后买队列及本次 15:00 修正。

@@ -99,6 +99,8 @@ async def verify_api_key(
             "/admin/reconcile-positions",
             "/hydra/targets/stage",
             "/hydra/rebalances/retry",
+            "/hydra/execution/advance",
+            "/hydra/execution/data",
             "/hydra/attempts/close",
             "/hydra/canary/stage",
         }

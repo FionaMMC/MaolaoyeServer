@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from datetime import datetime, timedelta
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -117,6 +118,18 @@ def validate_order_batch(
         "trade_date": trade_date,
         "orders": sorted(canonical_orders, key=lambda item: item["symbol"]),
     }
+    policy = first.get("execution_policy")
+    if any(order.get("execution_policy") != policy for order in orders):
+        raise ValueError("批次 execution_policy 混合")
+    if policy is not None:
+        if policy.get("policy_id") != "HYDRA_ADJACENT_DAY_50BP_V1":
+            raise ValueError("未知 execution_policy")
+        reference = datetime.strptime(policy["reference_date"], "%Y%m%d")
+        if (reference + timedelta(days=1)).strftime("%Y%m%d") != trade_date:
+            raise ValueError("执行参考日与执行日不是相邻自然日")
+        if policy.get("buy_max_bps") != 50 or policy.get("sell_max_bps") != 50:
+            raise ValueError("本政策只允许 50bp；不能使用候选放宽值")
+        batch_payload["execution_policy"] = policy
     actual_sha = hashlib.sha256(
         json.dumps(batch_payload, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()

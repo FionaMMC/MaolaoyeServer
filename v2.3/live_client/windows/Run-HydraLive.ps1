@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("doctor", "ledger", "query", "preflight", "submit", "cancel-open", "settle", "settle-close", "close-window", "retry", "cash-flow")]
+    [ValidateSet("doctor", "ledger", "query", "preflight", "submit", "submit-queue", "cancel-open", "settle", "settle-close", "close-window", "retry", "advance", "publish-execution", "cash-flow")]
     [string]$Command,
 
     [ValidatePattern("^\d{8}$")]
@@ -76,7 +76,7 @@ if ($Command -eq "close-window" -and -not $ExecutionDeadlineAt) {
 if ($ExecutionDeadlineAt -and $Command -ne "close-window") {
     throw "-ExecutionDeadlineAt is only valid for close-window"
 }
-if ($MockState -and $Command -notin @("preflight", "submit", "cancel-open", "settle", "settle-close", "retry", "cash-flow")) {
+if ($MockState -and $Command -notin @("preflight", "submit", "submit-queue", "cancel-open", "settle", "settle-close", "retry", "advance", "cash-flow")) {
     throw "-MockState is not valid for this command"
 }
 if ($Command -eq "cash-flow" -and (

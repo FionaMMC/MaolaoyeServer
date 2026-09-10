@@ -374,6 +374,9 @@ def test_mock_qmt_full_query_submit_settle_cycle(tmp_path, monkeypatch):
     settled = cli.settle_and_close(cfg, "20260803", mock_path)
     assert settled["close"]["broker_finalized"] is False
     assert settled["close"]["effective_finalized"] is True
+    repeated_close = cli.settle_and_close(cfg, "20260803", mock_path)
+    assert repeated_close["idempotent_replay"]
+    assert repeated_close["close"] == settled["close"]
     retried = cli.stage_residual_retry(
         cfg, "20260803", "20260804", mock_path,
     )
@@ -577,7 +580,7 @@ def test_windows_runtime_separates_evening_preflight_from_morning_submit():
     assert "-Command cancel-open" in operations
     assert "CANCEL_INCOMPLETE" not in operations
     assert "-Command settle-close" in operations
-    assert "-Command retry" in operations
+    assert "-Command advance" in operations
     assert "-Command preflight" in operations
     assert operations.index('"READY_FOR_OFFLINE_SUBMIT"') < operations.index(
         "Register-HydraLiveSubmitTask.ps1"
@@ -597,10 +600,10 @@ def test_windows_runtime_separates_evening_preflight_from_morning_submit():
     assert 'Hydra-Live-CancelOpen-1455' in task_set
     assert 'Hydra-Live-SettleClose-1605' in task_set
     assert 'Hydra-Live-Retry-1620' in task_set
-    assert 'Hydra-Live-SettleClose-1510' in task_set  # legacy removal list
-    assert 'Hydra-Live-Retry-1600' in task_set  # legacy removal list
-    assert 'Name = "Hydra-Live-SettleClose-1510";' not in task_set
-    assert 'Name = "Hydra-Live-Retry-1600";' not in task_set
+    assert 'Name = "Hydra-Live-SettleClose-1510";' in task_set
+    assert 'Name = "Hydra-Live-Retry-1600";' in task_set
+    assert 'Name = "Hydra-Live-SettleClose-1605";' not in task_set
+    assert 'Name = "Hydra-Live-Retry-1620";' not in task_set
     assert 'Disable = $true' in task_set
     assert 'StartWhenAvailable = $false' in task_set
     assert task_set.index('Register-ScheduledTask') < task_set.index(

@@ -75,6 +75,12 @@ class LiveServerClient:
     def stage_retry(self, payload: dict) -> dict:
         return self._post("/hydra/rebalances/retry", payload)
 
+    def advance_execution(self, payload: dict) -> dict:
+        return self._post("/hydra/execution/advance", payload)
+
+    def publish_execution(self, payload: dict) -> dict:
+        return self._post("/hydra/execution/data", payload)
+
     def post_cash_flow(self, payload: dict) -> dict:
         return self._post("/cash-flows", payload)
 

@@ -40,6 +40,9 @@ class HydraTargetRequest(BaseModel):
     basket_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     buy_price_offset_bps: float = Field(default=50.0, ge=0, le=50)
     sell_price_offset_bps: float = Field(default=50.0, ge=0, le=50)
+    # Separate research inputs from refreshed, immutable execution evidence.
+    execution_raw_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    execution_calendar_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def validate_contract(self) -> "HydraTargetRequest":
@@ -98,6 +101,9 @@ def hydra_basket_hash(target: HydraTargetRequest | dict) -> str:
         ),
         "cash_buffer_weight": float(payload["cash_buffer_weight"]),
     }
+    for field in ("execution_raw_sha256", "execution_calendar_sha256"):
+        if payload.get(field) is not None:
+            canonical[field] = payload[field]
     body = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(body).hexdigest()
 
@@ -108,6 +114,7 @@ class HydraRetryRequest(BaseModel):
     rebalance_id: str
     trade_date: str = Field(pattern=r"^\d{8}$")
     execution_raw_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    execution_calendar_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     actual_cash: float = Field(ge=0)
     actual_positions: dict[str, int]
     reconciliation_evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -169,3 +176,47 @@ class HydraRelayResponseData(BaseModel):
     trade_date: str
     order_count: int
     idempotent_replay: bool = False
+
+
+class HydraExecutionWaitResponseData(BaseModel):
+    status: Literal["WAITING_EXECUTION_DATE", "WAITING_EXECUTION_DATA", "WAITING_RECONCILIATION"]
+    execution_domain: ExecutionDomain
+    plan_id: str | None = None
+    rebalance_id: str | None = None
+    next_reference_date: str | None = None
+    next_execution_date: str | None = None
+    reason: str
+    order_count: Literal[0] = 0
+
+
+class HydraAdvanceRequest(BaseModel):
+    execution_domain: ExecutionDomain = "live"
+    account_alias: str
+    instance_id: str
+    reference_date: str = Field(pattern=r"^\d{8}$")
+    actual_cash: float = Field(ge=0, allow_inf_nan=False)
+    actual_positions: dict[str, int]
+    reconciliation_evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("reference_date")
+    @classmethod
+    def valid_reference_date(cls, value):
+        datetime.strptime(value, "%Y%m%d")
+        return value
+
+
+class HydraExecutionPublishRequest(BaseModel):
+    execution_domain: Literal["live"] = "live"
+    account_alias: str
+    reference_date: str = Field(pattern=r"^\d{8}$")
+    producer_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    bars: list[dict] = Field(min_length=1, max_length=1000)
+    calendar_dates: list[str] = Field(min_length=2, max_length=3000)
+
+    @model_validator(mode="after")
+    def valid_dates(self):
+        for date in [self.reference_date, *self.calendar_dates]:
+            if len(date) != 8 or not date.isdigit():
+                raise ValueError("执行日历必须使用 YYYYMMDD")
+            datetime.strptime(date, "%Y%m%d")
+        return self

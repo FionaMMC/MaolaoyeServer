@@ -13,6 +13,8 @@ from app.models.order import Order  # noqa: E402, F401
 from app.models.order_signal_map import OrderSignalMap  # noqa: E402, F401
 from app.models.trade import Trade  # noqa: E402, F401
 from app.models.order_status_evidence import OrderStatusEvidence  # noqa: E402, F401
+from app.models.hydra_execution_plan import HydraExecutionPlan  # noqa: E402, F401
+from app.models.hydra_execution_publication import HydraExecutionPublication  # noqa: E402, F401
 from app.models.perf_snapshot import PerfSnapshot  # noqa: E402, F401
 from app.models.cash_flow import CashFlowJournal  # noqa: E402, F401
 from app.models.daily_risk_snapshot import DailyRiskSnapshot  # noqa: E402, F401
@@ -44,6 +46,8 @@ __all__ = [
     "OrderSignalMap",
     "Trade",
     "OrderStatusEvidence",
+    "HydraExecutionPlan",
+    "HydraExecutionPublication",
     "PerfSnapshot",
     "CashFlowJournal",
     "DailyRiskSnapshot",

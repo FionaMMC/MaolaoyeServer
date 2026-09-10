@@ -60,6 +60,25 @@ def test_install_and_load_content_addressed_batch(tmp_path):
     assert manifest.adjustment == "none"
 
 
+def test_interrupted_install_never_publishes_a_half_batch(tmp_path, monkeypatch):
+    body = _parquet_bytes(_prices())
+    store = HydraDataStore(tmp_path)
+    manifest = _manifest(body)
+    original = store._write_temp
+    calls = []
+    def fail_second(*args):
+        calls.append(1)
+        if len(calls) == 2:
+            raise OSError("disk write interrupted")
+        return original(*args)
+    monkeypatch.setattr(store, "_write_temp", fail_second)
+    with pytest.raises(OSError, match="interrupted"):
+        store.install(body, manifest)
+    assert not (store.root / manifest.stream / manifest.file_sha256).exists()
+    monkeypatch.setattr(store, "_write_temp", original)
+    assert store.install(body, manifest).installed
+
+
 def test_manifest_preserves_research_universe_and_future_audit_fields(tmp_path):
     body = _parquet_bytes(_prices())
     manifest = _manifest(

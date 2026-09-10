@@ -22,6 +22,7 @@ from live_client.execution_queue import account_submission_lock, cash_readiness
 from live_client.http_client import LiveServerClient
 from live_client.state import LiveStateStore
 from live_client.qmt_day_order_policy import CHINA_TIMEZONE, EXPIRATION_POLICY_ID
+from live_client.queue_runner import run_queue_passes
 
 
 def _logger(cfg: LiveClientConfig) -> logging.Logger:
@@ -160,10 +161,10 @@ def preflight(
     }
 
 
-def submit(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> dict:
+def submit(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None, *, stop_new_at=None) -> dict:
     cfg.require_submission_enabled()
     with account_submission_lock(cfg.userdata_dir, cfg.expected_account_sha256):
-        return _submit_locked(cfg, trade_date, mock_state)
+        return _submit_locked(cfg, trade_date, mock_state, stop_new_at=stop_new_at)
 
 
 def _policy_window_elapsed(trade_date: str) -> bool:
@@ -197,7 +198,9 @@ def _seal_policy_window(cfg, state, trade_date: str) -> bool:
     return True
 
 
-def _submit_locked(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None) -> dict:
+def _submit_locked(cfg: LiveClientConfig, trade_date: str, mock_state: Path | None, *, stop_new_at=None) -> dict:
+    if stop_new_at is not None and datetime.now(CHINA_TIMEZONE) >= stop_new_at:
+        return {"status": "QUEUE_WINDOW_ENDED", "trade_date": trade_date}
     state = LiveStateStore(cfg.state_db)
     if (
         state.workflow_receipt("close-window-intent", trade_date) is not None
@@ -407,6 +410,9 @@ def _submit_locked(cfg: LiveClientConfig, trade_date: str, mock_state: Path | No
                     "status": "EXECUTION_WINDOW_CLOSED", "trade_date": trade_date,
                     "submitted_now": submitted_now, "attempted_now": attempted_now,
                 }
+            if stop_new_at is not None and datetime.now(CHINA_TIMEZONE) >= stop_new_at:
+                return {"status": "QUEUE_WINDOW_ENDED", "trade_date": trade_date,
+                        "submitted_now": submitted_now, "attempted_now": attempted_now}
             if not state.claim_submission(order["order_id"]):
                 raise RuntimeError(
                     f"order_id {order['order_id']} 已被另一进程认领，拒绝并发下单"
@@ -734,6 +740,13 @@ def settle_and_close(
     settlement = settle(cfg, trade_date, mock_state, close_deferred=True)
     if settlement["pending_order_ids"]:
         return {"status": "WAITING_FOR_BROKER", "settlement": settlement}
+    prior_close = state.workflow_receipt("close", trade_date)
+    if prior_close:
+        if (settlement.get("server") or {}).get("invalidated_attempt_ids"):
+            return {"status": "WAITING_RECONCILIATION", "settlement": settlement,
+                    "reason": "迟到成交使旧 Close 失效；核对旧执行包后重新结案"}
+        return {"status": "ATTEMPT_CLOSED", "settlement": settlement,
+                "close": prior_close["payload"], "idempotent_replay": True}
     batch = _load_frozen_batch(cfg, trade_date, state)
     attempt_id = _batch_attempt_id(batch)
     gateway = _gateway(cfg, mock_state)
@@ -854,6 +867,8 @@ def stage_residual_retry(
         "actual_positions": snapshot.positions,
         "reconciliation_evidence_sha256": evidence_sha256,
     })
+    if staged.get("status") in {"WAITING_EXECUTION_DATE", "WAITING_EXECUTION_DATA"}:
+        return staged  # Not a terminal retry receipt; the server retains residual.
     if (
         staged.get("target_id") != cfg.retry_target_id
         or staged.get("rebalance_id") != cfg.retry_rebalance_id
@@ -879,6 +894,44 @@ def stage_residual_retry(
         "retry": receipt,
         "retry_receipt_sha256": receipt_sha256,
     }
+
+
+def advance_server_execution(cfg, reference_date, mock_state):
+    """Evening only: server resumes its durable plans and owns residual maths."""
+    gateway = _gateway(cfg, mock_state)
+    try:
+        gateway.connect()
+        snapshot = gateway.account_snapshot()
+        if snapshot.account_id != cfg.account_id:
+            raise RuntimeError("QMT account_id 不一致")
+    finally:
+        gateway.close()
+    evidence, _ = _write_reconciliation_evidence(cfg, reference_date, "execution-advance", snapshot)
+    server = LiveServerClient(cfg.server_base_url, cfg.api_key, execution_domain=cfg.execution_domain)
+    result = server.advance_execution(dict(
+        execution_domain=cfg.execution_domain, account_alias=cfg.account_alias,
+        instance_id=cfg.instance_id, reference_date=reference_date,
+        actual_cash=snapshot.available_cash, actual_positions=snapshot.positions,
+        reconciliation_evidence_sha256=evidence,
+    ))
+    # Version the observation; waiting is not an immutable completed retry.
+    digest = hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
+    LiveStateStore(cfg.state_db).record_workflow_receipt("advance-" + digest, reference_date, result)
+    return result
+
+
+def publish_server_execution(cfg, reference_date):
+    from live_client.execution_publication import collect_execution_publication
+    now = datetime.now(CHINA_TIMEZONE)
+    if cfg.mode == "live" and (now.strftime("%Y%m%d") != reference_date or now.hour < 15):
+        raise RuntimeError("自动执行行情发布仅处理中国时间当日收盘后数据")
+    payload = collect_execution_publication(cfg, reference_date)
+    if payload is None:
+        return {"status": "SKIPPED_NON_TRADING", "reference_date": reference_date}
+    result = LiveServerClient(cfg.server_base_url, cfg.api_key, execution_domain=cfg.execution_domain).publish_execution(payload)
+    if result.get("status") != "EXECUTION_DATA_PUBLISHED" or result.get("reference_date") != reference_date:
+        raise RuntimeError("执行行情发布缺少匹配的成功回执")
+    return result
 
 
 def initialize_account(
@@ -1051,12 +1104,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Hydra independent live client")
     sub = parser.add_subparsers(dest="command", required=True)
     for name in (
-        "query", "preflight", "submit", "cancel-open", "settle", "settle-close",
+        "query", "preflight", "submit", "submit-queue", "cancel-open", "settle", "settle-close", "advance", "publish-execution",
     ):
         command = sub.add_parser(name)
         command.add_argument("--date", required=True)
         if name in {
-            "preflight", "submit", "cancel-open", "settle", "settle-close",
+            "preflight", "submit", "submit-queue", "cancel-open", "settle", "settle-close", "advance",
         }:
             command.add_argument("--mock-state", type=Path)
     retry = sub.add_parser("retry")
@@ -1105,6 +1158,13 @@ def main() -> None:
             result = preflight(cfg, args.date, args.mock_state)
         elif args.command == "submit":
             result = submit(cfg, args.date, args.mock_state)
+        elif args.command == "submit-queue":
+            stop_new_at = datetime.strptime(args.date, "%Y%m%d").replace(hour=14, minute=55, tzinfo=CHINA_TIMEZONE)
+            result = run_queue_passes(lambda: submit(cfg, args.date, args.mock_state, stop_new_at=stop_new_at), args.date)
+        elif args.command == "advance":
+            result = advance_server_execution(cfg, args.date, args.mock_state)
+        elif args.command == "publish-execution":
+            result = publish_server_execution(cfg, args.date)
         elif args.command == "cancel-open":
             result = cancel_open_orders(cfg, args.date, args.mock_state)
         elif args.command == "settle":

@@ -33,6 +33,9 @@ from app.services.blacklist import BlacklistService
 from app.services.reconcile import ReconcileService
 from app.services.ledger_transaction import begin_ledger_transaction
 from app.services.hydra_late_fills import unresolved_late_fill_review
+from app.services.hydra_execution_policy import (
+    eligible, remember_initial_wait, wait_result, policy_evidence,
+)
 from app.services.hydra_closure import (
     TERMINAL_ORDER_STATUSES, close_execution_window, unresolved_orders,
     has_policy_expired_orders,
@@ -138,7 +141,7 @@ class HydraRelayService:
         self.blacklist_service = blacklist_service
         self.lot_size = lot_size
 
-    def stage_initial(self, req: HydraTargetRequest) -> HydraRelayResponseData:
+    def stage_initial(self, req: HydraTargetRequest, *, source_plan_id=None, physical_snapshot=None):
         self._gate_request(req)
         model, model_manifest = self.data_store.load(
             "hydra_model_hfq", req.input_hashes["model_hfq"]
@@ -163,13 +166,25 @@ class HydraRelayService:
         self._validate_data_universe(
             model, model_manifest, raw, raw_manifest, actions,
         )
+        if req.decision_date not in set(calendar["trade_date"].astype(str).str.replace("-", "", regex=False)):
+            raise APIError(ErrorCode.BAD_REQUEST, "decision_date 不是交易日")
+        if req.execution_raw_sha256:
+            raw, raw_manifest = self.data_store.load("hydra_execution_raw", req.execution_raw_sha256)
+            self._validate_execution_raw_universe(raw, raw_manifest)
+        if req.execution_calendar_sha256:
+            calendar, calendar_manifest = self.data_store.load("hydra_trading_calendar", req.execution_calendar_sha256)
+        reference_date = raw_manifest.as_of_date
+        execution_policy = None
+        if req.execution_domain == "live":
+            if not eligible(calendar, reference_date, req.execution_date):
+                return remember_initial_wait(self.session_factory, req, calendar)
+            execution_policy = policy_evidence(reference_date, raw_manifest.file_sha256,
+                                                calendar_manifest.file_sha256, source_plan_id)
         calendar_dates = sorted(
             calendar["trade_date"].astype(str).str.replace("-", "", regex=False)
         )
         future_dates = [date for date in calendar_dates if date > req.decision_date]
-        if req.decision_date not in set(calendar_dates):
-            raise APIError(ErrorCode.BAD_REQUEST, "decision_date 不是交易日")
-        if not future_dates or future_dates[0] != req.execution_date:
+        if req.execution_domain != "live" and (not future_dates or future_dates[0] != req.execution_date):
             raise APIError(
                 ErrorCode.BAD_REQUEST,
                 "execution_date 不是 decision_date 后第一个交易日",
@@ -177,7 +192,7 @@ class HydraRelayService:
         codes = {item.code for item in req.weights}
         self._require_as_of_coverage(model, req.as_of_date, codes, "model_hfq")
         raw_as_of = self._require_as_of_coverage(
-            raw, req.as_of_date, codes, "execution_raw",
+            raw, reference_date, codes, "execution_raw",
         )
         if (raw_as_of["suspendFlag"].astype(int) != 0).any():
             blocked = sorted(raw_as_of.loc[
@@ -229,6 +244,15 @@ class HydraRelayService:
             state = self._validated_state(
                 session, req.instance_id, req.execution_domain, req.account_alias,
             )
+            if physical_snapshot is not None:
+                if state.ledger_mode == "attributed":
+                    self._assert_attributed_portfolio_snapshot(
+                        req.execution_domain, req.account_alias,
+                        physical_snapshot.actual_cash, physical_snapshot.actual_positions,
+                    )
+                elif (self._validate_positions(physical_snapshot.actual_positions) != dict(state.virtual_positions or {})
+                      or abs(physical_snapshot.actual_cash - state.virtual_cash) > 1):
+                    raise APIError(ErrorCode.BAD_REQUEST, "账户快照已与策略账本不一致，请重新对账", http_status=409)
             if unresolved_late_fill_review(
                 session, req.instance_id, req.execution_domain, req.account_alias,
             ):
@@ -248,7 +272,7 @@ class HydraRelayService:
             cash = float(state.virtual_cash)
             all_codes = codes | set(positions)
             raw_as_of_all = self._require_as_of_coverage(
-                raw, req.as_of_date, all_codes, "execution_raw",
+                raw, reference_date, all_codes, "execution_raw",
             )
             if (raw_as_of_all["suspendFlag"].astype(int) != 0).any():
                 blocked = sorted(raw_as_of_all.loc[
@@ -329,6 +353,7 @@ class HydraRelayService:
                 prices=prices,
                 buy_offset=req.buy_price_offset_bps,
                 sell_offset=req.sell_price_offset_bps,
+                execution_policy=execution_policy,
                 reconciliation_evidence_sha256=(
                     dict(state.strategy_state or {}).get(
                         "initialization_evidence_sha256"
@@ -354,6 +379,7 @@ class HydraRelayService:
                 ErrorCode.BAD_REQUEST,
                 "retry execution raw 必须来自 trade_date 之前的已冻结数据",
             )
+        execution_policy = None
         with self.session_factory() as session:
             begin_ledger_transaction(session, req.execution_domain, req.account_alias)
             rebalance = session.get(HydraRebalance, req.rebalance_id)
@@ -364,6 +390,20 @@ class HydraRelayService:
             ):
                 raise APIError(ErrorCode.BAD_REQUEST, "rebalance 不存在或跨域", http_status=404)
             target = session.get(HydraTarget, rebalance.target_id)
+            if req.execution_domain == "live":
+                calendar_sha = req.execution_calendar_sha256 or target.input_hashes["trading_calendar"]
+                calendar, _ = self.data_store.load("hydra_trading_calendar", calendar_sha)
+                if not eligible(calendar, manifest.as_of_date, req.trade_date):
+                    return wait_result(req.execution_domain, calendar, req.trade_date,
+                                       reason="补单等待新参考日；不得沿用周末/长假前原价", rebalance_id=req.rebalance_id)
+                execution_policy = policy_evidence(manifest.as_of_date, manifest.file_sha256, calendar_sha)
+            # A response-lost retry can return the already frozen SAME attempt.
+            replay = session.scalar(select(HydraExecutionAttempt).where(
+                HydraExecutionAttempt.rebalance_id == rebalance.rebalance_id,
+                HydraExecutionAttempt.trade_date == req.trade_date,
+            ).order_by(HydraExecutionAttempt.attempt_number.desc()).limit(1))
+            if req.execution_domain == "live" and replay and replay.attempt_number > 1 and (replay.risk_snapshot or {}).get("execution_policy") == execution_policy and replay.status in {"PENDING", "NOOP", "COMPLETE", "RESIDUAL"}:
+                return self._response(target, replay, idempotent=True)
             self._assert_rebalance_has_no_unresolved(session, rebalance.rebalance_id)
             previous = session.execute(
                 select(HydraExecutionAttempt)
@@ -377,6 +417,8 @@ class HydraRelayService:
                     "上一 attempt 尚未完成 post-trade 对账或没有 residual",
                     http_status=409,
                 )
+            if req.trade_date <= previous.trade_date:
+                raise APIError(ErrorCode.BAD_REQUEST, "补单执行日必须晚于上一 attempt 交易日")
             instance_id = self._instance_id_for_rebalance(session, rebalance.rebalance_id)
             state = self._validated_state(
                 session, instance_id, req.execution_domain, req.account_alias,
@@ -402,7 +444,12 @@ class HydraRelayService:
                     f"专用 Hydra 账户含白名单外持仓: {unexpected_positions}",
                 )
             codes = set(rebalance.target_shares) | set(positions)
-            price_rows = self._latest_before(raw, manifest.as_of_date, codes)
+            price_rows = (
+                self._require_as_of_coverage(raw, manifest.as_of_date, codes, "execution_raw")
+                if req.execution_domain == "live" else self._latest_before(raw, manifest.as_of_date, codes)
+            )
+            if (price_rows["suspendFlag"].astype(int) != 0).any():
+                raise APIError(ErrorCode.BAD_REQUEST, "补单原价标记停牌，不能生成该执行批次")
             prices = price_rows.set_index("symbol")["close"].astype(float).to_dict()
             response = self._create_attempt(
                 session=session,
@@ -415,6 +462,7 @@ class HydraRelayService:
                 prices=prices,
                 buy_offset=50.0,
                 sell_offset=50.0,
+                execution_policy=execution_policy,
                 reconciliation_evidence_sha256=req.reconciliation_evidence_sha256,
             )
             rebalance.reconciliation_status = "RETRY_PRE_TRADE_OK"
@@ -541,6 +589,7 @@ class HydraRelayService:
         actual_positions: dict[str, int], prices: dict[str, float],
         buy_offset: float, sell_offset: float,
         reconciliation_evidence_sha256: str,
+        execution_policy: dict | None = None,
     ) -> HydraRelayResponseData:
         prior_count = session.execute(
             select(HydraExecutionAttempt).where(
@@ -572,6 +621,8 @@ class HydraRelayService:
             "trade_date": trade_date,
             "orders": canonical_orders,
         }
+        if execution_policy is not None:
+            batch_payload["execution_policy"] = execution_policy
         batch_sha = hashlib.sha256(
             json.dumps(batch_payload, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
@@ -588,6 +639,8 @@ class HydraRelayService:
             actual_positions=actual_positions,
             prices=prices,
         )
+        if execution_policy is not None:
+            risk_snapshot["execution_policy"] = execution_policy
         buy_notional = sum(
             order["quantity"] * order["limit_price"]
             for order in canonical_orders if order["direction"] == "BUY"

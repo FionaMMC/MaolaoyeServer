@@ -36,7 +36,7 @@ def _expired(order, qty=0, **changes):
         filled_price=order.limit_price if qty else 0.0,
         status="EXPIRED_BY_POLICY", symbol=order.symbol, direction=order.direction,
         qmt_order_id="qmt-" + order.order_id, raw_qmt_status=50,
-        status_observed_at="2026-08-03T15:00:00+08:00",
+        status_observed_at="2026-08-04T15:00:00+08:00",
         expiration_policy_id="QMT_DAY_ORDER_1500_V1",
     )
     payload.update(changes)
@@ -55,13 +55,13 @@ def _close(service, sf, first, evidence="a" * 64):
 
 
 def _retry(service, sf, store, first):
-    raw = _install(store, "hydra_execution_raw", _price_frame("20260803"), "none", "20260803")
+    raw = _install(store, "hydra_execution_raw", _price_frame("20260804"), "none", "20260804")
     with sf() as session:
         state = session.get(InstanceState, "live_hydra")
         cash, positions = state.virtual_cash, dict(state.virtual_positions)
     return service.stage_retry(HydraRetryRequest(
         execution_domain="live", account_alias="hydra-live", rebalance_id=first.rebalance_id,
-        trade_date="20260804", execution_raw_sha256=raw,
+        trade_date="20260805", execution_raw_sha256=raw,
         actual_cash=cash, actual_positions=positions,
         reconciliation_evidence_sha256="b" * 64,
     ))
@@ -71,7 +71,7 @@ def test_expired_partial_fact_close_and_server_residual_end_to_end(tmp_path):
     service, sf, store, first, orders = _live(tmp_path)
     results = [_expired(row, row.quantity - 100) for row in orders]
     settlement = SettlementService(sf)
-    reply = settlement.settle("20260803", results, "live", ("hydra-live",))
+    reply = settlement.settle("20260804", results, "live", ("hydra-live",))
     assert reply.matched_count == 2
     assert not reply.rejected_observations
     with sf() as session:
@@ -86,7 +86,7 @@ def test_expired_partial_fact_close_and_server_residual_end_to_end(tmp_path):
             execution_domain="live", account_alias="hydra-live", instance_id="live_hydra",
         )) == 0
     # Same cumulative fill/status replay must not book again or duplicate evidence.
-    assert settlement.settle("20260803", results, "live").matched_count == 0
+    assert settlement.settle("20260804", results, "live").matched_count == 0
     with sf() as session:
         assert session.get(InstanceState, "live_hydra").virtual_cash == original_cash
         assert len(list(session.scalars(select(OrderStatusEvidence)))) == 2
@@ -104,9 +104,9 @@ def test_expired_partial_fact_close_and_server_residual_end_to_end(tmp_path):
 
 
 @pytest.mark.parametrize("changes", [
-    {"status_observed_at": "2026-08-03T14:59:59+08:00"},
-    {"status_observed_at": "2026-08-04T15:00:00+08:00"},
-    {"status_observed_at": "2026-08-03T15:00:00"},
+    {"status_observed_at": "2026-08-04T14:59:59+08:00"},
+    {"status_observed_at": "2026-08-05T15:00:00+08:00"},
+    {"status_observed_at": "2026-08-04T15:00:00"},
     {"status_observed_at": None},
     {"expiration_policy_id": "UNAPPROVED"},
     {"raw_qmt_status": 55},
@@ -117,7 +117,7 @@ def test_expired_partial_fact_close_and_server_residual_end_to_end(tmp_path):
 def test_invalid_expiry_does_not_discard_other_valid_facts(tmp_path, changes):
     _, sf, _, _, orders = _live(tmp_path)
     bad, good = orders
-    response = SettlementService(sf).settle("20260803", [
+    response = SettlementService(sf).settle("20260804", [
         _expired(bad, **changes), _expired(good),
     ], "live", ("hydra-live",))
     assert response.matched_count == 1
@@ -128,7 +128,7 @@ def test_invalid_expiry_does_not_discard_other_valid_facts(tmp_path, changes):
 
 
 @pytest.mark.parametrize("field,value", [
-    ("valid_date", "20260804"), ("batch_sha256", "f" * 64),
+    ("valid_date", "20260805"), ("batch_sha256", "f" * 64),
     ("target_id", None), ("attempt_id", "missing"), ("qmt_account_alias", "other"),
 ])
 def test_expiry_bound_to_server_order_and_authorized_account(tmp_path, field, value):
@@ -137,7 +137,7 @@ def test_expiry_bound_to_server_order_and_authorized_account(tmp_path, field, va
     with sf() as session:
         setattr(session.get(Order, order.order_id), field, value)
         session.commit()
-    response = SettlementService(sf).settle("20260803", [_expired(order)], "live", ("hydra-live",))
+    response = SettlementService(sf).settle("20260804", [_expired(order)], "live", ("hydra-live",))
     assert response.matched_count == 0
     assert response.rejected_observations or response.unmatched_order_ids
 
@@ -146,8 +146,8 @@ def test_same_quantity_active_observation_cannot_resurrect_policy_expiry(tmp_pat
     _, sf, _, _, orders = _live(tmp_path)
     order = orders[0]
     svc = SettlementService(sf)
-    svc.settle("20260803", [_expired(order, 100)], "live")
-    response = svc.settle("20260803", [TradeResult(
+    svc.settle("20260804", [_expired(order, 100)], "live")
+    response = svc.settle("20260804", [TradeResult(
         order_id=order.order_id, filled_quantity=100, filled_price=order.limit_price,
         status="PARTIAL",
     )], "live")
@@ -159,15 +159,15 @@ def test_same_quantity_active_observation_cannot_resurrect_policy_expiry(tmp_pat
 def test_late_fill_reopens_old_close_and_holds_existing_successor(tmp_path):
     service, sf, store, first, orders = _live(tmp_path)
     svc = SettlementService(sf)
-    svc.settle("20260803", [_expired(row) for row in orders], "live")
+    svc.settle("20260804", [_expired(row) for row in orders], "live")
     _close(service, sf, first)
     retry = _retry(service, sf, store, first)
     old = orders[0]
-    response = svc.settle("20260803", [_expired(old, 100)], "live")
+    response = svc.settle("20260804", [_expired(old, 100)], "live")
     assert response.matched_count == 1
     assert response.local_batch_review_required
     assert set(response.invalidated_attempt_ids) == {first.attempt_id, retry.attempt_id}
-    replay = svc.settle("20260803", [_expired(old, 100)], "live")
+    replay = svc.settle("20260804", [_expired(old, 100)], "live")
     assert replay.matched_count == 0
     assert replay.local_batch_review_required
     with sf() as session:
@@ -185,9 +185,9 @@ def test_late_fill_reopens_old_close_and_holds_existing_successor(tmp_path):
 def test_late_fill_without_successor_can_reconcile_again(tmp_path):
     service, sf, _, first, orders = _live(tmp_path)
     svc = SettlementService(sf)
-    svc.settle("20260803", [_expired(row) for row in orders], "live")
+    svc.settle("20260804", [_expired(row) for row in orders], "live")
     original = _close(service, sf, first)
-    svc.settle("20260803", [_expired(orders[0], 100)], "live")
+    svc.settle("20260804", [_expired(orders[0], 100)], "live")
     revised = _close(service, sf, first, "c" * 64)
     assert revised.residual_after[orders[0].symbol] == original.residual_after[orders[0].symbol] - 100
 
@@ -195,10 +195,10 @@ def test_late_fill_without_successor_can_reconcile_again(tmp_path):
 def test_late_active_partial_keeps_expiry_but_books_real_fill(tmp_path):
     service, sf, _, first, orders = _live(tmp_path)
     svc = SettlementService(sf)
-    svc.settle("20260803", [_expired(row) for row in orders], "live")
+    svc.settle("20260804", [_expired(row) for row in orders], "live")
     original = _close(service, sf, first)
     order = orders[0]
-    svc.settle("20260803", [TradeResult(
+    svc.settle("20260804", [TradeResult(
         order_id=order.order_id, filled_quantity=100, filled_price=order.limit_price,
         status="PARTIAL", qmt_order_id="qmt-" + order.order_id,
     )], "live")

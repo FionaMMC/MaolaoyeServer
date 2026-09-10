@@ -13,8 +13,13 @@ from app.schemas.hydra_relay import (
     HydraRelayResponseData,
     HydraRetryRequest,
     HydraTargetRequest,
+    HydraExecutionWaitResponseData,
+    HydraAdvanceRequest,
+    HydraExecutionPublishRequest,
 )
 from app.services.hydra_relay import HydraRelayService
+from app.services.hydra_execution_advance import advance_execution
+from app.services.hydra_execution_publish import publish_execution
 
 router = APIRouter(prefix="/hydra")
 
@@ -36,7 +41,7 @@ def _authorize(auth: AuthContext, execution_domain: str, account_alias: str) -> 
 
 @router.post(
     "/targets/stage",
-    response_model=APIResponse[HydraRelayResponseData],
+    response_model=APIResponse[HydraRelayResponseData | HydraExecutionWaitResponseData],
 )
 def stage_hydra_target(
     req: HydraTargetRequest,
@@ -45,12 +50,12 @@ def stage_hydra_target(
 ):
     _authorize(auth, req.execution_domain, req.account_alias)
     data = service.stage_initial(req)
-    return APIResponse[HydraRelayResponseData](code=0, message="ok", data=data)
+    return APIResponse(code=0, message="ok", data=data)
 
 
 @router.post(
     "/rebalances/retry",
-    response_model=APIResponse[HydraRelayResponseData],
+    response_model=APIResponse[HydraRelayResponseData | HydraExecutionWaitResponseData],
 )
 def stage_hydra_retry(
     req: HydraRetryRequest,
@@ -59,7 +64,31 @@ def stage_hydra_retry(
 ):
     _authorize(auth, req.execution_domain, req.account_alias)
     data = service.stage_retry(req)
-    return APIResponse[HydraRelayResponseData](code=0, message="ok", data=data)
+    return APIResponse(code=0, message="ok", data=data)
+
+
+@router.post("/execution/advance", response_model=APIResponse[dict])
+def advance_hydra_execution(
+    req: HydraAdvanceRequest,
+    auth: AuthContext = Depends(verify_api_key),
+    service: HydraRelayService = Depends(get_hydra_relay_service),
+):
+    _authorize(auth, req.execution_domain, req.account_alias)
+    return APIResponse(code=0, message="ok", data=advance_execution(service, req))
+
+
+@router.post("/execution/data", response_model=APIResponse[dict])
+def publish_hydra_execution(
+    req: HydraExecutionPublishRequest,
+    auth: AuthContext = Depends(verify_api_key),
+    service: HydraRelayService = Depends(get_hydra_relay_service),
+):
+    _authorize(auth, req.execution_domain, req.account_alias)
+    try:
+        data = publish_execution(service, req)
+    except ValueError as exc:
+        raise APIError(ErrorCode.BAD_REQUEST, str(exc)) from exc
+    return APIResponse(code=0, message="ok", data=data)
 
 
 @router.post(

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("cancel-open", "settle-close", "market-backup", "retry", "query-preflight")]
+    [ValidateSet("cancel-open", "settle-close", "market-backup", "publish-execution", "retry", "query-preflight")]
     [string]$Stage
 )
 
@@ -60,6 +60,7 @@ if ([string]::IsNullOrWhiteSpace($requiredPython) -or -not (Test-Path -LiteralPa
 $pythonExe = $requiredPython
 $today = Get-Date -Format "yyyyMMdd"
 $operationPending = $false
+$operationWaitingDate = $false
 try {
     switch ($Stage) {
         "cancel-open" {
@@ -70,7 +71,7 @@ try {
         }
         "settle-close" {
             $output = @(& $runner -Command settle-close -Date $today -PythonExe $pythonExe 2>&1) | Out-String
-            $operationPending = $output -match '"status"\s*:\s*"WAITING_FOR_BROKER"'
+            $operationPending = $output -match '"status"\s*:\s*"(WAITING_FOR_BROKER|WAITING_RECONCILIATION)"'
             if (-not $operationPending -and $output -notmatch '"status"\s*:\s*"(ATTEMPT_CLOSED|NO_ORDERS)"') { throw "settle-close returned no recognized receipt" }
         }
         "market-backup" {
@@ -80,16 +81,51 @@ try {
             if ($exitCode -ne 0) { throw "market backup returned a non-zero exit code" }
             if ($output -notmatch '"status"\s*:\s*"(UPLOADED|SKIPPED_NON_TRADING)"') { throw "market backup returned no success receipt" }
         }
+        "publish-execution" {
+            $output = @(& $runner -Command publish-execution -Date $today -PythonExe $pythonExe 2>&1) | Out-String
+            if ($output -notmatch '"status"\s*:\s*"(EXECUTION_DATA_PUBLISHED|SKIPPED_NON_TRADING)"') { throw "execution publication returned no receipt" }
+        }
         "retry" {
-            $nextDate = Get-NextTradingDate
-            $output = @(& $runner -Command retry -Date $today -NextDate $nextDate -PythonExe $pythonExe 2>&1) | Out-String
-            if ($output -notmatch '"status"\s*:\s*"(RETRY_STAGED|NO_RESIDUAL|NO_ATTEMPT|ALREADY_STAGED)"') { throw "retry returned no terminal receipt" }
+            $publicationOutput = @(& $runner -Command publish-execution -Date $today -PythonExe $pythonExe 2>&1) | Out-String
+            if ($publicationOutput -notmatch '"status"\s*:\s*"(EXECUTION_DATA_PUBLISHED|SKIPPED_NON_TRADING)"') { throw "execution publication returned no receipt" }
+            if ($publicationOutput -match '"status"\s*:\s*"SKIPPED_NON_TRADING"') {
+                $operationWaitingDate = $true; $output = $publicationOutput; break
+            }
+            # Re-observe any late broker terminal response; this is not an order retry.
+            $closeOutput = @(& $runner -Command settle-close -Date $today -PythonExe $pythonExe 2>&1) | Out-String
+            if ($closeOutput -match '"status"\s*:\s*"(WAITING_FOR_BROKER|WAITING_RECONCILIATION)"') {
+                $operationPending = $true; $output = $closeOutput; break
+            }
+            if ($closeOutput -notmatch '"status"\s*:\s*"(ATTEMPT_CLOSED|NO_ORDERS)"') { throw "settle-close returned no recognized receipt" }
+            $output = @(& $runner -Command advance -Date $today -PythonExe $pythonExe 2>&1) | Out-String
+            if ($output -notmatch '"status"\s*:\s*"(EXECUTION_ADVANCED|NO_PENDING_EXECUTION|WAITING_EXECUTION_DATE|WAITING_EXECUTION_DATA|WAITING_RECONCILIATION)"') { throw "server execution advance returned no receipt" }
+            $operationPending = $output -match '"status"\s*:\s*"(WAITING_EXECUTION_DATA|WAITING_RECONCILIATION)"'
+            $operationWaitingDate = $output -match '"status"\s*:\s*"WAITING_EXECUTION_DATE"'
+            $output = "close:`n$closeOutput`nadvance:`n$output"
         }
         "query-preflight" {
+            # A delayed 15:30 publication is recoverable at 18:00, with fresh data.
+            $publicationOutput = @(& $runner -Command publish-execution -Date $today -PythonExe $pythonExe 2>&1) | Out-String
+            if ($publicationOutput -notmatch '"status"\s*:\s*"(EXECUTION_DATA_PUBLISHED|SKIPPED_NON_TRADING)"') { throw "execution publication returned no receipt" }
+            if ($publicationOutput -match '"status"\s*:\s*"SKIPPED_NON_TRADING"') {
+                $operationWaitingDate = $true; $output = $publicationOutput; break
+            }
+            $closeOutput = @(& $runner -Command settle-close -Date $today -PythonExe $pythonExe 2>&1) | Out-String
+            if ($closeOutput -match '"status"\s*:\s*"(WAITING_FOR_BROKER|WAITING_RECONCILIATION)"') {
+                $operationPending = $true; $output = $closeOutput; break
+            }
+            if ($closeOutput -notmatch '"status"\s*:\s*"(ATTEMPT_CLOSED|NO_ORDERS)"') { throw "settle-close returned no recognized receipt" }
+            $advanceOutput = @(& $runner -Command advance -Date $today -PythonExe $pythonExe 2>&1) | Out-String
+            if ($advanceOutput -notmatch '"status"\s*:\s*"(EXECUTION_ADVANCED|NO_PENDING_EXECUTION|WAITING_EXECUTION_DATE|WAITING_EXECUTION_DATA|WAITING_RECONCILIATION)"') { throw "server execution advance returned no receipt" }
+            $operationPending = $advanceOutput -match '"status"\s*:\s*"(WAITING_EXECUTION_DATA|WAITING_RECONCILIATION)"'
+            $operationWaitingDate = $advanceOutput -match '"status"\s*:\s*"WAITING_EXECUTION_DATE"'
+            if ($operationPending -or $operationWaitingDate) {
+                $output = $advanceOutput; break # Do not fetch/register a stale batch while waiting.
+            }
             $nextDate = Get-NextTradingDate
             $queryOutput = @(& $runner -Command query -Date $nextDate -PythonExe $pythonExe 2>&1) | Out-String
             if ($queryOutput -match '"status"\s*:\s*"NO_ORDERS"') {
-                $output = "query:`n$queryOutput`npreflight: skipped because server returned NO_ORDERS"
+                $output = "advance:`n$advanceOutput`nquery:`n$queryOutput`npreflight: skipped because server returned NO_ORDERS"
             } else {
                 if ($queryOutput -notmatch '"status"\s*:\s*"(FETCHED|ALREADY_FETCHED)"') { throw "query did not freeze a batch" }
                 $preflightOutput = @(& $runner -Command preflight -Date $nextDate -PythonExe $pythonExe 2>&1) | Out-String
@@ -102,13 +138,16 @@ try {
             }
         }
     }
-    $operationState = if ($operationPending) { "pending broker evidence" } else { "succeeded" }
+    $operationState = if ($operationPending) { "pending evidence/data" } elseif ($operationWaitingDate) { "waiting for eligible trading pair" } else { "succeeded" }
     Add-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) $Stage $operationState`n$output"
     if ($operationPending) {
-        Send-WeComNotification "[Hydra live] $Stage recorded available facts for $today; some orders still need broker confirmation. No final Close or residual orders were created. Review the pending-order report before the next execution cycle." $true
+        Send-WeComNotification "[Hydra live] $Stage is waiting for broker/reconciliation evidence or fresh execution data for $today. No new submit task was registered by this run. Review $logFile; previously frozen tasks require separate review." $true
+    }
+    elseif ($operationWaitingDate) {
+        Send-WeComNotification "[Hydra live] $Stage: normal calendar wait for $today. No stale-price batch or new submit task was created."
     }
     elseif ($Stage -eq "cancel-open") {
-        Send-WeComNotification "[Hydra live] cancel-open request phase completed for $today; final broker status remains pending until the 16:05 settlement task."
+        Send-WeComNotification "[Hydra live] cancel-open request phase completed for $today; cumulative fills and 15:00 expiry are observed at 15:10, then again before server execution advance."
     }
     else {
         Send-WeComNotification "[Hydra live] $Stage completed for $today."

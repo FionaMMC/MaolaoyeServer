@@ -51,6 +51,7 @@ if ($null -ne $existing) {
     # settings as part of the immutable one-time-submit definition.
     $sameSettings = (
         [int]$existing.Settings.RestartCount -eq 0 -and
+        [System.Xml.XmlConvert]::ToTimeSpan([string]$existing.Settings.ExecutionTimeLimit).TotalMinutes -ge 360 -and
         -not [bool]$existing.Settings.StartWhenAvailable -and
         [string]$existing.Settings.MultipleInstances -eq "IgnoreNew"
     )
@@ -78,7 +79,7 @@ $trigger = New-ScheduledTaskTrigger -Once -At $runAt
 $principal = New-ScheduledTaskPrincipal `
     -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet `
-    -ExecutionTimeLimit (New-TimeSpan -Minutes 15) `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 360) `
     -MultipleInstances IgnoreNew -AllowStartIfOnBatteries:$false `
     -StartWhenAvailable:$false -RestartCount 0
 Register-ScheduledTask -TaskName $taskName -TaskPath "\" -Action $action `

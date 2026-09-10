@@ -86,17 +86,25 @@ class HydraDataStore:
                 batch_dir=str(batch_dir),
             )
 
-        batch_dir.mkdir(parents=True, exist_ok=False)
-        data_tmp = self._write_temp(batch_dir, body, ".parquet.tmp")
-        manifest_tmp = self._write_temp(
-            batch_dir, _canonical_json(manifest_payload) + b"\n", ".json.tmp",
-        )
-        try:
-            os.replace(data_tmp, data_path)
-            os.replace(manifest_tmp, manifest_path)
-        finally:
-            Path(data_tmp).unlink(missing_ok=True)
-            Path(manifest_tmp).unlink(missing_ok=True)
+        # Publish the complete pair atomically. A failed write must not leave
+        # a visible half-batch that makes every subsequent publication fail.
+        batch_dir.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=batch_dir.parent, prefix=".install-") as staging:
+            staging_path = Path(staging)
+            data_tmp = self._write_temp(staging_path, body, ".parquet.tmp")
+            manifest_tmp = self._write_temp(
+                staging_path, _canonical_json(manifest_payload) + b"\n", ".json.tmp",
+            )
+            os.replace(data_tmp, staging_path / "data.parquet")
+            os.replace(manifest_tmp, staging_path / "manifest.json")
+            try:
+                os.rename(staging_path, batch_dir)
+            except OSError:
+                if not batch_dir.exists():
+                    raise
+                # Another publisher won. Verify its immutable bytes/manifest;
+                # this never overwrites an existing nonempty batch directory.
+                return self.install(body, manifest)
         return HydraDataInstallResult(
             stream=manifest.stream,
             file_sha256=manifest.file_sha256,

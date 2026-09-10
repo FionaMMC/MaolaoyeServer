@@ -1,5 +1,13 @@
 # Sell-first execution queue — local first slice, not deployed
 
+> Updated 2026-09-10: the historical one-pass design below now has a bounded
+> `submit-queue` runner: 30-second resumption of known-unsent cash-wait orders,
+> 09:10–14:55 China time, with an additional per-order cutoff before broker calls.
+> Exceptions never cause automatic broker-call retries. See the current
+> [execution-policy handoff](../../docs/HYDRA_EXECUTION_POLICY_REVIEW_HANDOFF_20260910.md)
+> for the new evening flow and deployment boundaries. This is still not a
+> production deployment claim; legacy 16:05/16:20 schedules below are superseded.
+
 ## Implemented behavior
 
 The preflight plan may be feasible because approved sales can fund approved

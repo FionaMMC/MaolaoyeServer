@@ -64,7 +64,7 @@ def _install(store, stream, frame, adjustment, as_of="20260731"):
 
 
 def _install_calendar(store):
-    frame = pd.DataFrame({"trade_date": ["20260731", "20260803", "20260804"]})
+    frame = pd.DataFrame({"trade_date": ["20260731", "20260803", "20260804", "20260805"]})
     body = _bytes(frame)
     manifest = HydraDataManifest(
         stream="hydra_trading_calendar",
@@ -97,6 +97,8 @@ def _setup(
         store, "hydra_corporate_actions", actions, "corporate_actions",
     )
     calendar_sha = _install_calendar(store)
+    if state_domain == "live":
+        _install(store, "hydra_execution_raw", _price_frame("20260803"), "none", "20260803")
     with sf() as session:
         session.add(InstanceState(
             instance_id=f"{state_domain}_hydra",
@@ -153,6 +155,10 @@ def _target(model_sha, raw_sha, actions_sha, calendar_sha, **changes):
         "cash_buffer_weight": 0.01,
     }
     payload.update(changes)
+    if payload["execution_domain"] == "live":
+        payload.setdefault("execution_raw_sha256", hashlib.sha256(_bytes(_price_frame("20260803"))).hexdigest())
+        if "execution_date" not in changes:
+            payload["execution_date"] = "20260804"
     payload["basket_sha256"] = hydra_basket_hash(payload)
     return HydraTargetRequest(**payload)
 
@@ -196,7 +202,7 @@ def test_deadline_closes_workflow_without_fabricating_broker_terminal(tmp_path):
         execution_domain="live", account_alias="hydra-live", attempt_id=initial.attempt_id,
         actual_cash=999.0, actual_positions={}, reconciliation_evidence_sha256="a" * 64,
         close_mode="execution_deadline",
-        execution_deadline_at=datetime.fromisoformat("2026-08-03T15:00:00+08:00"),
+        execution_deadline_at=datetime.fromisoformat("2026-08-04T15:00:00+08:00"),
     )
     closed = service.close_attempt(req)
     assert closed.status == "CLOSED_PENDING_BROKER"
@@ -204,7 +210,7 @@ def test_deadline_closes_workflow_without_fabricating_broker_terminal(tmp_path):
     assert len(closed.unresolved_order_ids) == 2
     assert closed.residual_after == {}  # no executable residual from unreconciled snapshot
     assert service.close_attempt(req) == closed
-    assert OrdersQueueService(sf).list_pending("20260803", execution_domain="live") == []
+    assert OrdersQueueService(sf).list_pending("20260804", execution_domain="live") == []
     with sf() as session:
         assert session.query(HydraWorkflowClosure).count() == 1
         assert {row.status for row in session.query(Order)} == {"PENDING"}
@@ -495,13 +501,13 @@ def test_attributed_hydra_uses_only_managed_capital_across_stage_close_and_retry
         assert attempt.reconciled_positions == {}
 
     retry_raw_sha = _install(
-        store, "hydra_execution_raw", _price_frame("20260803"), "none", "20260803",
+        store, "hydra_execution_raw", _price_frame("20260804"), "none", "20260804",
     )
     retry = service.stage_retry(HydraRetryRequest(
         execution_domain="live",
         account_alias="hydra-live",
         rebalance_id=first.rebalance_id,
-        trade_date="20260804",
+        trade_date="20260805",
         execution_raw_sha256=retry_raw_sha,
         actual_cash=19_149_000.0,
         actual_positions={"600000.SH": 200},

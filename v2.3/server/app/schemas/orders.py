@@ -18,6 +18,7 @@ class OrderItem(BaseModel):
     batch_sha256: str | None = None
     target_hash: str | None = None
     execution_reference_price: float | None = None
+    execution_policy: dict | None = None
     account_group: str
     symbol: str
     direction: str = Field(pattern=r"^(BUY|SELL)$")
