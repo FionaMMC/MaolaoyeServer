@@ -1,0 +1,25 @@
+{
+  "execution_domain": "live",
+  "requested_at": "2026-09-04T19:04:00+08:00",
+  "authorization": "operator explicitly authorized cancellation in the active Codex thread",
+  "preconditions": {
+    "trading_enabled": false,
+    "account_match": true,
+    "all_orders_zero_filled": true,
+    "all_orders_cancelable_before_request": true,
+    "order_identity_matched_local_hydra_batch": true
+  },
+  "cancel_requests": [
+    {"qmt_order_id": 1082132999, "symbol": "513100.SH", "quantity": 1000, "return_code": 0},
+    {"qmt_order_id": 1082133000, "symbol": "513500.SH", "quantity": 1200, "return_code": 0},
+    {"qmt_order_id": 1082133001, "symbol": "518880.SH", "quantity": 800, "return_code": 0}
+  ],
+  "last_query_at": "2026-09-04T19:05:04.853461+08:00",
+  "last_observed_state": {
+    "status_code": 50,
+    "status_name": "ORDER_REPORTED",
+    "traded_volume": 0,
+    "still_cancelable": true
+  },
+  "interpretation": "QMT accepted each cancellation instruction (return code 0), but had not published a terminal order state by the last read-only query. No further cancellation request was sent."
+}

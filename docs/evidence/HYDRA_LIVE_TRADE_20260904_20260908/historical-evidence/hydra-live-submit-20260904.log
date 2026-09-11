@@ -1,0 +1,57 @@
+2026-09-04T09:10:02.2332778+08:00 preflight failed: {"batch_sha256": "36b0f9f11e5e8b4d084b058eddf9da65fb7a946bb34f4d7ba5ca18708491dfda", "preflight_receipt_sha256": "bfd82a2baf17016827580610ced85b48f687eb393e2b64f8546b244809c10c80", "reconciliation": {"applied": false, "cash_diff": 0.0, "diffs": [], "dry_run": true, "instance_id": "live_hydra_v481_rb", "n_matched": 1, "n_mismatched": 0, "n_qmt_only": 0, "n_qmt_positions": 1, "n_server_only": 0, "n_server_positions": 1, "qmt_cash": 19148943.85, "server_cash": 19148943.85, "snapshot_time": "2026-09-04T09:10:02.031128+08:00"}, "risk": {"buffer_bps": 100.0, "buy_notional": 204214.0, "cash_capacity_buy_notional": 19129814.035964, "max_daily_buy_notional": 19129814.035964, "max_daily_orders": 9, "max_daily_sell_notional": 19344477.4295, "max_daily_turnover_notional": 38688954.859, "max_price_offset_bps": 50.0, "max_single_order_notional": 19344477.4295, "mode": "auto", "order_count": 9, "postcheck_available_cash": 18944525.636, "qmt_available_cash": 19148943.85, "qmt_total_asset": 19152947.95, "sell_notional": 0.0}, "status": "READY_FOR_OFFLINE_SUBMIT", "trade_date": "20260904"}
+2026-09-04T09:25:14.2051189+08:00 preflight succeeded; submit intentionally skipped
+{
+  "batch_sha256": "36b0f9f11e5e8b4d084b058eddf9da65fb7a946bb34f4d7ba5ca18708491dfda",
+  "preflight_receipt_sha256": "996deeb17d74f87bc1c70e411939599b7b5697685aa151e37a78ac7d8bd90a4f",
+  "reconciliation": {
+    "applied": false,
+    "cash_diff": 0.0,
+    "diffs": [],
+    "dry_run": true,
+    "instance_id": "live_hydra_v481_rb",
+    "n_matched": 1,
+    "n_mismatched": 0,
+    "n_qmt_only": 0,
+    "n_qmt_positions": 1,
+    "n_server_only": 0,
+    "n_server_positions": 1,
+    "qmt_cash": 19148943.85,
+    "server_cash": 19148943.85,
+    "snapshot_time": "2026-09-04T09:25:14.044905+08:00"
+  },
+  "risk": {
+    "buffer_bps": 100.0,
+    "buy_notional": 204214.0,
+    "cash_capacity_buy_notional": 19129814.035964,
+    "max_daily_buy_notional": 19129814.035964,
+    "max_daily_orders": 9,
+    "max_daily_sell_notional": 19347971.6255,
+    "max_daily_turnover_notional": 38695943.251,
+    "max_price_offset_bps": 50.0,
+    "max_single_order_notional": 19347971.6255,
+    "mode": "auto",
+    "order_count": 9,
+    "postcheck_available_cash": 18944525.636,
+    "qmt_available_cash": 19148943.85,
+    "qmt_total_asset": 19156407.55,
+    "sell_notional": 0.0
+  },
+  "status": "READY_FOR_OFFLINE_SUBMIT",
+  "trade_date": "20260904"
+}
+{"batch_sha256": "36b0f9f11e5e8b4d084b058eddf9da65fb7a946bb34f4d7ba5ca18708491dfda", "preflight_receipt_sha256": "996deeb17d74f87bc1c70e411939599b7b5697685aa151e37a78ac7d8bd90a4f", "reconciliation": {"applied": false, "cash_diff": 0.0, "diffs": [], "dry_run": true, "instance_id": "live_hydra_v481_rb", "n_matched": 1, "n_mismatched": 0, "n_qmt_only": 0, "n_qmt_positions": 1, "n_server_only": 0, "n_server_positions": 1, "qmt_cash": 19148943.85, "server_cash": 19148943.85, "snapshot_time": "2026-09-04T09:25:14.044905+08:00"}, "risk": {"buffer_bps": 100.0, "buy_notional": 204214.0, "cash_capacity_buy_notional": 19129814.035964, "max_daily_buy_notional": 19129814.035964, "max_daily_orders": 9, "max_daily_sell_notional": 19347971.6255, "max_daily_turnover_notional": 38695943.251, "max_price_offset_bps": 50.0, "max_single_order_notional": 19347971.6255, "mode": "auto", "order_count": 9, "postcheck_available_cash": 18944525.636, "qmt_available_cash": 19148943.85, "qmt_total_asset": 19156407.55, "sell_notional": 0.0}, "status": "READY_FOR_OFFLINE_SUBMIT", "trade_date": "20260904"}
+
+2026-09-04T09:26:11.9374356+08:00 submit failed: Hydra 'submit' failed with exit code 1
+2026-09-04T09:28:58.0921279+08:00 submit succeeded
+{"already_recorded": 0, "attempted_now": 9, "batch_sha256": "36b0f9f11e5e8b4d084b058eddf9da65fb7a946bb34f4d7ba5ca18708491dfda", "recovered": 0, "rejected": 0, "submitted": 9, "submitted_now": 9, "trade_date": "20260904"}
+{
+  "already_recorded": 0,
+  "attempted_now": 9,
+  "batch_sha256": "36b0f9f11e5e8b4d084b058eddf9da65fb7a946bb34f4d7ba5ca18708491dfda",
+  "recovered": 0,
+  "rejected": 0,
+  "submitted": 9,
+  "submitted_now": 9,
+  "trade_date": "20260904"
+}
+

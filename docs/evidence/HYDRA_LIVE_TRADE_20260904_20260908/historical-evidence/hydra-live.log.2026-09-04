@@ -1,0 +1,76 @@
+2026-09-04 09:10:02,203 [INFO] [HYDRA-LIVE] {"batch_sha256": "36b0f9f11e5e8b4d084b058eddf9da65fb7a946bb34f4d7ba5ca18708491dfda", "preflight_receipt_sha256": "bfd82a2baf17016827580610ced85b48f687eb393e2b64f8546b244809c10c80", "reconciliation": {"applied": false, "cash_diff": 0.0, "diffs": [], "dry_run": true, "instance_id": "live_hydra_v481_rb", "n_matched": 1, "n_mismatched": 0, "n_qmt_only": 0, "n_qmt_positions": 1, "n_server_only": 0, "n_server_positions": 1, "qmt_cash": 19148943.85, "server_cash": 19148943.85, "snapshot_time": "2026-09-04T09:10:02.031128+08:00"}, "risk": {"buffer_bps": 100.0, "buy_notional": 204214.0, "cash_capacity_buy_notional": 19129814.035964, "max_daily_buy_notional": 19129814.035964, "max_daily_orders": 9, "max_daily_sell_notional": 19344477.4295, "max_daily_turnover_notional": 38688954.859, "max_price_offset_bps": 50.0, "max_single_order_notional": 19344477.4295, "mode": "auto", "order_count": 9, "postcheck_available_cash": 18944525.636, "qmt_available_cash": 19148943.85, "qmt_total_asset": 19152947.95, "sell_notional": 0.0}, "status": "READY_FOR_OFFLINE_SUBMIT", "trade_date": "20260904"}
+2026-09-04 09:25:14,126 [INFO] [HYDRA-LIVE] {"batch_sha256": "36b0f9f11e5e8b4d084b058eddf9da65fb7a946bb34f4d7ba5ca18708491dfda", "preflight_receipt_sha256": "996deeb17d74f87bc1c70e411939599b7b5697685aa151e37a78ac7d8bd90a4f", "reconciliation": {"applied": false, "cash_diff": 0.0, "diffs": [], "dry_run": true, "instance_id": "live_hydra_v481_rb", "n_matched": 1, "n_mismatched": 0, "n_qmt_only": 0, "n_qmt_positions": 1, "n_server_only": 0, "n_server_positions": 1, "qmt_cash": 19148943.85, "server_cash": 19148943.85, "snapshot_time": "2026-09-04T09:25:14.044905+08:00"}, "risk": {"buffer_bps": 100.0, "buy_notional": 204214.0, "cash_capacity_buy_notional": 19129814.035964, "max_daily_buy_notional": 19129814.035964, "max_daily_orders": 9, "max_daily_sell_notional": 19347971.6255, "max_daily_turnover_notional": 38695943.251, "max_price_offset_bps": 50.0, "max_single_order_notional": 19347971.6255, "mode": "auto", "order_count": 9, "postcheck_available_cash": 18944525.636, "qmt_available_cash": 19148943.85, "qmt_total_asset": 19156407.55, "sell_notional": 0.0}, "status": "READY_FOR_OFFLINE_SUBMIT", "trade_date": "20260904"}
+2026-09-04 09:26:08,523 [INFO] [HYDRA-LIVE] {"batch_sha256": "36b0f9f11e5e8b4d084b058eddf9da65fb7a946bb34f4d7ba5ca18708491dfda", "preflight_receipt_sha256": "07033832ae8e6bc897c2bdca9cb48d61009bd2a2fef2dd7ed6cc807b36ea534d", "reconciliation": {"applied": false, "cash_diff": 0.0, "diffs": [], "dry_run": true, "instance_id": "live_hydra_v481_rb", "n_matched": 1, "n_mismatched": 0, "n_qmt_only": 0, "n_qmt_positions": 1, "n_server_only": 0, "n_server_positions": 1, "qmt_cash": 19148943.85, "server_cash": 19148943.85, "snapshot_time": "2026-09-04T09:26:08.427518+08:00"}, "risk": {"buffer_bps": 100.0, "buy_notional": 204214.0, "cash_capacity_buy_notional": 19129814.035964, "max_daily_buy_notional": 19129814.035964, "max_daily_orders": 9, "max_daily_sell_notional": 19347971.6255, "max_daily_turnover_notional": 38695943.251, "max_price_offset_bps": 50.0, "max_single_order_notional": 19347971.6255, "mode": "auto", "order_count": 9, "postcheck_available_cash": 18944525.636, "qmt_available_cash": 19148943.85, "qmt_total_asset": 19156407.55, "sell_notional": 0.0}, "status": "READY_FOR_OFFLINE_SUBMIT", "trade_date": "20260904"}
+2026-09-04 09:26:11,893 [ERROR] [HYDRA-LIVE] FAIL_CLOSED command=submit date=20260904
+Traceback (most recent call last):
+  File "C:\hydra-live\releases\be32a27827dd152c0da0c239d9bb5b58914ae3f1\live_client\cli.py", line 438, in main
+    result = submit(cfg, args.date, args.mock_state)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\hydra-live\releases\be32a27827dd152c0da0c239d9bb5b58914ae3f1\live_client\cli.py", line 141, in submit
+    gateway.connect()
+  File "C:\hydra-live\releases\be32a27827dd152c0da0c239d9bb5b58914ae3f1\live_client\gateway.py", line 259, in connect
+    raise RuntimeError("QMT connect() 失败")
+RuntimeError: QMT connect() 失败
+2026-09-04 09:28:52,995 [INFO] [HYDRA-LIVE] {"batch_sha256": "36b0f9f11e5e8b4d084b058eddf9da65fb7a946bb34f4d7ba5ca18708491dfda", "preflight_receipt_sha256": "244eec18a0add244fa309ff73a078e6b54be67c31553ff5e3d6322af45ed9a23", "reconciliation": {"applied": false, "cash_diff": 0.0, "diffs": [], "dry_run": true, "instance_id": "live_hydra_v481_rb", "n_matched": 1, "n_mismatched": 0, "n_qmt_only": 0, "n_qmt_positions": 1, "n_server_only": 0, "n_server_positions": 1, "qmt_cash": 19148943.85, "server_cash": 19148943.85, "snapshot_time": "2026-09-04T09:28:52.898140+08:00"}, "risk": {"buffer_bps": 100.0, "buy_notional": 204214.0, "cash_capacity_buy_notional": 19129814.035964, "max_daily_buy_notional": 19129814.035964, "max_daily_orders": 9, "max_daily_sell_notional": 19347971.6255, "max_daily_turnover_notional": 38695943.251, "max_price_offset_bps": 50.0, "max_single_order_notional": 19347971.6255, "mode": "auto", "order_count": 9, "postcheck_available_cash": 18944525.636, "qmt_available_cash": 19148943.85, "qmt_total_asset": 19156407.55, "sell_notional": 0.0}, "status": "READY_FOR_OFFLINE_SUBMIT", "trade_date": "20260904"}
+2026-09-04 09:28:58,035 [INFO] [HYDRA-LIVE] {"already_recorded": 0, "attempted_now": 9, "batch_sha256": "36b0f9f11e5e8b4d084b058eddf9da65fb7a946bb34f4d7ba5ca18708491dfda", "recovered": 0, "rejected": 0, "submitted": 9, "submitted_now": 9, "trade_date": "20260904"}
+2026-09-04 13:10:04,253 [INFO] [HYDRA-LIVE] {"account_alias": "hydra-live", "execution_domain": "live", "instance_id": "live_hydra_v481_rb", "ledger_mode": "attributed", "mode": "live", "qmt_contacted": false, "risk_mode": "auto", "server_contacted": false, "state_schema": "ok", "status": "LOCAL_CONFIG_OK", "task_prefix": "HydraLive", "trading_enabled": false, "transport": "http"}
+2026-09-04 13:11:10,239 [INFO] [HYDRA-LIVE] {"account_ledger_cash_after": 210589.8500000015, "already_applied": false, "amount": -18938354.0, "event_date": "20260904", "execution_domain": "live", "instance_id": "live_hydra_v481_rb", "journal_id": 2, "ledger_mode_after": "attributed", "unallocated_cash_after": 92477.8199999985, "virtual_cash_after": 210589.8500000015}
+2026-09-04 13:11:44,967 [INFO] [HYDRA-LIVE] {"account_alias": "hydra-live", "cash_flow_totals": {"CAPITAL_DEALLOCATION": -18938354.0, "DEPOSIT": 18938354.0}, "execution_domain": "live", "initial_allocated_cash": null, "instance_id": "live_hydra_v481_rb", "last_update": "2026-09-04T13:11:14+08:00", "ledger_mode": "attributed", "owned_symbols": ["159915.SZ", "159930.SZ", "159981.SZ", "159985.SZ", "510300.SH", "511260.SH", "513100.SH", "513500.SH", "518880.SH"], "positions": {"510300.SH": 100}, "virtual_cash": 210589.8500000015}
+2026-09-04 13:55:18,066 [INFO] [HYDRA-LIVE] {"account_alias": "hydra-live", "execution_domain": "live", "instance_id": "live_hydra_v481_rb", "ledger_mode": "attributed", "mode": "live", "qmt_contacted": false, "risk_mode": "auto", "server_contacted": false, "state_schema": "ok", "status": "LOCAL_CONFIG_OK", "task_prefix": "HydraLive", "trading_enabled": false, "transport": "http"}
+2026-09-04 15:11:04,038 [ERROR] [HYDRA-LIVE] FAIL_CLOSED command=settle-close date=20260904
+Traceback (most recent call last):
+  File "C:\hydra-live\releases\1daf333420586f44e943ba56703248d925517ee6\live_client\gateway.py", line 616, in settlement_results
+    status = classify_qmt_settlement_status(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\hydra-live\releases\1daf333420586f44e943ba56703248d925517ee6\live_client\gateway.py", line 143, in classify_qmt_settlement_status
+    raise RuntimeError("QMT 委托尚未终结")
+RuntimeError: QMT 委托尚未终结
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\hydra-live\releases\1daf333420586f44e943ba56703248d925517ee6\live_client\cli.py", line 762, in main
+    result = settle_and_close(cfg, args.date, args.mock_state)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\hydra-live\releases\1daf333420586f44e943ba56703248d925517ee6\live_client\cli.py", line 396, in settle_and_close
+    settlement = settle(cfg, trade_date, mock_state)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\hydra-live\releases\1daf333420586f44e943ba56703248d925517ee6\live_client\cli.py", line 335, in settle
+    results.extend(gateway.settlement_results(submitted))
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\hydra-live\releases\1daf333420586f44e943ba56703248d925517ee6\live_client\gateway.py", line 623, in settlement_results
+    raise RuntimeError(f"QMT 委托 {local_id}: {exc}") from exc
+RuntimeError: QMT 委托 1082132999: QMT 委托尚未终结
+2026-09-04 15:16:36,265 [ERROR] [HYDRA-LIVE] FAIL_CLOSED command=settle-close date=20260904
+Traceback (most recent call last):
+  File "C:\hydra-live\releases\1daf333420586f44e943ba56703248d925517ee6\live_client\gateway.py", line 616, in settlement_results
+    status = classify_qmt_settlement_status(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\hydra-live\releases\1daf333420586f44e943ba56703248d925517ee6\live_client\gateway.py", line 143, in classify_qmt_settlement_status
+    raise RuntimeError("QMT 委托尚未终结")
+RuntimeError: QMT 委托尚未终结
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\hydra-live\releases\1daf333420586f44e943ba56703248d925517ee6\live_client\cli.py", line 762, in main
+    result = settle_and_close(cfg, args.date, args.mock_state)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\hydra-live\releases\1daf333420586f44e943ba56703248d925517ee6\live_client\cli.py", line 396, in settle_and_close
+    settlement = settle(cfg, trade_date, mock_state)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\hydra-live\releases\1daf333420586f44e943ba56703248d925517ee6\live_client\cli.py", line 335, in settle
+    results.extend(gateway.settlement_results(submitted))
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\hydra-live\releases\1daf333420586f44e943ba56703248d925517ee6\live_client\gateway.py", line 623, in settlement_results
+    raise RuntimeError(f"QMT 委托 {local_id}: {exc}") from exc
+RuntimeError: QMT 委托 1082132999: QMT 委托尚未终结
+2026-09-04 16:00:38,123 [ERROR] [HYDRA-LIVE] FAIL_CLOSED command=retry date=20260904
+Traceback (most recent call last):
+  File "C:\hydra-live\releases\1daf333420586f44e943ba56703248d925517ee6\live_client\cli.py", line 764, in main
+    result = stage_residual_retry(
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\hydra-live\releases\1daf333420586f44e943ba56703248d925517ee6\live_client\cli.py", line 459, in stage_residual_retry
+    raise RuntimeError("没有 15:10 Hydra close 回执，禁止生成补单")
+RuntimeError: 没有 15:10 Hydra close 回执，禁止生成补单
+2026-09-04 18:02:31,979 [INFO] [HYDRA-LIVE] {"orders": 0, "status": "NO_ORDERS", "trade_date": "20260907"}

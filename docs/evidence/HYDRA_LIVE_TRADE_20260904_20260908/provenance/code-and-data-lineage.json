@@ -1,0 +1,38 @@
+{
+  "qmt_source_logs": {
+    "20260904_sha256": "4ad75a1432f5c199023f3790f719b46f5f07720c53957d29f769cc4458eeb1ed",
+    "20260908_sha256": "3213d1ff175e4b2f4f89d984621e4b5e566a139559bf7b03502f26c61b6944ff"
+  },
+  "server_code": {
+    "commit": null,
+    "note": "Not reverified: SSH key is unavailable and the live API does not expose a code version."
+  },
+  "server_order_lineage": {
+    "attempt_id": "ha_5540ea2f38c0efc9debd55fa18cc0021cebc9a15c39d91779afb9e3d167440ea",
+    "batch_sha256": "36b0f9f11e5e8b4d084b058eddf9da65fb7a946bb34f4d7ba5ca18708491dfda",
+    "rebalance_id": "hr_8e6f458058db8519c238f7b6469daeb01a020b6de189ebf1772f17836beca64d",
+    "target_hash": "535457e17291f641a44eea9ad64543f879b762557e7d739023d67205dec82357",
+    "target_id": "ht_8a996b2b867e5d77bbab0bd668a803beb7f76ffc7d6522840cef712409857537"
+  },
+  "target": {
+    "basket_sha256": "535457e17291f641a44eea9ad64543f879b762557e7d739023d67205dec82357",
+    "input_hash": "badbe23b26dc293ef3177949fcf96cf48edf9118c47b0cab14da7891f4468570",
+    "input_hashes": {
+      "corporate_actions": "c3bc1fec0a690b3584d301c58073093035d8b43a08b719a0c5040eea8fbdcbb4",
+      "execution_raw": "e3913610f8bd2b8f0a12008ec0d6235dcf23d1962d5e6df1bcb0f1fa86d96b08",
+      "model_hfq": "b378db0c3742d4ad92ed6bff7f9d8a4385383eb68854d63c0710bfa8c04dd1ae",
+      "trading_calendar": "62f0a7bb842a690c57a6d265f91a1805f3977f4b4b0888da0837c6decfe41c91"
+    },
+    "publisher_source_commit": "aa6b60deef44b244764385e7b6bd681429b9b362",
+    "target_sha256": "390b17498dc8b3e4d84a75116c2c061e3405e1092ed2a6d2aebc58d763a02e2c"
+  },
+  "windows_client": {
+    "change_patch": "windows-hotfix-1daf-to-ff810.patch",
+    "current_compatibility_release": "ff810a0626d7e262995bf3f12448c67e1963d977",
+    "hotfix_commits": [
+      "79bec5b86998ce4ab7508d0a0109bb7fca681224",
+      "ff810a0626d7e262995bf3f12448c67e1963d977"
+    ],
+    "submission_release": "1daf333420586f44e943ba56703248d925517ee6"
+  }
+}

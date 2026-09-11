@@ -1,0 +1,41 @@
+{
+  "body": {
+    "code": 0,
+    "data": {
+      "account_alias": "hydra-live",
+      "cash_flow_totals": {
+        "CAPITAL_DEALLOCATION": -18938354.0,
+        "DEPOSIT": 18938354.0
+      },
+      "execution_domain": "live",
+      "initial_allocated_cash": null,
+      "instance_id": "live_hydra_v481_rb",
+      "last_update": "2026-09-04T13:11:14+08:00",
+      "ledger_mode": "attributed",
+      "owned_symbols": [
+        "159915.SZ",
+        "159930.SZ",
+        "159981.SZ",
+        "159985.SZ",
+        "510300.SH",
+        "511260.SH",
+        "513100.SH",
+        "513500.SH",
+        "518880.SH"
+      ],
+      "positions": {
+        "510300.SH": 100
+      },
+      "virtual_cash": 210589.8500000015
+    },
+    "message": "ok"
+  },
+  "method": "GET",
+  "params": {
+    "account_alias": "hydra-live",
+    "instance_id": "live_hydra_v481_rb"
+  },
+  "path": "/accounts/strategy-ledger",
+  "retrieved_at": "2026-09-11T22:17:22+08:00",
+  "status_code": 200
+}

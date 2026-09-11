@@ -1,0 +1,14 @@
+{
+  "body": {
+    "code": 1001,
+    "data": null,
+    "message": "live token 无权访问未完成分域审计的路由"
+  },
+  "method": "GET",
+  "params": {
+    "trade_date": "20260904"
+  },
+  "path": "/admin/orders",
+  "retrieved_at": "2026-09-11T22:17:22+08:00",
+  "status_code": 403
+}

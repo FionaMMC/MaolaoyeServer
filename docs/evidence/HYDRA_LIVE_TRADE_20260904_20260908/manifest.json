@@ -1,0 +1,148 @@
+{
+  "files": [
+    {
+      "path": ".gitattributes",
+      "sha256": "705fd4d6451a31d36b3df7de96f83f30ac976c9b4a6d1e51671d8e2f33e2d0da",
+      "size": 8
+    },
+    {
+      "path": "historical-evidence/hydra-explicit-cancel-20260904-1904.json",
+      "sha256": "1c5067a9b7292b2d3d47568720b808f3d4710c20a5419f16897d263bc44112e4",
+      "size": 1099
+    },
+    {
+      "path": "historical-evidence/hydra-live-retry.log",
+      "sha256": "bbcd2db81d2f10aca922bff47de6cb056b9e419ebb1252cdf379adcf05694d96",
+      "size": 87
+    },
+    {
+      "path": "historical-evidence/hydra-live-settle-close.log",
+      "sha256": "7a6936a385603af82fda9287ea71790b39edee8d2166f8e357fea305b011c3ab",
+      "size": 202
+    },
+    {
+      "path": "historical-evidence/hydra-live-submit-20260904.log",
+      "sha256": "27398e8ef63aef496929cef0658712e2edb3f0b124ff9a8f8edf7d9f2588ba56",
+      "size": 4197
+    },
+    {
+      "path": "historical-evidence/hydra-live.log.2026-09-04",
+      "sha256": "6d309015af8d830f163eef4c3298e46952d553ee31daf7e2d07f7f33068d90c6",
+      "size": 11151
+    },
+    {
+      "path": "historical-evidence/hydra-qmt-post-restart-status-20260904.json",
+      "sha256": "72c4816497a562483a1a397cc693d1de1be3a9f61bd5b839b67984b26de9de38",
+      "size": 688
+    },
+    {
+      "path": "local/state_rows.json",
+      "sha256": "a67c9c76b2fc90272833155a634c7e654207ec8adad522e31a32c2a72aefd7e3",
+      "size": 33535
+    },
+    {
+      "path": "provenance/code-and-data-lineage.json",
+      "sha256": "da9083bbdc7c8163c0d3a5b20a85a31bd0e557dbd81c8fbea87c5037b349dd98",
+      "size": 1988
+    },
+    {
+      "path": "provenance/windows-hotfix-1daf-to-ff810.patch",
+      "sha256": "6cf2d99d342e53d1720750670b0d9d5e5e25ee78153112832fd2387b383643f4",
+      "size": 5044
+    },
+    {
+      "path": "PUBLIC_REDACTION.md",
+      "sha256": "b0a309949bc7f483857c64d0765d59bb42d956e9cf75b89ce49f737a5e5321ad",
+      "size": 957
+    },
+    {
+      "path": "PUBLIC_SANITIZATION.json",
+      "sha256": "3976e2eb24db01e08444ca88cb233192d107cdc588bd34e5366efd8e18e52227",
+      "size": 682
+    },
+    {
+      "path": "qmt/historical_log_extraction.json",
+      "sha256": "ffcc5b5fd3d7d8bad91712e5bd3060f9ca1750f16257770a90bbefd4bf06db8e",
+      "size": 1510547
+    },
+    {
+      "path": "qmt/manual-residual-20260908.json",
+      "sha256": "cd5f6a3ec22ed9a5e64ee28a350c684a931b13b4249c2a47d142f4401a87c114",
+      "size": 2159658
+    },
+    {
+      "path": "README.md",
+      "sha256": "56c9952a142cc918a8e5bb2c6bbbd0709293d0973d2483e6b2a8426c6de6c796",
+      "size": 4597
+    },
+    {
+      "path": "reconciliation/complete_order_lifecycle.csv",
+      "sha256": "b2778e49804559e484ee3ae2924994122a70955ce6e8b89dc158e9dbe7857a8a",
+      "size": 2867
+    },
+    {
+      "path": "reconciliation/order_lifecycle.csv",
+      "sha256": "3f1330220e2a56ed6be8bd4c9311aec2e250568fd705606651018750f0c53673",
+      "size": 2213
+    },
+    {
+      "path": "server/admin-orders-access.json",
+      "sha256": "0e921b41c5324afb97c9c115086069f74abd902bef010e01aa006b96ede816ab",
+      "size": 304
+    },
+    {
+      "path": "server/admin-trades-access.json",
+      "sha256": "fcccf173dbfc74257d5a8eb200efb430ac672711a8ff35b43aec18628429f27e",
+      "size": 304
+    },
+    {
+      "path": "server/orders.json",
+      "sha256": "36f284ccdb34dfce0e1f3061a98527901c00854c3d671ac41e014120b497c6ad",
+      "size": 9816
+    },
+    {
+      "path": "server/strategy-ledger-current.json",
+      "sha256": "8a942c0b5629e8073214e5ac1b6b976f71e6319b0da225d36d1a7db2130f418a",
+      "size": 1004
+    },
+    {
+      "path": "SUMMARY.json",
+      "sha256": "d5e067ccdb79a06039823bf98eebae6d9e358937e39fea1ea5f5a536f0a4dc6a",
+      "size": 1998
+    },
+    {
+      "path": "target/capital-preflight.json",
+      "sha256": "a459ad174e21dedc1701af04d223ffd361bfc3b10c9cadd78384218f0ae5ac7a",
+      "size": 2012
+    },
+    {
+      "path": "target/Hydra_latest.json",
+      "sha256": "8485567b9b1d3a3773ea28cfde2211f87bb9d118675b1ddc35c97bf5bd8a684a",
+      "size": 1178
+    },
+    {
+      "path": "target/Hydra_latest.parquet",
+      "sha256": "390b17498dc8b3e4d84a75116c2c061e3405e1092ed2a6d2aebc58d763a02e2c",
+      "size": 4548
+    },
+    {
+      "path": "target/release_receipt.json",
+      "sha256": "6036d1ee10b65e3af7a2f59893663e8299a6a371901f9f705d00f2137fba6893",
+      "size": 707
+    },
+    {
+      "path": "target/research-run-audit-20260903.md",
+      "sha256": "180fc357a4cf0400ba953a9fda2e71d6da80bb6fd1185c2477bf32556d1a2fa8",
+      "size": 4141
+    },
+    {
+      "path": "target/target-request.json",
+      "sha256": "9ca84cc8323d263f94caadea335358f6b0bb9d5ad5951568efee52cff03fdad5",
+      "size": 2071
+    }
+  ],
+  "git_byte_preservation": "directory-local .gitattributes sets * -text",
+  "hash_algorithm": "SHA-256",
+  "public_redacted_copy": true,
+  "scope": "Hydra target 20260904 plus manual residual completion 20260908"
+}

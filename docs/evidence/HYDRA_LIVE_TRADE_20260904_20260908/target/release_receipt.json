@@ -1,0 +1,13 @@
+{
+  "as_of_date": "20260903",
+  "execution_date": "20260904",
+  "input_hashes": {
+    "corporate_actions": "c3bc1fec0a690b3584d301c58073093035d8b43a08b719a0c5040eea8fbdcbb4",
+    "execution_raw": "e3913610f8bd2b8f0a12008ec0d6235dcf23d1962d5e6df1bcb0f1fa86d96b08",
+    "model_hfq": "b378db0c3742d4ad92ed6bff7f9d8a4385383eb68854d63c0710bfa8c04dd1ae",
+    "trading_calendar": "62f0a7bb842a690c57a6d265f91a1805f3977f4b4b0888da0837c6decfe41c91"
+  },
+  "publisher_source_commit": "aa6b60deef44b244764385e7b6bd681429b9b362",
+  "sidecar_sha256": "8485567b9b1d3a3773ea28cfde2211f87bb9d118675b1ddc35c97bf5bd8a684a",
+  "target_sha256": "390b17498dc8b3e4d84a75116c2c061e3405e1092ed2a6d2aebc58d763a02e2c"
+}

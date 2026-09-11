@@ -1,0 +1,75 @@
+﻿{
+  "as_of_date": "20260903",
+  "cash_buffer": 0.0,
+  "lot_size": 100,
+  "minimum_capital_80pct_names": 24368.289949378126,
+  "minimum_capital_all_names": 43776.89811850336,
+  "scenarios": [
+    {
+      "capital": 100000.0,
+      "cash": 13059.3,
+      "expected_names": 9,
+      "exposure": 0.8694069999999999,
+      "held_names": 9,
+      "invested": 86940.7,
+      "max_abs_weight_error_pp": 11.914380660318502,
+      "name_coverage": 1.0,
+      "shares": {
+        "159915.SZ": 200,
+        "159930.SZ": 800,
+        "159981.SZ": 1200,
+        "159985.SZ": 1400,
+        "510300.SH": 1200,
+        "511260.SH": 500,
+        "513100.SH": 500,
+        "513500.SH": 500,
+        "518880.SH": 400
+      },
+      "total_abs_weight_error_pp": 13.059299999999993
+    },
+    {
+      "capital": 200000.0,
+      "cash": 11225.5,
+      "expected_names": 9,
+      "exposure": 0.9438724999999999,
+      "held_names": 9,
+      "invested": 188774.5,
+      "max_abs_weight_error_pp": 5.121330660318524,
+      "name_coverage": 1.0,
+      "shares": {
+        "159915.SZ": 400,
+        "159930.SZ": 1700,
+        "159981.SZ": 2500,
+        "159985.SZ": 2900,
+        "510300.SH": 2500,
+        "511260.SH": 1100,
+        "513100.SH": 1000,
+        "513500.SH": 1100,
+        "518880.SH": 800
+      },
+      "total_abs_weight_error_pp": 5.612750000000017
+    },
+    {
+      "capital": 700000.0,
+      "cash": 3511.7,
+      "expected_names": 9,
+      "exposure": 0.9949832857142856,
+      "held_names": 9,
+      "invested": 696488.3,
+      "max_abs_weight_error_pp": 0.2691520888899346,
+      "name_coverage": 1.0,
+      "shares": {
+        "159915.SZ": 1500,
+        "159930.SZ": 6100,
+        "159981.SZ": 8900,
+        "159985.SZ": 10200,
+        "510300.SH": 8800,
+        "511260.SH": 4100,
+        "513100.SH": 3600,
+        "513500.SH": 4000,
+        "518880.SH": 2800
+      },
+      "total_abs_weight_error_pp": 0.5016714285714278
+    }
+  ]
+}

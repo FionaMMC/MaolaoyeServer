@@ -1,0 +1,22 @@
+{
+  "excluded_from_public_copy": [
+    "qmt/qmt_read_only_export.json (current full-account positions)",
+    "local/hydra-live-state-snapshot.db (binary private state)",
+    "raw MiniQMT logs",
+    "private environment file",
+    "API keys and WeCom webhook"
+  ],
+  "financial_execution_values_retained": true,
+  "public_redacted_copy": true,
+  "replacement_counts": {
+    "<LIVE_ACCOUNT_REDACTED>": 0,
+    "<LOCAL_HYDRA_ROOT>": 2,
+    "<LOCAL_USER_HOME>": 0,
+    "<LOCAL_WORKSPACE>": 0,
+    "<QMT_USERDATA>": 0,
+    "<REDACTED_BACKUP_API_KEY>": 0,
+    "<REDACTED_LIVE_API_KEY>": 0,
+    "<REDACTED_TRIGGER_API_KEY>": 0,
+    "<REDACTED_WECOM_WEBHOOK>": 0
+  }
+}
