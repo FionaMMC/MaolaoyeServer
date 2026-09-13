@@ -96,6 +96,7 @@ async def verify_api_key(
             "/accounts/strategy-ledger",
             "/accounts/capital-movements",
             "/accounts/cash-observations",
+            "/accounts/income-allocations",
             "/admin/reconcile-positions",
             "/hydra/targets/stage",
             "/hydra/rebalances/retry",

@@ -10,6 +10,8 @@ from app.schemas.account_cash_observation import (
 )
 from app.schemas.common import APIResponse
 from app.services.account_cash_observation import AccountCashObservationService
+from app.schemas.income_allocation import IncomeAllocationRequest, IncomeAllocationResponse
+from app.services.income_allocation import IncomeAllocationService
 
 router = APIRouter(prefix="/accounts")
 
@@ -24,3 +26,15 @@ def cash_observation(
         raise APIError(ErrorCode.AUTH_FAILED, "现金事实请求跨域/账户", http_status=403)
     data = AccountCashObservationService(sf).record(req)
     return APIResponse[AccountCashObservationResponseData](code=0, message="ok", data=data)
+
+
+@router.post("/income-allocations", response_model=APIResponse[IncomeAllocationResponse])
+def income_allocation(
+    req: IncomeAllocationRequest,
+    auth: AuthContext = Depends(verify_api_key),
+    sf=Depends(get_session_factory),
+):
+    if req.execution_domain != auth.execution_domain or not auth.allows_account(req.account_alias):
+        raise APIError(ErrorCode.AUTH_FAILED, "收入归属请求跨域/账户", http_status=403)
+    data = IncomeAllocationService(sf).apply(req)
+    return APIResponse[IncomeAllocationResponse](code=0, message="ok", data=data)

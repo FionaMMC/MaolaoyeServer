@@ -1,12 +1,24 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("cancel-open", "settle-close", "market-backup", "publish-execution", "retry", "query-preflight")]
+    [ValidateSet("cancel-open", "settle-close", "market-backup", "publish-execution", "retry", "query-preflight", "settle", "trigger", "query")]
     [string]$Stage
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[Console]::InputEncoding = $utf8NoBom
+[Console]::OutputEncoding = $utf8NoBom
+$OutputEncoding = $utf8NoBom
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+$Stage = switch ($Stage) {
+    "settle" { "settle-close" }
+    "trigger" { "retry" }
+    "query" { "query-preflight" }
+    default { $Stage }
+}
 $installRoot = "C:\hydra-live"
 $envFile = Join-Path $installRoot "config\hydra-live.env"
 $runner = Join-Path $installRoot "bin\Run-HydraLive.ps1"
@@ -31,7 +43,8 @@ function Send-WeComNotification([string]$Message, [bool]$Alert = $false) {
     try {
         $prefix = if ($Alert) { "[报警] " } else { "" }
         $body = @{ msgtype = "text"; text = @{ content = "$prefix$Message" } } | ConvertTo-Json -Compress -Depth 4
-        Invoke-RestMethod -Method Post -Uri $env:HYDRA_LIVE_WECHAT_WEBHOOK -ContentType "application/json; charset=utf-8" -Body $body | Out-Null
+        $bodyBytes = [Text.Encoding]::UTF8.GetBytes($body)
+        Invoke-RestMethod -Method Post -Uri $env:HYDRA_LIVE_WECHAT_WEBHOOK -ContentType "application/json; charset=utf-8" -Body $bodyBytes | Out-Null
     } catch { Write-Warning "WeCom notification failed: $($_.Exception.Message)" }
 }
 
@@ -45,8 +58,14 @@ today = datetime.now().strftime("%Y%m%d")
 dates = xtdata.get_trading_calendar("SH", start_time=(datetime.now()-timedelta(days=30)).strftime("%Y%m%d"), end_time=(datetime.now()+timedelta(days=14)).strftime("%Y%m%d"))
 print(next(date for date in dates if date > today))
 '@
-    $lines = @($code | & $pythonExe -c "import sys; exec(sys.stdin.read())")
-    $exitCode = $LASTEXITCODE
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $lines = @($code | & $pythonExe -c "import sys; exec(sys.stdin.read())")
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
     $date = $lines | Select-Object -Last 1
     if ($exitCode -ne 0 -or $date -notmatch '^\d{8}$') { throw "Unable to determine next QMT trading date" }
     return $date.Trim()
@@ -77,7 +96,17 @@ try {
         "market-backup" {
             if ([string]::IsNullOrWhiteSpace($env:HYDRA_LIVE_DATA_BACKUP_API_KEY)) { throw "HYDRA_LIVE_DATA_BACKUP_API_KEY is not configured" }
             $script = Join-Path $installRoot "scripts\hydra_live_market_backup.py"
-            $lines = @(& $pythonExe $script 2>&1); $exitCode = $LASTEXITCODE; $output = $lines | Out-String
+            # Windows PowerShell 5.1 represents native stderr as ErrorRecord.
+            # Logging is not failure: preserve the native exit code immediately.
+            $previousErrorActionPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = "Continue"
+                $lines = @(& $pythonExe $script 2>&1)
+                $exitCode = $LASTEXITCODE
+            } finally {
+                $ErrorActionPreference = $previousErrorActionPreference
+            }
+            $output = $lines | Out-String
             if ($exitCode -ne 0) { throw "market backup returned a non-zero exit code" }
             if ($output -notmatch '"status"\s*:\s*"(UPLOADED|SKIPPED_NON_TRADING)"') { throw "market backup returned no success receipt" }
         }
@@ -139,7 +168,7 @@ try {
         }
     }
     $operationState = if ($operationPending) { "pending evidence/data" } elseif ($operationWaitingDate) { "waiting for eligible trading pair" } else { "succeeded" }
-    Add-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) $Stage $operationState`n$output"
+    Add-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) $Stage $operationState`n$output" -Encoding UTF8
     if ($operationPending) {
         Send-WeComNotification "[Hydra live] $Stage is waiting for broker/reconciliation evidence or fresh execution data for $today. No new submit task was registered by this run. Review $logFile; previously frozen tasks require separate review." $true
     }
@@ -154,7 +183,7 @@ try {
     }
 } catch {
     $message = "$Stage failed: $($_.Exception.Message)"
-    Add-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) $message"
+    Add-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) $message" -Encoding UTF8
     Send-WeComNotification "[Hydra live] $message" $true
     throw
 }

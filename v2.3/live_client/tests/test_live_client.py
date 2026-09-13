@@ -615,6 +615,26 @@ def test_windows_runtime_separates_evening_preflight_from_morning_submit():
     assert '$legacyEnabledBefore' in task_set
 
 
+def test_windows_runtime_keeps_proven_encoding_and_stderr_hotfix():
+    """Source contract only: Windows 5.1 runtime acceptance remains required."""
+    windows = Path(cli.__file__).parent / "windows"
+    operations = (windows / "Invoke-HydraLiveOperations.ps1").read_text(encoding="utf-8")
+    runner = (windows / "Run-HydraLive.ps1").read_text(encoding="utf-8")
+    for source in (operations, runner):
+        assert '$env:PYTHONUTF8 = "1"' in source
+        assert '$env:PYTHONIOENCODING = "utf-8"' in source
+        assert '$ErrorActionPreference = "Continue"' in source
+        assert '$ErrorActionPreference = $previousErrorActionPreference' in source
+    assert '[Text.Encoding]::UTF8.GetBytes($body)' in operations
+    for old, new in (("settle", "settle-close"), ("trigger", "retry"), ("query", "query-preflight")):
+        assert f'"{old}" {{ "{new}" }}' in operations
+    assert '$exitCode = $LASTEXITCODE' in runner
+    assert 'if ($exitCode -ne 0)' in runner
+    for line in operations.splitlines():
+        if 'Add-Content' in line:
+            assert '-Encoding UTF8' in line
+
+
 def test_qmt_connection_retries_only_before_broker_use(tmp_path, monkeypatch, xtquant_stub):
     import xtquant.xttrader as xttrader_module
     import xtquant.xttype as xttype_module

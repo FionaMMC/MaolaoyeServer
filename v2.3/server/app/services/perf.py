@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 
 from sqlalchemy import select
 
@@ -24,7 +25,7 @@ class PerfService:
         nav = virtual_cash + Σ(position[symbol] × close_price[symbol])
 
         若某只持仓股票当日无 close 数据（停牌或新上市），用最近一条 close 兜底；
-        仍无数据则跳过该持仓的市值（仅算现金部分），并记 warning。
+        仍无有效价格则该实例等待估值，不写伪造净值；其他实例继续。
         """
         date_str = str(trade_date)
         with self.session_factory() as session:
@@ -36,6 +37,8 @@ class PerfService:
             written = 0
             for inst in instances:
                 nav = self._compute_nav(inst, trade_date)
+                if nav is None:
+                    continue
                 positions_json = dict(inst.virtual_positions or {})
 
                 # upsert：先查再决定 add 或更新
@@ -63,18 +66,28 @@ class PerfService:
         return written
 
     # ── 内部 ──────────────────────────────────────────────────────────
-    def _compute_nav(self, inst: InstanceState, trade_date: int) -> float:
+    def _compute_nav(self, inst: InstanceState, trade_date: int) -> float | None:
         nav = float(inst.virtual_cash)
         positions = inst.virtual_positions or {}
+        missing = []
         for symbol, qty in positions.items():
+            if qty == 0:
+                continue
             close = self._latest_close_on_or_before(symbol, trade_date)
-            if close is None:
-                logger.warning(
-                    "instance %s 持仓 %s 在 %s 及之前无 close 数据，市值按 0 计算",
-                    inst.instance_id, symbol, trade_date,
-                )
+            if close is None or not math.isfinite(close) or close <= 0:
+                missing.append(symbol)
                 continue
             nav += qty * close
+        state = dict(inst.strategy_state or {})
+        if missing or "valuation_status" in state:
+            state["valuation_status"] = {
+                "status": "WAITING_PRICE" if missing else "VALUED",
+                "requested_date": str(trade_date), "missing_symbols": sorted(missing),
+            }
+            inst.strategy_state = state
+        if missing:
+            logger.warning("instance %s waiting_price date=%s symbols=%s; NAV not published", inst.instance_id, trade_date, missing)
+            return None
         return round(nav, 4)
 
     def _latest_close_on_or_before(self, symbol: str, trade_date: int) -> float | None:

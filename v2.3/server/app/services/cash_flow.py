@@ -7,11 +7,12 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from app.exceptions import APIError, ErrorCode
-from app.models import CashFlowJournal, InstanceState
+from app.models import AccountCashObservation, CashFlowJournal, InstanceState
 from app.schemas.cash_flow import CashFlowRequest, CashFlowResponseData
 from app.services.ownership import OwnershipOverlap, validate_no_owned_symbol_overlap
 from app.services.ledger_transaction import begin_ledger_transaction
 from app.services.strategy_capital import SOURCE as CAPITAL_MOVEMENT_SOURCE, StrategyCapitalService
+from app.services.income_allocation import SOURCE as INCOME_ALLOCATION_SOURCE
 
 
 def _now_iso() -> str:
@@ -30,6 +31,8 @@ class CashFlowService:
             raise APIError(ErrorCode.BAD_REQUEST, "cash flow amount 必须为有限数")
         if req.source == CAPITAL_MOVEMENT_SOURCE:
             raise APIError(ErrorCode.BAD_REQUEST, "该 source 保留给 /accounts/capital-movements")
+        if req.source == INCOME_ALLOCATION_SOURCE:
+            raise APIError(ErrorCode.BAD_REQUEST, "该 source 保留给 /accounts/income-allocations")
 
         with self.session_factory() as session:
             begin_ledger_transaction(session, req.execution_domain, req.account_alias)
@@ -76,6 +79,16 @@ class CashFlowService:
                     ledger_mode_after=state.ledger_mode,
                 )
 
+            income_fact = session.execute(select(AccountCashObservation.id).where(
+                AccountCashObservation.execution_domain == req.execution_domain,
+                AccountCashObservation.account_alias == req.account_alias,
+                AccountCashObservation.source == req.source,
+                AccountCashObservation.source_event_id == req.source_event_id,
+                AccountCashObservation.event_type.in_(("DIVIDEND", "INTEREST", "OTHER")),
+                AccountCashObservation.amount > 0,
+            ).limit(1)).first()
+            if income_fact:
+                raise APIError(ErrorCode.BAD_REQUEST, "该收入已有账户事实，请走 income-allocations 归属，避免重复入账", http_status=409)
             state = session.get(InstanceState, req.instance_id)
             if state is None:
                 raise APIError(

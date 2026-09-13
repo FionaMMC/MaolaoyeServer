@@ -134,8 +134,10 @@ def test_run_returns_empty_when_not_rebalance_day(tmp_path):
     _reset_adapter_cache()
 
 
-def test_run_returns_empty_when_bundle_missing(tmp_path, monkeypatch):
-    """bundle 文件缺失 (外部数据未上传) → run() 优雅退化 return []，不 crash"""
+def test_run_reports_waiting_when_bundle_missing(tmp_path, monkeypatch):
+    """Missing inputs are an explicit recoverable state, not a completed no-op."""
+    import pytest
+    from app.strategy.base import StrategyInputNotReady
     _reset_adapter_cache()
     import plugins.v53_adapter as adapter_mod
     from plugins.v53_adapter import V53Adapter
@@ -144,7 +146,8 @@ def test_run_returns_empty_when_bundle_missing(tmp_path, monkeypatch):
     april = _dates_in_month(2024, 4)
     # 调仓日（新月首交易日），但资源加载失败应优雅返回空
     ctx = _make_ctx(tmp_path, 20240506, anchor_trade_dates=april)
-    assert V53Adapter().run(ctx, 20240506) == []
+    with pytest.raises(StrategyInputNotReady):
+        V53Adapter().run(ctx, 20240506)
     _reset_adapter_cache()
 
 
@@ -184,6 +187,8 @@ def _make_bundle_in_tmp_dir(tmp_path, bundle_end_date: str = "2024-03-31"):
     # config.yaml — copy real one for completeness
     real_cfg = Path("plugins/v53/config.yaml").resolve()
     shutil.copy(real_cfg, v53dir / "config.yaml")
+    pd.DataFrame(columns=["code", "ex_date", "cash"]).to_parquet(
+        v53dir / "data" / "etf_divid.parquet", index=False)
     return v53dir
 
 
@@ -750,17 +755,19 @@ def test_to_total_return_noop_when_no_divid_table():
     _reset_adapter_cache()
 
 
-def test_load_resources_divid_absent_sets_empty(tmp_path, monkeypatch):
-    """etf_divid.parquet 缺失 → _etf_divid 为空 DataFrame（不 crash，退化为不复权）。"""
+def test_load_resources_divid_absent_reports_waiting(tmp_path, monkeypatch):
+    """An absent dividend table must never silently select raw model prices."""
+    import pytest
+    from app.strategy.base import StrategyInputNotReady
     _reset_adapter_cache()
     import plugins.v53_adapter as adapter_mod
     from plugins.v53_adapter import V53Adapter
     v53dir = _make_bundle_in_tmp_dir(tmp_path, bundle_end_date="2024-04-30")
+    (v53dir / "data" / "etf_divid.parquet").unlink()
     monkeypatch.setattr(adapter_mod, "_V53_DIR", v53dir)
     adapter = V53Adapter()
-    adapter._load_resources()
-    assert V53Adapter._etf_divid is not None
-    assert len(V53Adapter._etf_divid) == 0
+    with pytest.raises(StrategyInputNotReady):
+        adapter._load_resources()
     _reset_adapter_cache()
 
 

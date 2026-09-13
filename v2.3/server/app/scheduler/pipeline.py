@@ -435,6 +435,8 @@ class StrategyPipeline:
         }
         if any(stale_orders.values()):
             summary["stale_orders_terminalized"] = stale_orders
+        if runner.input_statuses:
+            summary["waiting_input"] = runner.input_statuses
         if fetched and force:
             # 审计标记：这次重算换掉了已被客户端拉走的批次
             summary["force_regen_after_fetch"] = len(fetched)

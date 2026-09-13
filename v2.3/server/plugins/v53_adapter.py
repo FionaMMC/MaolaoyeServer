@@ -15,7 +15,7 @@ from typing import ClassVar
 import pandas as pd
 import yaml
 
-from app.strategy.base import RawSignal, Strategy
+from app.strategy.base import RawSignal, Strategy, StrategyInputNotReady
 from app.strategy.context import Context
 
 logger = logging.getLogger(__name__)
@@ -37,6 +37,7 @@ class V53Adapter(Strategy):
     _etf_close_bundle: ClassVar[pd.DataFrame | None] = None
     _etf_meta: ClassVar[pd.DataFrame | None] = None
     _etf_divid: ClassVar[pd.DataFrame | None] = None
+    _etf_divid_signature: ClassVar[tuple | None] = None
 
     def _load_resources(self) -> None:
         """懒加载 config + bundled data。各自独立加载。"""
@@ -49,18 +50,26 @@ class V53Adapter(Strategy):
             type(self)._etf_close_bundle = df
         if type(self)._etf_meta is None:
             type(self)._etf_meta = pd.read_parquet(_V53_DIR / "data" / "etf_meta.parquet")
-        if type(self)._etf_divid is None:
-            # 分红表用于把建模价转成后复权（总回报），供波动/权重估计。
-            # 本地端未推送时优雅退化为空表 → 建模价 == 原始价（不复权）。
-            divid_path = _V53_DIR / "data" / "etf_divid.parquet"
-            if divid_path.exists():
+        # Missing file is not evidence of zero dividends. Recheck each run so
+        # a late upload or replacement recovers without restarting the server.
+        divid_path = _V53_DIR / "data" / "etf_divid.parquet"
+        if not divid_path.is_file():
+            raise StrategyInputNotReady("V53 etf_divid.parquet 尚未到达；补齐后重跑原业务日期")
+        stat = divid_path.stat()
+        signature = (str(divid_path.resolve()), stat.st_mtime_ns, stat.st_size)
+        if type(self)._etf_divid is None or signature != type(self)._etf_divid_signature:
+            try:
                 d = pd.read_parquet(divid_path)
-                if "ex_date" in d.columns:
-                    d["ex_date"] = pd.to_datetime(d["ex_date"])
-                type(self)._etf_divid = d
-            else:
-                type(self)._etf_divid = pd.DataFrame(
-                    columns=["code", "ex_date", "cash"])
+                if not {"code", "ex_date", "cash"}.issubset(d.columns):
+                    raise ValueError("缺 code/ex_date/cash")
+                d["ex_date"] = pd.to_datetime(d["ex_date"], errors="raise")
+                d["cash"] = pd.to_numeric(d["cash"], errors="raise")
+                if d[["code", "ex_date", "cash"]].isna().any().any() or not d["cash"].map(lambda x: 0 <= x < float("inf")).all():
+                    raise ValueError("公司行动含无效日期/金额")
+            except (OSError, ValueError, TypeError) as exc:
+                raise StrategyInputNotReady(f"V53 etf_divid.parquet 不完整或无效: {exc}") from exc
+            type(self)._etf_divid = d
+            type(self)._etf_divid_signature = signature
 
     def _is_month_end(self, ctx: Context, target: pd.Timestamp) -> bool:
         """约定 B：target(执行日) 是「次月第一个交易日」吗？是 → 调仓。
@@ -159,12 +168,14 @@ class V53Adapter(Strategy):
         注意：只影响喂给 V53Strategy 的建模价。成交/盯市走 _resolve_reference_price
         读原始 close，本函数完全不碰它们 —— 实盘成交与券商持仓仍按不复权对账。
 
-        分红表为空/缺失 → 原样返回（优雅退化，与未接入前逐值一致）。
+        显式空表表示没有已记录事件；缺失表不能退化为原价。
         """
         from plugins.v53.code_map import V53_KEY_TO_QMT
 
         divid = type(self)._etf_divid
-        if divid is None or len(divid) == 0 or close_px.empty:
+        if divid is None:
+            raise StrategyInputNotReady("V53 etf_divid 未加载，不能使用原价建模")
+        if len(divid) == 0 or close_px.empty:
             return close_px
 
         out = close_px.copy()
@@ -437,12 +448,19 @@ class V53Adapter(Strategy):
 
         target = pd.to_datetime(str(trade_date), format="%Y%m%d")
 
-        # 1. 加载资源
+        # Load calendar configuration first. Non-rebalance days do not require
+        # the research bundle, but a due rebalance must report missing inputs.
         try:
+            if type(self)._cfg is None:
+                with (_V53_DIR / "config.yaml").open() as f:
+                    type(self)._cfg = yaml.safe_load(f)
+            if not self._is_month_end(ctx, target):
+                return []
             self._load_resources()
-        except Exception as e:
-            logger.warning("V53 资源加载失败: %s", e)
-            return []
+        except StrategyInputNotReady:
+            raise
+        except (OSError, ValueError) as e:
+            raise StrategyInputNotReady(f"V53 资源待补齐: {e}") from e
 
         # 2. 月末判断
         if not self._is_month_end(ctx, target):
@@ -453,11 +471,9 @@ class V53Adapter(Strategy):
         cfg = self._cfg or {}
         min_hist = int(cfg.get("min_history_days", 126))
         if close_px.empty or len(close_px) < min_hist:
-            logger.warning(
-                "V53 close_px 不足 %d < %d 行, skip rebal",
-                len(close_px), min_hist,
+            raise StrategyInputNotReady(
+                f"V53 close_px 不足 {len(close_px)} < {min_hist} 行；补齐后重跑原业务日期"
             )
-            return []
 
         # 4. 调 V53Strategy（建模用后复权总回报价，消除分红假跌对波动的污染；
         #    执行/盯市仍用原始 close，见 _resolve_reference_price）

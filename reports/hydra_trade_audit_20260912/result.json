@@ -1,0 +1,365 @@
+{
+  "evidence_commit": "89964bd9ff598bf9037fd91dd3195c5d5d3367fb",
+  "code_commit": "0cbffcc62c36e4f40ed4f7b17c5a345514b8c7b5",
+  "network_disabled": true,
+  "manifest": {
+    "counts": {
+      "EXACT": 6,
+      "CRLF_NORMALIZATION_ONLY": 21,
+      "MIXED_LINE_ENDINGS_ONLY": 1
+    },
+    "files": [
+      {
+        "path": ".gitattributes",
+        "status": "EXACT",
+        "git_export_sha256": "705fd4d6451a31d36b3df7de96f83f30ac976c9b4a6d1e51671d8e2f33e2d0da"
+      },
+      {
+        "path": "historical-evidence/hydra-explicit-cancel-20260904-1904.json",
+        "status": "EXACT",
+        "git_export_sha256": "1c5067a9b7292b2d3d47568720b808f3d4710c20a5419f16897d263bc44112e4"
+      },
+      {
+        "path": "historical-evidence/hydra-live-retry.log",
+        "status": "CRLF_NORMALIZATION_ONLY",
+        "git_export_sha256": "a96f029eb8b3d9e7df823794bc6ce62cfd8bf0fa8da4b6741d1f495f22b6836a"
+      },
+      {
+        "path": "historical-evidence/hydra-live-settle-close.log",
+        "status": "CRLF_NORMALIZATION_ONLY",
+        "git_export_sha256": "75f98ab3f60cf0b0e584b0e2cdfc39f24576dd18081c9cc06ea9b8cfcb097cb7"
+      },
+      {
+        "path": "historical-evidence/hydra-live-submit-20260904.log",
+        "status": "MIXED_LINE_ENDINGS_ONLY",
+        "git_export_sha256": "360991c634fe001b7a0ba1ba4aeaeee945754b52ad08cde81750347670dec58c"
+      },
+      {
+        "path": "historical-evidence/hydra-live.log.2026-09-04",
+        "status": "CRLF_NORMALIZATION_ONLY",
+        "git_export_sha256": "6799b758d630536c60454399614901c52a1ec480077b4e6c12947f3ade4db7aa"
+      },
+      {
+        "path": "historical-evidence/hydra-qmt-post-restart-status-20260904.json",
+        "status": "EXACT",
+        "git_export_sha256": "72c4816497a562483a1a397cc693d1de1be3a9f61bd5b839b67984b26de9de38"
+      },
+      {
+        "path": "local/state_rows.json",
+        "status": "CRLF_NORMALIZATION_ONLY",
+        "git_export_sha256": "4b78592c06158724a04ae2977b9dc900ec7454782ebff2767c0974733b161b1a"
+      },
+      {
+        "path": "provenance/code-and-data-lineage.json",
+        "status": "CRLF_NORMALIZATION_ONLY",
+        "git_export_sha256": "7f980c94980f672e39e93c21f8c885a98d581e500833c2b251cc58800db18bb4"
+      },
+      {
+        "path": "provenance/windows-hotfix-1daf-to-ff810.patch",
+        "status": "CRLF_NORMALIZATION_ONLY",
+        "git_export_sha256": "a9ca8e8c5bfc8555f01b8384507215f10eb5da37c4ffaa0019fc6fd2c63eb57c"
+      },
+      {
+        "path": "PUBLIC_REDACTION.md",
+        "status": "EXACT",
+        "git_export_sha256": "b0a309949bc7f483857c64d0765d59bb42d956e9cf75b89ce49f737a5e5321ad"
+      },
+      {
+        "path": "PUBLIC_SANITIZATION.json",
+        "status": "CRLF_NORMALIZATION_ONLY",
+        "git_export_sha256": "0fb664dd1941cb36dd4bd38d6d96eb1088c55cc9dca4a3e7841e42cc2d7ae0bd"
+      },
+      {
+        "path": "qmt/historical_log_extraction.json",
+        "status": "CRLF_NORMALIZATION_ONLY",
+        "git_export_sha256": "368ec1db1035213b4afd7516f7c50c030c85454db3ee94f81a016669ca752bfa"
+      },
+      {
+        "path": "qmt/manual-residual-20260908.json",
+        "status": "CRLF_NORMALIZATION_ONLY",
+        "git_export_sha256": "b746043fcfb313dcd02f39f35edec3cb997afb2baf27897c407d74e36c312aa7"
+      },
+      {
+        "path": "README.md",
+        "status": "EXACT",
+        "git_export_sha256": "56c9952a142cc918a8e5bb2c6bbbd0709293d0973d2483e6b2a8426c6de6c796"
+      },
+      {
+        "path": "reconciliation/complete_order_lifecycle.csv",
+        "status": "CRLF_NORMALIZATION_ONLY",
+        "git_export_sha256": "ba5326fc5d698cfacbace7c4dc2db3783140bc08ece1fe642c99300d6965b7f6"
+      },
+      {
+        "path": "reconciliation/order_lifecycle.csv",
+        "status": "CRLF_NORMALIZATION_ONLY",
+        "git_export_sha256": "a96041e564997498a4d9c8b50d3c2bf1dcf8f1932074a85cf42c90c95f71edec"
+      },
+      {
+        "path": "server/admin-orders-access.json",
+        "status": "CRLF_NORMALIZATION_ONLY",
+        "git_export_sha256": "e918c11dc29fd7036c3ca66643b6238cb4a303f080efec0cf2ff11ee7820b725"
+      },
+      {
+        "path": "server/admin-trades-access.json",
+        "status": "CRLF_NORMALIZATION_ONLY",
+        "git_export_sha256": "2800e269a6b76113304176e702753cd6174880e7dc6c25f27a5afa984e4ba0db"
+      },
+      {
+        "path": "server/orders.json",
+        "status": "CRLF_NORMALIZATION_ONLY",
+        "git_export_sha256": "c189291f9eb93cf780f440e1c34c14c6a1b7ca4aa558fb990b17b88420738197"
+      },
+      {
+        "path": "server/strategy-ledger-current.json",
+        "status": "CRLF_NORMALIZATION_ONLY",
+        "git_export_sha256": "e3add246999b7cdf7f33152672552061363663cc358ac6503e273bc41a516cbb"
+      },
+      {
+        "path": "SUMMARY.json",
+        "status": "CRLF_NORMALIZATION_ONLY",
+        "git_export_sha256": "50e442e833ef3008c70de72bb63fea63f33dd1be66101fd8a40c664e91899126"
+      },
+      {
+        "path": "target/capital-preflight.json",
+        "status": "CRLF_NORMALIZATION_ONLY",
+        "git_export_sha256": "e7b922f09fb2de1352be643df9e4fb4e4fd14b8354494fa54edc18cb13c1ef0b"
+      },
+      {
+        "path": "target/Hydra_latest.json",
+        "status": "CRLF_NORMALIZATION_ONLY",
+        "git_export_sha256": "2383772923f27765b2740a7118d43aebc6de76ed3e674f3fc9a323366e944d25"
+      },
+      {
+        "path": "target/Hydra_latest.parquet",
+        "status": "EXACT",
+        "git_export_sha256": "390b17498dc8b3e4d84a75116c2c061e3405e1092ed2a6d2aebc58d763a02e2c"
+      },
+      {
+        "path": "target/release_receipt.json",
+        "status": "CRLF_NORMALIZATION_ONLY",
+        "git_export_sha256": "d0f37431c1f15c27638c1a80f65073b97bf1a43dae4ddbc612d05e9b6dc01ad2"
+      },
+      {
+        "path": "target/research-run-audit-20260903.md",
+        "status": "CRLF_NORMALIZATION_ONLY",
+        "git_export_sha256": "d4bebaed40e7d47bd80d7c05388f9729c8b657ab16606f79eadfb74c448e8d01"
+      },
+      {
+        "path": "target/target-request.json",
+        "status": "CRLF_NORMALIZATION_ONLY",
+        "git_export_sha256": "aedd196d875535000ed853c148a94907f7b06d8da4ed586cd1879b379d993890"
+      }
+    ]
+  },
+  "basket_hash_pass": true,
+  "batch_hash_pass": true,
+  "local_server_order_identity_pass": true,
+  "known_broker_mapping_count": 9,
+  "observations_are_redacted_log_extracts_not_independently_verified_originals": true,
+  "amounts": {
+    "sept4": 190689.7,
+    "sept8": 12751.0
+  },
+  "local_settlement_push_count": 0,
+  "local_workflow_receipt_count": 0,
+  "ledger_retrieved_at": "2026-09-11T22:17:22+08:00",
+  "ledger_last_update": "2026-09-04T13:11:14+08:00",
+  "sizing_baseline_nav_assumed": 211051.9500000015,
+  "all_original_order_quantities_completed": true,
+  "no_sell_orders_in_evidence": true,
+  "orders": [
+    {
+      "symbol": "159915.SZ",
+      "ordered": 400,
+      "sept4_filled": 400,
+      "sept4_amount": 1338.4,
+      "sept4_trade_fragments": 1,
+      "raw_status": 56,
+      "raw_observed_at": "2026-09-04 23:41:56,632",
+      "manual_filled": 0,
+      "manual_amount": 0,
+      "remaining_original_quantity": 0,
+      "expected_owned_position_if_no_other_flows": 400,
+      "reported_owned_position": 0,
+      "max_buy_offset_bps": 48.0480480480483,
+      "sizing_reproduced_with_assumed_baseline": true
+    },
+    {
+      "symbol": "159930.SZ",
+      "ordered": 1800,
+      "sept4_filled": 1800,
+      "sept4_amount": 3126.6,
+      "sept4_trade_fragments": 1,
+      "raw_status": 56,
+      "raw_observed_at": "2026-09-04 23:41:56,633",
+      "manual_filled": 0,
+      "manual_amount": 0,
+      "remaining_original_quantity": 0,
+      "expected_owned_position_if_no_other_flows": 1800,
+      "reported_owned_position": 0,
+      "max_buy_offset_bps": 46.02991944764101,
+      "sizing_reproduced_with_assumed_baseline": true
+    },
+    {
+      "symbol": "159981.SZ",
+      "ordered": 2600,
+      "sept4_filled": 2600,
+      "sept4_amount": 4347.2,
+      "sept4_trade_fragments": 1,
+      "raw_status": 56,
+      "raw_observed_at": "2026-09-04 23:41:56,633",
+      "manual_filled": 0,
+      "manual_amount": 0,
+      "remaining_original_quantity": 0,
+      "expected_owned_position_if_no_other_flows": 2600,
+      "reported_owned_position": 0,
+      "max_buy_offset_bps": 48.07692307692291,
+      "sizing_reproduced_with_assumed_baseline": true
+    },
+    {
+      "symbol": "159985.SZ",
+      "ordered": 3000,
+      "sept4_filled": 3000,
+      "sept4_amount": 7194.0,
+      "sept4_trade_fragments": 2,
+      "raw_status": 56,
+      "raw_observed_at": "2026-09-04 23:41:56,633",
+      "manual_filled": 0,
+      "manual_amount": 0,
+      "remaining_original_quantity": 0,
+      "expected_owned_position_if_no_other_flows": 3000,
+      "reported_owned_position": 0,
+      "max_buy_offset_bps": 46.08294930875667,
+      "sizing_reproduced_with_assumed_baseline": true
+    },
+    {
+      "symbol": "510300.SH",
+      "ordered": 2500,
+      "sept4_filled": 2500,
+      "sept4_amount": 11610.0,
+      "sept4_trade_fragments": 2,
+      "raw_status": 56,
+      "raw_observed_at": "2026-09-04 23:41:56,632",
+      "manual_filled": 0,
+      "manual_amount": 0,
+      "remaining_original_quantity": 0,
+      "expected_owned_position_if_no_other_flows": 2600,
+      "reported_owned_position": 100,
+      "max_buy_offset_bps": 49.77277645531242,
+      "sizing_reproduced_with_assumed_baseline": true
+    },
+    {
+      "symbol": "511260.SH",
+      "ordered": 1200,
+      "sept4_filled": 1200,
+      "sept4_amount": 163073.5,
+      "sept4_trade_fragments": 2,
+      "raw_status": 56,
+      "raw_observed_at": "2026-09-04 23:41:56,632",
+      "manual_filled": 0,
+      "manual_amount": 0,
+      "remaining_original_quantity": 0,
+      "expected_owned_position_if_no_other_flows": 1200,
+      "reported_owned_position": 0,
+      "max_buy_offset_bps": 49.977550584789924,
+      "sizing_reproduced_with_assumed_baseline": true
+    },
+    {
+      "symbol": "513100.SH",
+      "ordered": 1000,
+      "sept4_filled": 0,
+      "sept4_amount": 0.0,
+      "sept4_trade_fragments": 0,
+      "raw_status": 50,
+      "raw_observed_at": "2026-09-04 23:41:56,632",
+      "manual_filled": 1000,
+      "manual_amount": 2239.0,
+      "remaining_original_quantity": 0,
+      "expected_owned_position_if_no_other_flows": 1000,
+      "reported_owned_position": 0,
+      "max_buy_offset_bps": 45.537340619306036,
+      "sizing_reproduced_with_assumed_baseline": true
+    },
+    {
+      "symbol": "513500.SH",
+      "ordered": 1200,
+      "sept4_filled": 0,
+      "sept4_amount": 0.0,
+      "sept4_trade_fragments": 0,
+      "raw_status": 50,
+      "raw_observed_at": "2026-09-04 23:41:56,632",
+      "manual_filled": 1200,
+      "manual_amount": 3228.0,
+      "remaining_original_quantity": 0,
+      "expected_owned_position_if_no_other_flows": 1200,
+      "reported_owned_position": 0,
+      "max_buy_offset_bps": 48.87218045112718,
+      "sizing_reproduced_with_assumed_baseline": true
+    },
+    {
+      "symbol": "518880.SH",
+      "ordered": 800,
+      "sept4_filled": 0,
+      "sept4_amount": 0.0,
+      "sept4_trade_fragments": 0,
+      "raw_status": 50,
+      "raw_observed_at": "2026-09-04 23:41:56,632",
+      "manual_filled": 800,
+      "manual_amount": 7284.0,
+      "remaining_original_quantity": 0,
+      "expected_owned_position_if_no_other_flows": 800,
+      "reported_owned_position": 0,
+      "max_buy_offset_bps": 49.42339373970262,
+      "sizing_reproduced_with_assumed_baseline": true
+    }
+  ],
+  "isolated_replay": {
+    "scope": "actual exported final observations through new settlement/expiry/close in isolated seeded DB",
+    "baseline_assumption": "September 11 stale owned ledger is used as pre-fill baseline; no intervening owned cash flows/fees assumed",
+    "fee_policy": "code defaults: 0.03%, minimum 5 per order; NOT verified broker fees",
+    "snapshot_after": {
+      "cash": 19826.227950001554,
+      "positions": {
+        "510300.SH": 2600,
+        "511260.SH": 1200,
+        "159915.SZ": 400,
+        "159930.SZ": 1800,
+        "159981.SZ": 2600,
+        "159985.SZ": 3000
+      },
+      "trade_rows": 9
+    },
+    "first_pass": {
+      "trade_date": "20260904",
+      "execution_domain": "live",
+      "matched_count": 9,
+      "unmatched_order_ids": [],
+      "rejected_observations": {},
+      "invalidated_attempt_ids": [],
+      "local_batch_review_required": false,
+      "unmatched_candidates": {}
+    },
+    "repeated_matched": 0,
+    "repeat_does_not_change_ledger": true,
+    "close": {
+      "target_id": "ht_8a996b2b867e5d77bbab0bd668a803beb7f76ffc7d6522840cef712409857537",
+      "rebalance_id": "hr_8e6f458058db8519c238f7b6469daeb01a020b6de189ebf1772f17836beca64d",
+      "attempt_id": "ha_5540ea2f38c0efc9debd55fa18cc0021cebc9a15c39d91779afb9e3d167440ea",
+      "execution_domain": "live",
+      "status": "RESIDUAL",
+      "residual_after": {
+        "518880.SH": 800,
+        "513500.SH": 1200,
+        "513100.SH": 1000
+      },
+      "workflow_closed": true,
+      "broker_finalized": false,
+      "effective_finalized": true,
+      "retry_ready": true,
+      "unresolved_order_ids": [],
+      "provisional_residual": {},
+      "closure_receipt_id": null
+    },
+    "no_order_generation_attempted": true
+  }
+}

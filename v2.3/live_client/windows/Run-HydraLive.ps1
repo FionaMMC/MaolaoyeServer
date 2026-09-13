@@ -122,6 +122,8 @@ $lockPath = Join-Path $runtimeRoot "$lockSuffix.lock"
 $lockStream = $null
 $previousPythonPath = $env:PYTHONPATH
 $previousNoBytecode = $env:PYTHONDONTWRITEBYTECODE
+$previousPythonUtf8 = $env:PYTHONUTF8
+$previousPythonIoEncoding = $env:PYTHONIOENCODING
 try {
     try {
         $lockStream = [IO.File]::Open(
@@ -137,6 +139,8 @@ try {
 
     $env:PYTHONPATH = $releaseRoot
     $env:PYTHONDONTWRITEBYTECODE = "1"
+    $env:PYTHONUTF8 = "1"
+    $env:PYTHONIOENCODING = "utf-8"
     $arguments = @("-m", "live_client.cli", $Command)
     if ($Date) {
         $arguments += @("--date", $Date)
@@ -165,14 +169,24 @@ try {
             $arguments += "--transition-to-attributed"
         }
     }
-    & $PythonExe @arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "Hydra '$Command' failed with exit code $LASTEXITCODE"
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # A native stderr log line is not a failed Python command on PS 5.1.
+        $ErrorActionPreference = "Continue"
+        & $PythonExe @arguments
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($exitCode -ne 0) {
+        throw "Hydra '$Command' failed with exit code $exitCode"
     }
 }
 finally {
     $env:PYTHONPATH = $previousPythonPath
     $env:PYTHONDONTWRITEBYTECODE = $previousNoBytecode
+    $env:PYTHONUTF8 = $previousPythonUtf8
+    $env:PYTHONIOENCODING = $previousPythonIoEncoding
     if ($null -ne $lockStream) {
         $lockStream.Dispose()
     }

@@ -1,0 +1,156 @@
+{
+  "status": "FROZEN_GENERATION_PASS_NOT_PRODUCTION_ACCEPTANCE",
+  "created_at_utc": "2026-09-13T04:13:16.895081+00:00",
+  "code_commit": "0cbffcc62c36e4f40ed4f7b17c5a345514b8c7b5",
+  "actual_worktree": {
+    "source_tree_sha256": "ff1a63d8101c03e5de2b396bc9dad115b25966b479f8fe445c6a0024bfbcba65",
+    "file_count": 177,
+    "scope": "server app/plugins, live_client and local audit tools (.py/.ps1/.yaml); includes uncommitted files"
+  },
+  "evidence_commit": "89964bd9ff598bf9037fd91dd3195c5d5d3367fb",
+  "target_file_sha256": "390b17498dc8b3e4d84a75116c2c061e3405e1092ed2a6d2aebc58d763a02e2c",
+  "target_parquet_matches_request_weights": true,
+  "authenticated_four_stream_replay": {
+    "status": "VERIFIED_ORIGINAL_STREAMS",
+    "hashes": {
+      "corporate_actions": "c3bc1fec0a690b3584d301c58073093035d8b43a08b719a0c5040eea8fbdcbb4",
+      "execution_raw": "e3913610f8bd2b8f0a12008ec0d6235dcf23d1962d5e6df1bcb0f1fa86d96b08",
+      "model_hfq": "b378db0c3742d4ad92ed6bff7f9d8a4385383eb68854d63c0710bfa8c04dd1ae",
+      "trading_calendar": "62f0a7bb842a690c57a6d265f91a1805f3977f4b4b0888da0837c6decfe41c91"
+    }
+  },
+  "research_weights_recomputed": false,
+  "projected_store_replaces_authenticated_load": false,
+  "baseline_from_production_rebalance": true,
+  "assumptions": [
+    "Second attributed strategy and aggregate physical snapshot are synthetic ownership scenarios.",
+    "Fill split quantities are real; intermediate delivery timing and statuses are simulated.",
+    "Historical outcomes rebound to diagnostic IDs only in temporary DB; close uses calculated portfolio, not independent broker reconciliation."
+  ],
+  "generated_order_count": 9,
+  "semantic_differences": [],
+  "generated_orders": [
+    {
+      "symbol": "518880.SH",
+      "direction": "BUY",
+      "quantity": 800,
+      "limit_price": 9.15,
+      "execution_reference_price": 9.105,
+      "valid_date": "20260904"
+    },
+    {
+      "symbol": "159985.SZ",
+      "direction": "BUY",
+      "quantity": 3000,
+      "limit_price": 2.398,
+      "execution_reference_price": 2.387,
+      "valid_date": "20260904"
+    },
+    {
+      "symbol": "513500.SH",
+      "direction": "BUY",
+      "quantity": 1200,
+      "limit_price": 2.673,
+      "execution_reference_price": 2.66,
+      "valid_date": "20260904"
+    },
+    {
+      "symbol": "511260.SH",
+      "direction": "BUY",
+      "quantity": 1200,
+      "limit_price": 136.54,
+      "execution_reference_price": 135.861,
+      "valid_date": "20260904"
+    },
+    {
+      "symbol": "513100.SH",
+      "direction": "BUY",
+      "quantity": 1000,
+      "limit_price": 2.206,
+      "execution_reference_price": 2.196,
+      "valid_date": "20260904"
+    },
+    {
+      "symbol": "159981.SZ",
+      "direction": "BUY",
+      "quantity": 2600,
+      "limit_price": 1.672,
+      "execution_reference_price": 1.664,
+      "valid_date": "20260904"
+    },
+    {
+      "symbol": "159930.SZ",
+      "direction": "BUY",
+      "quantity": 1800,
+      "limit_price": 1.746,
+      "execution_reference_price": 1.738,
+      "valid_date": "20260904"
+    },
+    {
+      "symbol": "159915.SZ",
+      "direction": "BUY",
+      "quantity": 400,
+      "limit_price": 3.346,
+      "execution_reference_price": 3.33,
+      "valid_date": "20260904"
+    },
+    {
+      "symbol": "510300.SH",
+      "direction": "BUY",
+      "quantity": 2500,
+      "limit_price": 4.644,
+      "execution_reference_price": 4.621,
+      "valid_date": "20260904"
+    }
+  ],
+  "risk_snapshot": {
+    "mode": "auto",
+    "nav": 211051.95,
+    "available_cash": 210589.85,
+    "position_market_value": 462.1,
+    "order_count": 9,
+    "buy_notional": 204214.0,
+    "sell_notional": 0.0,
+    "max_daily_orders": 9,
+    "max_price_offset_bps": 50.0,
+    "buffer_bps": 100.0,
+    "max_single_order_notional": 213162.4695,
+    "max_daily_buy_notional": 210379.470529,
+    "max_daily_sell_notional": 213162.4695,
+    "max_daily_turnover_notional": 426324.939,
+    "execution_policy": {
+      "policy_id": "HYDRA_ADJACENT_DAY_50BP_V1",
+      "reference_date": "20260903",
+      "execution_raw_sha256": "e3913610f8bd2b8f0a12008ec0d6235dcf23d1962d5e6df1bcb0f1fa86d96b08",
+      "execution_calendar_sha256": "62f0a7bb842a690c57a6d265f91a1805f3977f4b4b0888da0837c6decfe41c91",
+      "buy_max_bps": 50,
+      "sell_max_bps": 50
+    }
+  },
+  "missing_input_then_same_request_recovery": true,
+  "rerun_after_fetch_preserves_generated_order_ids": true,
+  "peer_same_etf_cash_and_positions_unchanged_after_partial_and_final": true,
+  "generated_orders_then_historical_outcomes_then_close": {
+    "target_id": "ht_8a996b2b867e5d77bbab0bd668a803beb7f76ffc7d6522840cef712409857537",
+    "rebalance_id": "hr_8e6f458058db8519c238f7b6469daeb01a020b6de189ebf1772f17836beca64d",
+    "attempt_id": "ha_d837df20482ebd23f92b703b26fdce6dfb0f592fe405c62a39371e3e95090426",
+    "execution_domain": "live",
+    "status": "RESIDUAL",
+    "residual_after": {
+      "513100.SH": 1000,
+      "513500.SH": 1200,
+      "518880.SH": 800
+    },
+    "workflow_closed": true,
+    "broker_finalized": false,
+    "effective_finalized": true,
+    "retry_ready": true,
+    "unresolved_order_ids": [],
+    "provisional_residual": {},
+    "closure_receipt_id": null
+  },
+  "duplicate_final_outcomes_do_not_change_ledger": true,
+  "new_batch_sha256": "9d6853742ee199d7cb39a4d10641359af3190b136eba1bb04f5e74715f7c61e8",
+  "historical_batch_sha256": "36b0f9f11e5e8b4d084b058eddf9da65fb7a946bb34f4d7ba5ca18708491dfda",
+  "warning": "New policy-bound IDs are not a migration replacement for historical IDs. Do not submit these diagnostic orders."
+}

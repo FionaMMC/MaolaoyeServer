@@ -251,15 +251,19 @@ class StrategyCapitalService:
     def unattributed_income_cash(session, req) -> Decimal:
         """Unknown-owner income is suspense, not free account reserve.
 
-        No attribution-consumed marker exists yet. Keep this conservative
-        exclusion until the explicit observation-to-owner projection migration.
+        Explicit allocation receipts release suspense only after the same
+        transaction credits all strategy owners. No income becomes free capital.
         Deposits are reserve; withdrawals already reduce QMT cash, not twice.
         """
+        from app.models import IncomeAllocationReceipt
         values = session.execute(select(AccountCashObservation.amount).where(
             AccountCashObservation.execution_domain == req.execution_domain,
             AccountCashObservation.account_alias == req.account_alias,
             AccountCashObservation.event_type.in_(("DIVIDEND", "INTEREST", "OTHER")),
             AccountCashObservation.amount > 0,
+            ~select(IncomeAllocationReceipt.observation_id).where(
+                IncomeAllocationReceipt.observation_id == AccountCashObservation.id,
+            ).exists(),
         )).scalars()
         return sum((_cash(amount) for amount in values), Decimal(0))
 

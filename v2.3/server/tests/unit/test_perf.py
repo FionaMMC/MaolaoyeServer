@@ -102,8 +102,8 @@ def test_snapshot_falls_back_to_etfs_category(tmp_path: Path):
         assert snap.nav == 4000.0
 
 
-def test_snapshot_unknown_position_treated_as_zero(tmp_path: Path):
-    """完全没数据的持仓按 0 市值。"""
+def test_snapshot_unknown_position_waits_for_price(tmp_path: Path):
+    """Missing prices do not manufacture a zero-value holding."""
     sf, store = _setup(tmp_path)
     with sf() as s:
         s.add(InstanceState(instance_id="i1", virtual_cash=1000.0,
@@ -116,7 +116,8 @@ def test_snapshot_unknown_position_treated_as_zero(tmp_path: Path):
 
     with sf() as s:
         snap = s.get(PerfSnapshot, ("i1", "20260430"))
-        assert snap.nav == 1000.0   # 仅现金
+        assert snap is None
+        assert s.get(InstanceState, "i1").strategy_state["valuation_status"]["status"] == "WAITING_PRICE"
 
 
 def test_snapshot_daily_return_uses_yesterday(tmp_path: Path):
