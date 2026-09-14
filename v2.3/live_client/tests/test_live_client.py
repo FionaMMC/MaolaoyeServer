@@ -626,6 +626,11 @@ def test_windows_runtime_keeps_proven_encoding_and_stderr_hotfix():
         assert '$ErrorActionPreference = "Continue"' in source
         assert '$ErrorActionPreference = $previousErrorActionPreference' in source
     assert '[Text.Encoding]::UTF8.GetBytes($body)' in operations
+    assert '"[Hydra live] ${Stage}: normal calendar wait' in operations
+    assert '"[Hydra live] $Stage: normal calendar wait' not in operations
+    assert "System.Management.Automation.Language.Parser" in (
+        windows / "Install-HydraLiveClient.ps1"
+    ).read_text(encoding="utf-8")
     for old, new in (("settle", "settle-close"), ("trigger", "retry"), ("query", "query-preflight")):
         assert f'"{old}" {{ "{new}" }}' in operations
     assert '$exitCode = $LASTEXITCODE' in runner

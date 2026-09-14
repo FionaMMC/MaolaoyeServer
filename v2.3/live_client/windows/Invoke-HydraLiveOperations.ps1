@@ -173,7 +173,7 @@ try {
         Send-WeComNotification "[Hydra live] $Stage is waiting for broker/reconciliation evidence or fresh execution data for $today. No new submit task was registered by this run. Review $logFile; previously frozen tasks require separate review." $true
     }
     elseif ($operationWaitingDate) {
-        Send-WeComNotification "[Hydra live] $Stage: normal calendar wait for $today. No stale-price batch or new submit task was created."
+        Send-WeComNotification "[Hydra live] ${Stage}: normal calendar wait for $today. No stale-price batch or new submit task was created."
     }
     elseif ($Stage -eq "cancel-open") {
         Send-WeComNotification "[Hydra live] cancel-open request phase completed for $today; cumulative fills and 15:00 expiry are observed at 15:10, then again before server execution advance."

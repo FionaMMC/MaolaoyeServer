@@ -77,6 +77,31 @@ function Test-HydraPackage {
         [Parameter(Mandatory = $true)][string]$PythonExe
     )
 
+    $powerShellFailures = @()
+    foreach ($script in Get-ChildItem -LiteralPath $PackageRoot -Recurse -File -Filter "*.ps1") {
+        $tokens = $null
+        $parseErrors = $null
+        [void][System.Management.Automation.Language.Parser]::ParseFile(
+            $script.FullName,
+            [ref]$tokens,
+            [ref]$parseErrors
+        )
+        foreach ($parseError in $parseErrors) {
+            $relative = $script.FullName.Substring($PackageRoot.Length).TrimStart(
+                [char[]]@('\', '/')
+            )
+            $powerShellFailures += (
+                "{0}:{1}: {2}" -f
+                $relative,
+                $parseError.Extent.StartLineNumber,
+                $parseError.Message
+            )
+        }
+    }
+    if ($powerShellFailures.Count -gt 0) {
+        throw "PowerShell syntax validation failed:`n$($powerShellFailures -join "`n")"
+    }
+
     $syntaxCheck = @'
 import ast
 import pathlib
