@@ -26,6 +26,7 @@
 
 - 非月末 `publish-execution` 成功且 `monthly_research.status=NO_MONTHLY_RESEARCH_DUE`；现有 raw 上传不受影响。
 - 首个月末 15:30：四份流成功冻结并收到 `RESEARCH_SNAPSHOT_STORED`；公司行动 None 与明确空表区分，查询无响应会报警，不伪装成没有分红。
+- 公司行动时间戳按上海交易日解释，不按 UTC 日期截断；本轮也补了这一采集端时区修正。同伴应核对真实 QMT 因子的事件日期与券商记录一致。
 - 服务器 `journalctl -u qmt-hydra-monthly.service` 出现 `MONTHLY_PLAN_READY`，月度表为 `PLANNED`；当时没有因此新增订单。
 - 18:00 执行/拉取回执对应新计划，数量由独立策略净资产与最新执行价决定，仍最多 50bp。
 - 安装器/任务的原生 Windows 验收未过，不修改现行 09:10 下单任务来绕过。

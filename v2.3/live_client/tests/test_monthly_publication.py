@@ -90,3 +90,23 @@ def test_unconfirmed_upload_does_not_save_receipt(publication):
             cfg, "20260930", SimpleNamespace(_post=lambda *a: {}), xtdata
         )
     assert not list(cfg.state_db.parent.rglob("upload-receipt.json"))
+
+
+def test_corporate_action_date_uses_china_calendar_not_utc_previous_day():
+    from live_client.data_snapshot import _factor_date
+    timestamp = pd.Timestamp("2026-09-30T00:00:00+08:00").timestamp()
+    assert _factor_date(timestamp) == "20260930"
+    assert _factor_date(timestamp * 1000) == "20260930"
+
+
+def test_empty_action_stream_identity_still_binds_freeze_date(tmp_path):
+    from live_client.data_snapshot import _write_bundle, CORPORATE_ACTION_COLUMNS
+    hashes = []
+    for day in ("20260930", "20261030"):
+        frame = pd.DataFrame(columns=CORPORATE_ACTION_COLUMNS)
+        frame.attrs["hydra_as_of_date"] = day
+        manifest = _write_bundle(frame, tmp_path/day, stream="hydra_corporate_actions",
+                                 adjustment="corporate_actions", as_of_date=day,
+                                 producer_commit="a"*40)
+        hashes.append(manifest["file_sha256"])
+    assert hashes[0] != hashes[1]

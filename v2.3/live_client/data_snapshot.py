@@ -172,7 +172,7 @@ def _factor_date(value: object) -> str:
     if pd.isna(timestamp):
         raise ValueError(f"QMT 公司行动缺少 time: {value!r}")
     unit = "ms" if timestamp > 1e10 else "s"
-    return pd.to_datetime(timestamp, unit=unit).strftime("%Y%m%d")
+    return pd.to_datetime(timestamp, unit=unit, utc=True).tz_convert("Asia/Shanghai").strftime("%Y%m%d")
 
 
 def _numeric_or_zero(value: object) -> float:
