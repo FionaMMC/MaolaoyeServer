@@ -931,6 +931,15 @@ def publish_server_execution(cfg, reference_date):
     result = LiveServerClient(cfg.server_base_url, cfg.api_key, execution_domain=cfg.execution_domain).publish_execution(payload)
     if result.get("status") != "EXECUTION_DATA_PUBLISHED" or result.get("reference_date") != reference_date:
         raise RuntimeError("执行行情发布缺少匹配的成功回执")
+    # Research failure must not block already-approved execution or settlement.
+    from live_client.monthly_publication import publish_monthly_data
+    try:
+        result["monthly_research"] = publish_monthly_data(
+            cfg, reference_date,
+            LiveServerClient(cfg.server_base_url, cfg.api_key, execution_domain=cfg.execution_domain),
+        )
+    except Exception as exc:
+        result["monthly_research"] = {"status": "WAITING_RESEARCH_UPLOAD", "reason": str(exc)}
     return result
 
 

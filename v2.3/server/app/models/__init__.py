@@ -28,6 +28,7 @@ from app.models.hydra_closure import HydraWorkflowClosure  # noqa: E402, F401
 from app.models.account_cash_observation import AccountCashObservation  # noqa: E402, F401
 from app.models.capital_movement_receipt import CapitalMovementReceipt  # noqa: E402, F401
 from app.models.income_allocation_receipt import IncomeAllocationReceipt  # noqa: E402, F401
+from app.models.hydra_monthly import HydraMonthlyCycle  # noqa: E402, F401
 from app.models.risk_blacklist import RiskBlacklistEntry  # noqa: E402, F401
 from app.models.shadow import (  # noqa: E402, F401
     ShadowInstanceState,
@@ -49,6 +50,7 @@ __all__ = [
     "OrderStatusEvidence",
     "HydraExecutionPlan",
     "HydraExecutionPublication",
+    "HydraMonthlyCycle",
     "PerfSnapshot",
     "CashFlowJournal",
     "DailyRiskSnapshot",

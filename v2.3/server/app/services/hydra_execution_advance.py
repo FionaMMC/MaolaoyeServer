@@ -10,6 +10,7 @@ from sqlalchemy import select
 
 from app.models import (
     HydraExecutionPlan,
+    HydraMonthlyCycle,
     HydraExecutionAttempt,
     HydraRebalance,
     HydraTarget,
@@ -58,6 +59,20 @@ def advance_execution(service, req):
             return {
                 "status": "WAITING_RECONCILIATION",
                 "reason": "迟到成交影响的旧执行包仍待核实",
+                "order_count": 0,
+            }
+        research_pending = session.scalar(select(HydraMonthlyCycle).where(
+            HydraMonthlyCycle.execution_domain == "live",
+            HydraMonthlyCycle.account_alias == req.account_alias,
+            HydraMonthlyCycle.instance_id == req.instance_id,
+            HydraMonthlyCycle.as_of_date <= req.reference_date,
+            HydraMonthlyCycle.status != "PLANNED",
+        ))
+        if research_pending:
+            return {
+                "status": "WAITING_EXECUTION_DATA",
+                "reason": "月度冻结包已收到，独立研究进程尚未发布新目标；稍后重跑晚间拉单，不沿用旧目标",
+                "cycle_id": research_pending.cycle_id,
                 "order_count": 0,
             }
         if state.ledger_mode == "attributed":

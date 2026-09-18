@@ -60,6 +60,12 @@ class Settings(BaseSettings):
         "159985.SZ,159930.SZ,513500.SH,513100.SH"
     )
     hydra_allowed_publisher_commits_csv: str = ""
+    # Dedicated systemd worker: never run expensive research in the API process.
+    hydra_monthly_enabled: bool = False
+    hydra_monthly_instance_id: str = "live_hydra_v481_rb"
+    hydra_monthly_account_alias: str = ""
+    hydra_monthly_start_date: str = "20260918"
+    hydra_monthly_research_dir: Path = Path("/opt/qmt-refresh/releases/hydra-aa6b60d")
     hydra_live_risk_mode: str = "disabled"
     live_max_daily_orders: int = 0
     live_max_single_order_notional: float = 0.0

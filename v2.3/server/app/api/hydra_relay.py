@@ -20,8 +20,26 @@ from app.schemas.hydra_relay import (
 from app.services.hydra_relay import HydraRelayService
 from app.services.hydra_execution_advance import advance_execution
 from app.services.hydra_execution_publish import publish_execution
+from app.schemas.hydra_monthly import HydraMonthlySnapshotRequest
+from app.services.hydra_monthly import receive_snapshot
+from app.settings import get_settings, Settings
 
 router = APIRouter(prefix="/hydra")
+
+
+@router.post("/research/snapshots", response_model=APIResponse[dict])
+def receive_monthly_snapshot(
+    req: HydraMonthlySnapshotRequest,
+    auth: AuthContext = Depends(verify_api_key),
+    service: HydraRelayService = Depends(get_hydra_relay_service),
+    settings: Settings = Depends(get_settings),
+):
+    _authorize(auth, req.execution_domain, req.account_alias)
+    try:
+        data = receive_snapshot(service, settings, req)
+    except (ValueError, OSError) as exc:
+        raise APIError(ErrorCode.BAD_REQUEST, str(exc)) from exc
+    return APIResponse(code=0, message="ok", data=data)
 
 
 def _authorize(auth: AuthContext, execution_domain: str, account_alias: str) -> None:

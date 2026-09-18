@@ -1,0 +1,15 @@
+[Unit]
+Description=Hydra server monthly research to execution plan (never broker submit)
+After=qmt-server.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/qmt-server/v2.3/server
+Environment=PYTHONPATH=.
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/qmt-server/venv/bin/python scripts/run_hydra_monthly.py --apply
+TimeoutStartSec=12min
+Nice=10
+MemoryMax=2G
+NoNewPrivileges=true
+

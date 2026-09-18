@@ -99,6 +99,7 @@ async def verify_api_key(
             "/accounts/income-allocations",
             "/admin/reconcile-positions",
             "/hydra/targets/stage",
+            "/hydra/research/snapshots",
             "/hydra/rebalances/retry",
             "/hydra/execution/advance",
             "/hydra/execution/data",

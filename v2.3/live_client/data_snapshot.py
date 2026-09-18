@@ -180,7 +180,7 @@ def _numeric_or_zero(value: object) -> float:
     return 0.0 if pd.isna(number) else float(number)
 
 
-def collect_corporate_actions(cfg: ResearchDataConfig, as_of_date: str) -> pd.DataFrame:
+def collect_corporate_actions(cfg: ResearchDataConfig, as_of_date: str, *, require_response: bool = False) -> pd.DataFrame:
     """Freeze QMT dividend factors for executable ETFs into the relay schema."""
     from xtquant import xtdata
 
@@ -190,6 +190,8 @@ def collect_corporate_actions(cfg: ResearchDataConfig, as_of_date: str) -> pd.Da
     for symbol in sorted(EXECUTABLE_SYMBOLS):
         raw = xtdata.get_divid_factors(symbol)
         if raw is None:
+            if require_response:
+                raise RuntimeError(f"QMT 公司行动查询无响应: {symbol}；不能当作无分红")
             continue
         factors = raw if isinstance(raw, pd.DataFrame) else pd.DataFrame(raw)
         if factors.empty:

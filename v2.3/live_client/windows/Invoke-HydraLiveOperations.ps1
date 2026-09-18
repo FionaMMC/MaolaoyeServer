@@ -167,6 +167,13 @@ try {
             }
         }
     }
+    if (($output -match '"status"\s*:\s*"WAITING_RESEARCH_UPLOAD"') -or
+        ((Get-Variable publicationOutput -ErrorAction SilentlyContinue) -and ($publicationOutput -match '"status"\s*:\s*"WAITING_RESEARCH_UPLOAD"'))) {
+        if (Get-Variable publicationOutput -ErrorAction SilentlyContinue) {
+            Add-Content -LiteralPath $logFile -Value "monthly research publication:`n$publicationOutput" -Encoding UTF8
+        }
+        Send-WeComNotification "[Hydra live] Monthly research data upload is pending. Existing execution is unaffected; retry publication after restoring data/network. Check $logFile." $true
+    }
     $operationState = if ($operationPending) { "pending evidence/data" } elseif ($operationWaitingDate) { "waiting for eligible trading pair" } else { "succeeded" }
     Add-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) $Stage $operationState`n$output" -Encoding UTF8
     if ($operationPending) {
