@@ -273,6 +273,8 @@ class OpsMonitorService:
                 "instance_id": instance_id,
                 "found": bool(state or shadow),
                 "kind": "shadow" if is_shadow else "regular",
+                "execution_domain": state.execution_domain if state else "shadow" if is_shadow else None,
+                "ledger_mode": state.ledger_mode if state else None,
                 "orders_enabled": not is_shadow,
                 "last_state_update": last_update,
                 "state_age_seconds": _age_seconds(last_update, now),

@@ -10,6 +10,7 @@ from app.dependencies import get_ops_monitor, get_alert_engine, get_session_fact
 from app.models import PerfSnapshot
 from app.services.ops_monitor import OpsMonitorService
 from app.services.alerts import AlertEngine
+from app.services.hydra_dashboard import hydra_dashboard_status
 
 router = APIRouter(prefix="/admin")
 
@@ -44,10 +45,12 @@ async def ops_live_snapshot(
     ops: OpsMonitorService = Depends(get_ops_monitor),
 ):
     """24h command-center snapshot; observed values and telemetry gaps in one call."""
+    data = ops.live_snapshot(instance_id=instance_id, lookback_days=days)
+    data["hydra"] = hydra_dashboard_status(ops.sf, ops.settings, instance_id)
     return APIResponse[dict](
         code=0,
         message="ok",
-        data=ops.live_snapshot(instance_id=instance_id, lookback_days=days),
+        data=data,
     )
 
 

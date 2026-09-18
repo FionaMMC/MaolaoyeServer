@@ -357,6 +357,17 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     .alert-meta { margin-top: 4px; color: var(--muted); font: 8px var(--mono); }
     .live-note { margin-top: 13px; padding-top: 10px; border-top: 1px solid rgba(135,157,184,.13); color: var(--muted); font: 8px/1.45 var(--mono); }
     #live-orders { overflow-x: auto; }
+    .hydra-summary { border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin-bottom: 16px; background: var(--surface); }
+    .hydra-summary[hidden] { display: none; }
+    .hydra-summary h2 { font-size: 18px; margin-bottom: 8px; }
+    .hydra-summary p { color: #aebccb; line-height: 1.6; max-width: 72ch; }
+    .hydra-facts { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 20px; margin: 20px 0; }
+    .hydra-facts dt { color: #aebccb; font-size: 12px; margin-bottom: 7px; }
+    .hydra-facts dd { line-height: 1.5; overflow-wrap: anywhere; }
+    .hydra-summary details { margin-top: 12px; }
+    .hydra-summary summary { cursor: pointer; padding: 8px 0; color: #cceefa; }
+    .hydra-summary summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    @media (max-width: 700px) { .hydra-facts { grid-template-columns: repeat(2,minmax(0,1fr)); } }
     #execution-price-table { overflow-x: auto; }
     #execution-price-table table { min-width: 980px; }
     .execution-method {
@@ -418,7 +429,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       <div class="meta" id="meta">Loading...</div>
     </div>
     <div class="toolbar">
-      <label style="font-size:0.85em;color:#8a93a0;">实例:</label>
+      <label for="instSel" style="font-size:0.85em;color:#8a93a0;">实例:</label>
       <select id="instSel" onchange="onInstanceChange()" disabled>
         <option value="">加载实例...</option>
       </select>
@@ -470,6 +481,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       <div><h2>Live Command Center</h2><p>风险、执行、对账和数据链路的一屏式值守视图</p></div>
       <div class="live-asof" id="live-asof">—</div>
     </div>
+    <section id="hydra-summary" class="hydra-summary" aria-label="Hydra 实盘运行状态" hidden></section>
     <div class="grid-4" id="live-kpis"><div class="loading">读取实盘快照…</div></div>
     <div class="live-main-grid">
       <div class="card tall trajectory-card">
@@ -535,7 +547,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         <div id="live-orders"><div class="loading">读取订单生命周期…</div></div>
       </div>
       <div class="card">
-        <h2>ACTIONABLE ALERTS <span class="hint">critical first</span></h2>
+        <h2>全服务器告警 <span class="hint">包含其他策略 · critical first</span></h2>
         <div id="live-alerts"><div class="loading">运行告警检查…</div></div>
       </div>
     </div>
@@ -613,7 +625,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
   <div class="view" id="view-strategy">
     <div class="grid">
       <div class="card wide">
-        <h2>V20H 策略状态</h2>
+        <h2 id="strategy-state-heading">策略状态</h2>
         <div id="strategy-state"><div class="loading">Loading...</div></div>
       </div>
       <div class="card">
@@ -746,15 +758,16 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     async function loadInstanceOptions() {
       const health = await api('/admin/health');
       const select = document.getElementById('instSel');
-      const previous = localStorage.getItem('qmt_dashboard_instance') || select.value;
+      const requested = new URLSearchParams(location.search).get('instance_id');
+      const previous = requested || localStorage.getItem('qmt_dashboard_instance') || select.value;
       const instances = health.instances || [];
       if (!instances.length) throw new Error('服务器尚无可展示的实例');
       INSTANCE_META = Object.fromEntries(instances.map(i => [i.instance_id, i]));
       select.innerHTML = instances.map(i =>
-        `<option value="${i.instance_id}">${i.display_name || i.instance_id}${i.is_shadow ? ' [shadow]' : ''}</option>`
+        `<option value="${esc(i.instance_id)}">${esc(i.display_name || i.instance_id)} [${i.is_shadow ? '影子盘' : i.execution_domain === 'live' ? '实盘' : '模拟盘'}]</option>`
       ).join('');
       select.value = instances.some(i => i.instance_id === previous)
-        ? previous : instances[0].instance_id;
+        ? previous : (instances.find(i => i.execution_domain === 'live' && i.instance_id === 'live_hydra_v481_rb') || instances[0]).instance_id;
       select.disabled = false;
     }
 
@@ -778,8 +791,12 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       const lastRun = m.last_pipeline_run;
       const el = document.getElementById('health-strip');
       if(!el) return;
+      if (INSTANCE_META[getInstanceId()]?.execution_domain === 'live') {
+        el.textContent = '实盘独立账本 · 只展示归属于当前策略的资金与持仓；不等于券商账户总资金。';
+        return;
+      }
       el.innerHTML =
-        '<span>账户 NAV <b>' + fmtNum(m.account_nav) + '</b></span>' +
+        '<span>多实例账面 NAV（非实盘账户） <b>' + fmtNum(m.account_nav) + '</b></span>' +
         '<span>行情 <span class="' + staleClass(lag) + '">' + (fr.market_latest||'—') + (lag!=null?' ('+lag+'d)':'') + '</span></span>' +
         '<span>管线 <span class="dot ' + (lastRun&&lastRun.status==='ok'?'ok':'bad') + '"></span>' + (lastRun?lastRun.valid_date:'—') + '</span>' +
         '<span class="' + (a.critical?'crit':'') + '">告警 ' + (a.critical||0) + '🔴 / ' + (a.warn||0) + '🟡</span>' +
@@ -837,6 +854,9 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 
     function onInstanceChange() {
       localStorage.setItem('qmt_dashboard_instance', getInstanceId());
+      const url = new URL(location.href);
+      url.searchParams.set('instance_id', getInstanceId());
+      history.replaceState(null, '', url);
       metaPoll();
       refreshAll();
     }
@@ -1293,13 +1313,42 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       });
     }
 
+    function hydraSummaryHTML(h) {
+      const monthly = {NO_MONTHLY_INPUT:'尚未收到月末冻结包', RECEIVED:'已收件，等待计算或重试', PLANNED:'本期新目标已生成'};
+      const plans = {WAITING_EXECUTION_DATA:'等待合格交易日与新执行价', STAGED:'已转换为执行批次'};
+      return `<h2>${esc(h.name)} ${badge('实盘','info')}</h2>
+        <p>服务器计算目标，本地 MiniQMT 执行。策略只使用自己的资金、持仓与后续盈亏，不把券商账户其余现金当作可用预算。</p>
+        <dl class="hydra-facts">
+          <div><dt>策略账本现金 · 非总资产</dt><dd>${fmt(h.cash,{cur:true})}<br>${esc(h.ledger_mode === 'attributed' ? '独立归属账本' : h.ledger_mode)}</dd></div>
+          <div><dt>服务器月度研究</dt><dd>${h.monthly_configured ? '月度计算已配置' : '月度计算未启用'}<br>源码 ${esc(h.research_commit.slice(0,7))}</dd></div>
+          <div><dt>最近月度数据 / 新目标</dt><dd>${esc(monthly[h.monthly_status] || h.monthly_status)}<br>${esc(h.monthly_as_of || '无收件日期')}</dd></div>
+          <div><dt>最近执行计划</dt><dd>${esc(plans[h.plan_status] || h.plan_status || '暂无执行计划')}<br>${esc(h.plan_as_of || '不代表没有历史成交')}</dd></div>
+        </dl>
+        <p>Windows 升级与连接状态：尚无可核实回执。服务器配置完成不等于客户端已验收；下单仍使用本地冻结批次，不在 09:10 重新依赖服务器。</p>
+        <details><summary>查看策略持仓与执行设置（只读）</summary>
+          <p>生成订单：${h.generation_enabled ? '已开启' : '未开启'} · 领取订单：${h.delivery_enabled ? '已开启' : '未开启'} · 账本更新时间：${esc(h.ledger_updated_at)}</p>
+          <table><thead><tr><th>标的</th><th class="num">归属股数</th></tr></thead><tbody>
+            ${Object.entries(h.positions).map(([symbol,quantity])=>`<tr><td>${esc(symbol)}</td><td class="num">${fmtNum(quantity)}</td></tr>`).join('') || '<tr><td colspan="2">当前无归属持仓</td></tr>'}
+          </tbody></table>
+        </details>`;
+    }
+
     async function renderLive() {
+      const selectedInstance = getInstanceId();
+      const hydraPanel = document.getElementById('hydra-summary');
+      hydraPanel.hidden = true;
       try {
         const [snapshot, alerts, dailyRisk] = await Promise.all([
           api('/admin/ops/live-snapshot?' + selectedQuery({days:30})),
           api('/admin/alerts'),
           api('/admin/metrics/daily-risk?' + selectedQuery({period:'all', benchmark_symbol:liveBenchmarkSymbol})),
         ]);
+        if (selectedInstance !== getInstanceId()) return;
+        const selected = INSTANCE_META[selectedInstance] || {};
+        document.querySelector('.live-heading h2').textContent = selected.display_name || selectedInstance;
+        document.querySelector('.live-heading p').textContent = selected.is_shadow ? '影子盘 · 仅虚拟记账，不产生订单' : selected.execution_domain === 'live' ? '实盘 · 独立策略账本与真实执行记录' : '模拟盘 · 不代表真实券商账户';
+        hydraPanel.hidden = !snapshot.hydra;
+        if (snapshot.hydra) hydraPanel.innerHTML = hydraSummaryHTML(snapshot.hydra);
         const inst = snapshot.instance || {}, risk = snapshot.risk || {}, execution = snapshot.execution || {};
         const latestRisk = dailyRisk.summary?.latest || {};
         const comparison = dailyRisk.summary || {};
@@ -1321,6 +1370,8 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         renderLiveOrders(snapshot.recent_orders);
         renderLiveAlerts(alerts.alerts);
       } catch (e) {
+        if (selectedInstance !== getInstanceId()) return;
+        hydraPanel.hidden = true;
         document.getElementById('live-kpis').innerHTML = `<div class="error">${esc(e.message)}</div>`;
       }
     }
@@ -1617,7 +1668,20 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 
     // ── 策略内部 ────────────────────────────────────────────────
     async function renderStrategy() {
+      const selectedInstance = getInstanceId();
       try {
+        const selected = INSTANCE_META[getInstanceId()] || {};
+        document.getElementById('strategy-state-heading').textContent = `${selected.display_name || getInstanceId()} · 策略状态`;
+        if (selected.execution_domain === 'live' && getInstanceId() === 'live_hydra_v481_rb') {
+          const snapshot = await api('/admin/ops/live-snapshot?' + selectedQuery({days:30}));
+          if (selectedInstance !== getInstanceId()) return;
+          document.getElementById('strategy-state').innerHTML = snapshot.hydra ? `<section class="hydra-summary">${hydraSummaryHTML(snapshot.hydra)}</section>` : '<p>该实例暂无可核实的 Hydra 运行状态。</p>';
+          document.getElementById('bl-total').textContent = '—';
+          document.getElementById('blacklist').textContent = '本页不展示其他策略的全局黑名单。';
+          document.getElementById('recent-rejected').textContent = '真实委托状态请查看执行分析或实盘总控。';
+          document.getElementById('bk-divergence').textContent = '账本归属与对账结果以实盘总控的事实记录为准。';
+          return;
+        }
         if (isShadowSelected()) {
           const summary = await api('/admin/shadow/summary');
           const item = summary.items.find(i => i.shadow_id === getInstanceId());
@@ -1907,7 +1971,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 
     function renderPortfolioOverview(data) {
       const rows = data.items.map(i => `<tr>
-        <td>${i.display_name || i.instance_id}${i.is_shadow ? ' ' + badge('shadow', 'warn') : ''}</td>
+        <td>${esc(i.display_name || i.instance_id)} ${badge(i.is_shadow ? '影子盘' : i.execution_domain === 'live' ? '实盘' : '模拟盘', i.execution_domain === 'live' ? 'info' : 'warn')}</td>
         <td class="num">${fmt(i.virtual_cash, {cur:true})}</td>
         <td class="num">${i.holdings_count}</td>
         <td class="num">${fmt(i.latest_nav, {cur:true})}</td>

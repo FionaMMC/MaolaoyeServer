@@ -70,6 +70,21 @@ def _configured_regular_instances(settings: Settings) -> dict[str, dict] | None:
     return result
 
 
+def _dashboard_instance(state, configured, settings):
+    """Live ledgers are registered outside the ordinary paper pipeline."""
+    live = state.execution_domain == "live"
+    if not live and configured is not None and state.instance_id not in configured:
+        return None
+    config = dict((configured or {}).get(state.instance_id, {}))
+    if live:
+        if state.instance_id == settings.hydra_monthly_instance_id:
+            config["display_name"] = "Hydra 4.8 · v48.1-RB"
+        config["orders_enabled"] = settings.live_order_generation_enabled
+    config["execution_domain"] = state.execution_domain
+    config["ledger_mode"] = state.ledger_mode
+    return config
+
+
 @router.get(
     "/shadow/summary",
     response_model=APIResponse[dict],
@@ -350,9 +365,9 @@ async def portfolio_overview(
     with sf() as session:
         items = []
         for state in session.execute(select(InstanceState)).scalars().all():
-            if configured is not None and state.instance_id not in configured:
+            instance_cfg = _dashboard_instance(state, configured, settings)
+            if instance_cfg is None:
                 continue
-            instance_cfg = (configured or {}).get(state.instance_id, {})
             latest = session.execute(
                 select(PerfSnapshot)
                 .where(PerfSnapshot.instance_id == state.instance_id)
@@ -362,6 +377,8 @@ async def portfolio_overview(
             items.append({
                 "instance_id": state.instance_id,
                 "display_name": instance_cfg.get("display_name", state.instance_id),
+                "execution_domain": state.execution_domain,
+                "ledger_mode": state.ledger_mode,
                 "virtual_cash": state.virtual_cash,
                 "holdings_count": len(state.virtual_positions or {}),
                 "latest_nav": latest.nav if latest else None,
@@ -564,9 +581,9 @@ async def admin_health(
         # 各 instance 最新 NAV
         instance_navs = []
         for st_row in session.execute(select(InstanceState)).scalars().all():
-            if configured is not None and st_row.instance_id not in configured:
+            instance_cfg = _dashboard_instance(st_row, configured, settings)
+            if instance_cfg is None:
                 continue
-            instance_cfg = (configured or {}).get(st_row.instance_id, {})
             latest_perf = session.execute(
                 select(PerfSnapshot)
                 .where(PerfSnapshot.instance_id == st_row.instance_id)
@@ -576,6 +593,8 @@ async def admin_health(
             instance_navs.append({
                 "instance_id": st_row.instance_id,
                 "display_name": instance_cfg.get("display_name", st_row.instance_id),
+                "execution_domain": st_row.execution_domain,
+                "ledger_mode": st_row.ledger_mode,
                 "virtual_cash": st_row.virtual_cash,
                 "holdings_count": len(st_row.virtual_positions or {}),
                 "last_update": st_row.last_update,
