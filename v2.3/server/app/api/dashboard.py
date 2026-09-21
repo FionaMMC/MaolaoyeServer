@@ -1320,11 +1320,13 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         <p>服务器计算目标，本地 MiniQMT 执行。策略只使用自己的资金、持仓与后续盈亏，不把券商账户其余现金当作可用预算。</p>
         <dl class="hydra-facts">
           <div><dt>策略账本现金 · 非总资产</dt><dd>${fmt(h.cash,{cur:true})}<br>${esc(h.ledger_mode === 'attributed' ? '独立归属账本' : h.ledger_mode)}</dd></div>
+          <div><dt>策略总资产 · ${h.valuation?.registered_dividend_rights === 0 ? '待核对分红' : '日终'}</dt><dd>${fmt(h.valuation?.nav,{cur:true})}<br>${esc(h.valuation?.date || '等待估值数据')} · ${h.valuation?.registered_dividend_rights === 0 ? '应收分红未登记' : '含应收分红 ' + fmt(h.valuation?.dividend_receivable,{cur:true})}</dd></div>
           <div><dt>服务器月度研究</dt><dd>${h.monthly_configured ? '月度计算已配置' : '月度计算未启用'}<br>源码 ${esc(h.research_commit.slice(0,7))}</dd></div>
           <div><dt>最近月度数据 / 新目标</dt><dd>${esc(monthly[h.monthly_status] || h.monthly_status)}<br>${esc(h.monthly_as_of || '无收件日期')}</dd></div>
           <div><dt>最近执行计划</dt><dd>${esc(plans[h.plan_status] || h.plan_status || '暂无执行计划')}<br>${esc(h.plan_as_of || '不代表没有历史成交')}</dd></div>
         </dl>
         <p>Windows 升级与连接状态：尚无可核实回执。服务器配置完成不等于客户端已验收；下单仍使用本地冻结批次，不在 09:10 重新依赖服务器。</p>
+        ${h.valuation?.registered_dividend_rights === 0 ? '<p class="warn">分红权益尚未登记，除息期间的净值与收益待核对；当前显示现金和持仓估值。</p>' : ''}
         <details><summary>查看策略持仓与执行设置（只读）</summary>
           <p>生成订单：${h.generation_enabled ? '已开启' : '未开启'} · 领取订单：${h.delivery_enabled ? '已开启' : '未开启'} · 账本更新时间：${esc(h.ledger_updated_at)}</p>
           <table><thead><tr><th>标的</th><th class="num">归属股数</th></tr></thead><tbody>
@@ -1338,11 +1340,15 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       const hydraPanel = document.getElementById('hydra-summary');
       hydraPanel.hidden = true;
       try {
-        const [snapshot, alerts, dailyRisk] = await Promise.all([
+        const [snapshotResult, alertsResult, riskResult] = await Promise.allSettled([
           api('/admin/ops/live-snapshot?' + selectedQuery({days:30})),
           api('/admin/alerts'),
           api('/admin/metrics/daily-risk?' + selectedQuery({period:'all', benchmark_symbol:liveBenchmarkSymbol})),
         ]);
+        if (snapshotResult.status === 'rejected') throw snapshotResult.reason;
+        const snapshot = snapshotResult.value;
+        const alerts = alertsResult.status === 'fulfilled' ? alertsResult.value : {alerts:[]};
+        const dailyRisk = riskResult.status === 'fulfilled' ? riskResult.value : {items:[],summary:{},latest_positions:[]};
         if (selectedInstance !== getInstanceId()) return;
         const selected = INSTANCE_META[selectedInstance] || {};
         document.querySelector('.live-heading h2').textContent = selected.display_name || selectedInstance;
@@ -1369,6 +1375,8 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         renderTelemetryCoverage(snapshot.coverage_gaps);
         renderLiveOrders(snapshot.recent_orders);
         renderLiveAlerts(alerts.alerts);
+        if (alertsResult.status === 'rejected') document.getElementById('live-alerts').innerHTML = '<p class="muted">告警数据暂不可用；持仓与净值已独立加载。</p>';
+        if (riskResult.status === 'rejected') document.getElementById('trajectory-subtitle').textContent = '净值曲线暂不可用；请稍后刷新。';
       } catch (e) {
         if (selectedInstance !== getInstanceId()) return;
         hydraPanel.hidden = true;

@@ -219,8 +219,8 @@ def test_hydra_shadow_config_pins_source_symbols_and_target_age():
     } == {40}
     cash_aux = instances["Shadow_Aux_Hard_TOP2"]
     short_credit_aux = instances["Shadow_Aux_Hard_TOP2_ShortCredit"]
-    assert cash_aux["enabled"] is True
-    assert short_credit_aux["enabled"] is True
+    assert cash_aux["enabled"] is False
+    assert short_credit_aux["enabled"] is False
     assert cash_aux["allowed_source_versions"] == [
         "v7.9-hard-logistic-aux-top2-r1@88c2cb1050c7391ce84a9d524a9884dfefaf3ef4"
     ]
@@ -361,3 +361,33 @@ shadow_instances:
             almost_fallback, "Shadow_Aux_Hard_TOP2", 20260807,
             constraints=constraints,
         )
+
+
+def test_metadata_republication_does_not_reset_drifted_holdings(tmp_path):
+    target = tmp_path / "target.parquet"
+    frame = target_frame()
+    frame.to_parquet(target,index=False)
+    service,sf,store = make_service(tmp_path,config_for(target))
+    add_prices(store,20260701)
+    service.run_all(20260701)
+    with sf() as session:
+        old = session.get(ShadowInstanceState,"Shadow_Base")
+        positions,cash,cost = dict(old.virtual_positions),old.virtual_cash,old.cumulative_cost
+    # Material market drift would cause needless turnover under artifact hashing.
+    add_prices(store,20260708,stock=12.0,etf=98.0)
+    frame["decision_date"] = "20260708"
+    frame["input_hash"] = "b"*64
+    frame.to_parquet(target,index=False)
+    result = service.run_all(20260708)["instances"][0]
+    assert result["transaction_cost"] == result["turnover"] == 0
+    with sf() as session:
+        new = session.get(ShadowInstanceState,"Shadow_Base")
+        assert (new.virtual_positions,new.virtual_cash,new.cumulative_cost) == (positions,cash,cost)
+        assert new.decision_date == "20260708"
+        assert session.query(ShadowTarget).count() == 4  # new provenance is retained
+    # New monthly intent still rebalances the same weights.
+    frame["decision_date"] = "20260803"
+    frame["as_of_date"] = "20260731"
+    frame.to_parquet(target,index=False)
+    add_prices(store,20260803,stock=12.0,etf=98.0)
+    assert service.run_all(20260803)["instances"][0]["transaction_cost"] > 0

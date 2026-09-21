@@ -99,6 +99,18 @@ class OpsMonitorService:
 
     def _orders_for_instance(self, session, instance_id: str, cutoff: str) -> tuple[list, str]:
         """Resolve instance orders without silently mixing unrelated account groups."""
+        state = session.get(InstanceState, instance_id)
+        if (state is not None and state.execution_domain == "live"
+                and instance_id == getattr(self.settings, "hydra_monthly_instance_id", None)
+                and state.account_alias):
+            # Hydra/manual recovery orders use the scoped account alias, which
+            # is deliberately different from the dashboard instance name.
+            rows = session.scalars(select(Order).where(
+                Order.execution_domain == "live",
+                Order.qmt_account_alias == state.account_alias,
+                Order.target_id.is_not(None), Order.valid_date >= cutoff,
+            ).order_by(desc(Order.created_at))).all()
+            return rows, "hydra_live_account_alias"
         mapped_ids = session.execute(
             select(OrderSignalMap.order_id)
             .join(RawSignal, RawSignal.signal_id == OrderSignalMap.signal_id)
@@ -206,7 +218,15 @@ class OpsMonitorService:
         pending_notional = sum(
             float(o.quantity) * float(o.limit_price) for o in orders if o.status == "PENDING"
         )
-        filled_notional = sum(float(t.filled_quantity) * float(t.filled_price) for t in trades)
+        # Trade reports are cumulative; a partial plus final report must not
+        # count the partial fill twice.
+        final_fills = {}
+        for trade in trades:
+            previous_fill = final_fills.get(trade.order_id)
+            if previous_fill is None or trade.filled_quantity > previous_fill.filled_quantity:
+                final_fills[trade.order_id] = trade
+        filled_notional = sum(float(t.filled_quantity) * float(t.filled_price)
+                              for t in final_fills.values())
 
         def weighted(field: str) -> float | None:
             pairs = []
@@ -305,7 +325,12 @@ class OpsMonitorService:
                 "filled_notional": filled_notional,
                 "weighted_shortfall_bps": weighted("execution_shortfall_bps"),
                 "weighted_premium_bps": weighted("premium_bps"),
-                "estimated_fees": sum(float(q.estimated_fees) for q in quality),
+                "estimated_fees": (
+                    sum(float(q.estimated_fees) for q in quality)
+                    if quality and all(t.order_id in {q.order_id for q in quality}
+                                       for t in final_fills.values() if t.filled_quantity > 0)
+                    else None
+                ),
                 "max_abs_shortfall_bps": max(shortfalls) if shortfalls else None,
                 "last_fill_at": latest_fill_at,
                 "last_fill_age_seconds": _age_seconds(latest_fill_at, now),

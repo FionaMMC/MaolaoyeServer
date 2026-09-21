@@ -91,17 +91,27 @@ class DailyRiskSnapshotService:
         execution_domain: str | None = None,
     ) -> dict:
         """Idempotently rebuild materialized snapshots from authoritative facts."""
+        def scoped(stmt, model, identity):
+            if instance_id:
+                stmt = stmt.where(identity == instance_id)
+            if execution_domain and hasattr(model, "execution_domain"):
+                stmt = stmt.where(model.execution_domain == execution_domain)
+            if end_date and hasattr(model, "date"):
+                stmt = stmt.where(model.date <= end_date)
+            return stmt
+
         with self.sf() as session:
             regular = session.execute(
-                select(PerfSnapshot).order_by(PerfSnapshot.instance_id, PerfSnapshot.date)
+                scoped(select(PerfSnapshot), PerfSnapshot, PerfSnapshot.instance_id)
+                .order_by(PerfSnapshot.instance_id, PerfSnapshot.date)
             ).scalars().all()
             shadow = session.execute(
-                select(ShadowNavSnapshot).order_by(
+                scoped(select(ShadowNavSnapshot), ShadowNavSnapshot, ShadowNavSnapshot.shadow_id).order_by(
                     ShadowNavSnapshot.shadow_id, ShadowNavSnapshot.date,
                 )
             ).scalars().all()
             flows = session.execute(
-                select(CashFlowJournal).where(
+                scoped(select(CashFlowJournal), CashFlowJournal, CashFlowJournal.instance_id).where(
                     CashFlowJournal.status == "APPLIED",
                     CashFlowJournal.event_type.in_((
                         "DEPOSIT", "WITHDRAWAL", "CAPITAL_ALLOCATION", "CAPITAL_DEALLOCATION",
@@ -110,7 +120,7 @@ class DailyRiskSnapshotService:
             ).scalars().all()
             components = {
                 (row.instance_id, row.date): row
-                for row in session.execute(select(PerfValuation)).scalars()
+                for row in session.execute(scoped(select(PerfValuation), PerfValuation, PerfValuation.instance_id)).scalars()
             }
 
         flow_totals: dict[tuple[str, str, str], list[float | int]] = defaultdict(

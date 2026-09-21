@@ -1,5 +1,5 @@
 [Unit]
-Description=V7.13 Base weekly target and shadow refresh
+Description=V7.13 Base monthly target and Base shadow refresh
 After=network-online.target qmt-server.service
 Wants=network-online.target
 

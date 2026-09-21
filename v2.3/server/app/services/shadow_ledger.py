@@ -370,7 +370,23 @@ class ShadowLedgerService:
             transaction_cost = 0.0
             turnover = 0.0
             if state.target_hash != target_hash:
-                transaction_cost, turnover = self._rebalance(state, target, prices, cfg)
+                # Publication/input hashes are provenance, not trading intent.
+                # Keep monthly holdings through metadata refreshes; a new month
+                # still rebalances even when the desired weights are unchanged.
+                previous = session.scalars(select(ShadowTarget).where(
+                    ShadowTarget.shadow_id == cfg["shadow_id"],
+                    ShadowTarget.target_hash == state.target_hash,
+                )).all() if state.target_hash else []
+                old_weights = {row.code: float(row.weight) for row in previous}
+                new_weights = dict(zip(target["code"], target["weight"]))
+                same_allocation = (
+                    state.as_of_date == target["as_of_date"].iloc[0]
+                    and old_weights.keys() == new_weights.keys()
+                    and all(abs(old_weights[code] - float(weight)) <= 1e-12
+                            for code, weight in new_weights.items())
+                )
+                if not same_allocation:
+                    transaction_cost, turnover = self._rebalance(state, target, prices, cfg)
                 session.execute(
                     delete(ShadowTarget).where(
                         ShadowTarget.shadow_id == cfg["shadow_id"],

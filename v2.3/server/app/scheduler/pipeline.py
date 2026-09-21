@@ -93,6 +93,7 @@ class StrategyPipeline:
         trade_date: int,
         force: bool = False,
         execution_domain: ExecutionDomain = "paper",
+        account_group: str | None = None,
     ) -> dict:
         """完整管线。返回执行摘要。
 
@@ -104,6 +105,10 @@ class StrategyPipeline:
         """
         execution_domain = normalize_execution_domain(execution_domain)
         valid_date_str = str(trade_date)
+        all_instances = self._load_instances(execution_domain=execution_domain)
+        instances = [i for i in all_instances if account_group is None or i["account_group"] == account_group]
+        if account_group is not None and not instances:
+            raise ValueError(f"unknown account group: {account_group}")
         logger.info(
             "pipeline_start trade_date=%s execution_domain=%s",
             trade_date,
@@ -181,14 +186,14 @@ class StrategyPipeline:
                     _to_date(today_int) + timedelta(days=1)
                 ).strftime("%Y%m%d")
             stale_orders = self._terminalize_prior_unresolved_orders(
-                cutoff_exclusive, execution_domain,
+                cutoff_exclusive, execution_domain, account_group,
             )
 
         # 00b. 已结算护栏（2026-06 孤儿成交事故根因）：该 valid_date 已收到成交回报
         #      → 绝不重算。重算会先 _clear_for_date 删掉已结算订单 → 其 trades 变孤儿；
         #      再 aggregate 生成新 uuid 订单（PENDING），客户端永不针对它回报 → SELL
         #      永久卡 PENDING。何况该日竞价已成交，重算策略也无意义。直接跳过，保持原状。
-        settled = self._settled_order_ids(valid_date_str, execution_domain)
+        settled = self._settled_order_ids(valid_date_str, execution_domain, account_group)
         if settled:
             logger.error(
                 "pipeline_skipped already_settled valid_date=%s settled_orders=%d "
@@ -205,7 +210,7 @@ class StrategyPipeline:
         #      拉走该日订单 → 默认拒绝重算。重算会换掉 order_id，客户端不会在下单前
         #      重新拉取 → 次日成交回报全量 unmatched，成交静默不入账。
         #      确需重算：force=true，且操作者必须让客户端在下单前重新拉取信号。
-        fetched = self._fetched_order_ids(valid_date_str, execution_domain)
+        fetched = self._fetched_order_ids(valid_date_str, execution_domain, account_group)
         if fetched and not force:
             logger.error(
                 "pipeline_skipped already_fetched valid_date=%s fetched_orders=%d "
@@ -228,8 +233,10 @@ class StrategyPipeline:
         # Strict instances must be checked before _clear_for_date.  Otherwise a
         # same-day rerun could delete their unfetched PENDING order and only then
         # discover that a rebalance was still unresolved.
-        instances = self._load_instances(execution_domain=execution_domain)
-        preflight_guards = self._execution_guards(instances)
+        # Evaluate shared-account ownership against every configured instance,
+        # even when publication is scoped to one account group.
+        all_guards = self._execution_guards(all_instances)
+        preflight_guards = {i["instance_id"]: all_guards[i["instance_id"]] for i in instances}
         operational_blockers = {
             "unresolved_order", "bookkeeping_divergence",
             "previous_rebalance_not_reconciled",
@@ -260,7 +267,7 @@ class StrategyPipeline:
             logger.info("pipeline blacklist auto-promote: %s", promoted)
 
         # 0b. 幂等：清同一 trade_date 的旧 raw_signals + orders + order_signal_map
-        cleared = self._clear_for_date(valid_date_str, execution_domain)
+        cleared = self._clear_for_date(valid_date_str, execution_domain, account_group)
         if any(cleared.values()):
             logger.info("pipeline cleared stale data for %s: %s", trade_date, cleared)
 
@@ -676,6 +683,7 @@ class StrategyPipeline:
 
     def _settled_order_ids(
         self, valid_date: str, execution_domain: ExecutionDomain = "paper",
+        account_group: str | None = None,
     ) -> set[str]:
         """该 valid_date 下已收到成交回报（trades 表有记录）的 order_id 集合。
 
@@ -689,6 +697,7 @@ class StrategyPipeline:
                     select(Order.order_id)
                     .where(Order.valid_date == valid_date)
                     .where(Order.execution_domain == execution_domain)
+                    .where(True if account_group is None else Order.account_group == account_group)
                     .where(Order.order_id.in_(
                         select(Trade.order_id).where(
                             Trade.execution_domain == execution_domain
@@ -701,6 +710,7 @@ class StrategyPipeline:
         self,
         cutoff_exclusive: str,
         execution_domain: ExecutionDomain = "paper",
+        account_group: str | None = None,
     ) -> dict[str, int]:
         """Close day-valid orders left unresolved after their validity date.
 
@@ -719,6 +729,7 @@ class StrategyPipeline:
                 select(Order)
                 .where(Order.valid_date < cutoff_exclusive)
                 .where(Order.execution_domain == execution_domain)
+                    .where(True if account_group is None else Order.account_group == account_group)
                 .where(Order.status.in_(("PENDING", "PARTIAL")))
                 .order_by(Order.valid_date, Order.order_id)
             ).scalars().all()
@@ -755,6 +766,7 @@ class StrategyPipeline:
 
     def _fetched_order_ids(
         self, valid_date: str, execution_domain: ExecutionDomain = "paper",
+        account_group: str | None = None,
     ) -> set[str]:
         """该 valid_date 下客户端已拉取（fetched_at 非空）的 order_id 集合。
 
@@ -768,12 +780,14 @@ class StrategyPipeline:
                     select(Order.order_id)
                     .where(Order.valid_date == valid_date)
                     .where(Order.execution_domain == execution_domain)
+                    .where(True if account_group is None else Order.account_group == account_group)
                     .where(Order.fetched_at.is_not(None))
                 ).all()
             }
 
     def _clear_for_date(
         self, valid_date: str, execution_domain: ExecutionDomain = "paper",
+        account_group: str | None = None,
     ) -> dict[str, int]:
         """清除指定 valid_date 的 raw_signals + orders + order_signal_map。
 
@@ -791,6 +805,7 @@ class StrategyPipeline:
                     select(Order.order_id)
                     .where(Order.valid_date == valid_date)
                     .where(Order.execution_domain == execution_domain)
+                    .where(True if account_group is None else Order.account_group == account_group)
                     .where(Order.order_id.in_(
                         select(Trade.order_id).where(
                             Trade.execution_domain == execution_domain
@@ -810,19 +825,24 @@ class StrategyPipeline:
 
             # 本日全部 signal 用子查询表达（不物化成 Python 列表 → 不撞 SQLite IN 上限）。
             # 必须先删 OSM（其 WHERE 引用 raw_signals），再删 raw_signals。
+            scoped_instances = [i["instance_id"] for i in self._load_instances(execution_domain)
+                                if account_group is None or i["account_group"] == account_group]
             date_sig_ids = select(RawSignal.signal_id).where(
                 RawSignal.valid_date == valid_date,
                 RawSignal.execution_domain == execution_domain,
+                True if account_group is None else RawSignal.instance_id.in_(scoped_instances),
             )
             osm_stmt = delete(OrderSignalMap).where(
                 OrderSignalMap.signal_id.in_(date_sig_ids))
             sig_stmt = delete(RawSignal).where(
                 RawSignal.valid_date == valid_date,
                 RawSignal.execution_domain == execution_domain,
+                True if account_group is None else RawSignal.instance_id.in_(scoped_instances),
             )
             order_stmt = delete(Order).where(
                 Order.valid_date == valid_date,
                 Order.execution_domain == execution_domain,
+                True if account_group is None else Order.account_group == account_group,
             )
             if protected_sig_ids:
                 osm_stmt = osm_stmt.where(
