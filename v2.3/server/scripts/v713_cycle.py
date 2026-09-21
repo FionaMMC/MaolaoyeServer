@@ -2,11 +2,11 @@
 import argparse
 import json
 import os
+import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
-import requests
 
 
 def plan_cycle(today, open_dates, current_as_of=None):
@@ -35,13 +35,15 @@ def exchange_dates(today):
     token = os.environ.get("TUSHARE_TOKEN")
     if not token:
         raise ValueError("TUSHARE_TOKEN required for authoritative exchange calendar")
-    response = requests.post("https://api.tushare.pro", json={
+    payload = {
         "api_name":"trade_cal", "token":token,
         "params":{"exchange":"SSE", "start_date":(day-timedelta(days=65)).strftime("%Y%m%d"),
                   "end_date":(day+timedelta(days=40)).strftime("%Y%m%d"), "is_open":"1"},
-        "fields":"cal_date"}, timeout=30)
-    response.raise_for_status()
-    body = response.json()
+        "fields":"cal_date"}
+    request = urllib.request.Request("https://api.tushare.pro",
+        data=json.dumps(payload).encode(), headers={"Content-Type":"application/json"}, method="POST")
+    with urllib.request.urlopen(request, timeout=30) as response:
+        body = json.load(response)
     if body.get("code") != 0:
         raise ValueError("exchange calendar request failed")
     return [str(r[0]) for r in (body.get("data") or {}).get("items",[])]
