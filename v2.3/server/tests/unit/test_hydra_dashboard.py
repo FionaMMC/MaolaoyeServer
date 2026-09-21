@@ -83,3 +83,43 @@ def test_dashboard_keeps_authentication_and_live_client_scope(client, settings_f
     assert "V20H 策略状态" not in html
     assert client.get("/admin/ops/live-snapshot?instance_id=retired_paper",headers=HEADERS).json()["data"]["hydra"] is None
     engine.dispose()
+
+
+def test_hydra_orders_use_live_alias_and_deduplicate_cumulative_fills(client,settings_for_test):
+    from app.models import Trade
+    engine,sf = seed(settings_for_test)
+    with sf() as session:
+        for order_id,domain,alias in [('ours','live','scoped'),('paper','paper','scoped'),('other','live','different')]:
+            session.add(Order(order_id=order_id,execution_domain=domain,qmt_account_alias=alias,
+                target_id='target',account_group=alias,symbol='511260.SH',direction='BUY',
+                quantity=200,limit_price=100,valid_date='20990101',status='FILLED',created_at='2099-01-01T10:00:00+08:00'))
+        for qty in [100,200]:
+            session.add(Trade(order_id='ours',execution_domain='live',filled_quantity=qty,
+                filled_price=100,received_at='2099-01-01T10:00:00+08:00',status='FILLED'))
+        session.commit()
+    data = client.get('/admin/ops/live-snapshot?instance_id=live_hydra_v481_rb',headers=HEADERS).json()['data']
+    assert data['execution']['scope'] == 'hydra_live_account_alias'
+    assert data['execution']['orders_total'] == 1
+    assert data['execution']['filled_notional'] == 20000
+    assert data['execution']['estimated_fees'] is None
+    assert [o['order_id'] for o in data['recent_orders']] == ['ours']
+    engine.dispose()
+
+
+def test_retired_shadows_hidden_but_history_survives(client,settings_for_test):
+    from app.models import ShadowInstanceState, ShadowNavSnapshot
+    engine,sf = seed(settings_for_test)
+    settings_for_test.strategies_file.write_text('account_groups: []\nshadow_instances:\n  - shadow_id: Shadow_ML_TOP2\n    enabled: false\n')
+    with sf() as session:
+        session.add(ShadowInstanceState(shadow_id='Shadow_ML_TOP2',initial_cash=100,virtual_cash=100,
+            virtual_positions={},last_update='now'))
+        session.add(ShadowNavSnapshot(shadow_id='Shadow_ML_TOP2',date='20260918',nav=100,virtual_cash=100,
+            positions_snapshot={},transaction_cost=0,turnover=0,created_at='now'))
+        session.commit()
+    for endpoint,key in [('/admin/health','instances'),('/admin/portfolio-overview','items')]:
+        rows = client.get(endpoint,headers=HEADERS).json()['data'][key]
+        assert all(r['instance_id'] != 'Shadow_ML_TOP2' for r in rows)
+    assert client.get('/admin/shadow/summary',headers=HEADERS).json()['data']['items'] == []
+    history = client.get('/admin/shadow/nav-history?shadow_id=Shadow_ML_TOP2',headers=HEADERS).json()['data']['items']
+    assert len(history) == 1
+    engine.dispose()

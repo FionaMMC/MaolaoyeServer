@@ -760,13 +760,13 @@ class StrategyPipeline:
                     select(Order.order_id)
                     .where(Order.valid_date == valid_date)
                     .where(Order.execution_domain == execution_domain)
+                    .where(True if account_group is None else Order.account_group == account_group)
                     .where(Order.order_id.in_(
                         # Preserve attribution inside the requested group.
                         select(Trade.order_id).where(
                             Trade.execution_domain == execution_domain
                         )
                     ))
-                    .where(True if account_group is None else Order.account_group == account_group)
                 ).all()
             }
 
@@ -844,8 +844,8 @@ class StrategyPipeline:
                     select(Order.order_id)
                     .where(Order.valid_date == valid_date)
                     .where(Order.execution_domain == execution_domain)
-                    .where(Order.fetched_at.is_not(None))
                     .where(True if account_group is None else Order.account_group == account_group)
+                    .where(Order.fetched_at.is_not(None))
                 ).all()
             }
 
@@ -869,6 +869,7 @@ class StrategyPipeline:
                     select(Order.order_id)
                     .where(Order.valid_date == valid_date)
                     .where(Order.execution_domain == execution_domain)
+                    .where(True if account_group is None else Order.account_group == account_group)
                     .where(Order.order_id.in_(
                         select(Trade.order_id).where(
                             Trade.execution_domain == execution_domain

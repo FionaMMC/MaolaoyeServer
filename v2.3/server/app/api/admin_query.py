@@ -70,6 +70,16 @@ def _configured_regular_instances(settings: Settings) -> dict[str, dict] | None:
     return result
 
 
+
+def _disabled_shadows(settings):
+    path = Path(settings.strategies_file)
+    if not path.is_file():
+        return set()
+    config = yaml.safe_load(path.read_text()) or {}
+    return {row["shadow_id"] for row in config.get("shadow_instances", [])
+            if row.get("enabled", True) is False}
+
+
 def _dashboard_instance(state, configured, settings):
     """Live ledgers are registered outside the ordinary paper pipeline."""
     live = state.execution_domain == "live"
@@ -90,7 +100,8 @@ def _dashboard_instance(state, configured, settings):
     response_model=APIResponse[dict],
     dependencies=[Depends(verify_api_key)],
 )
-async def shadow_summary(sf=Depends(get_session_factory)):
+async def shadow_summary(sf=Depends(get_session_factory), settings: Settings = Depends(get_settings)):
+
     """Read-only shadow health/NAV comparison; never exposes order actions."""
     with sf() as session:
         states = session.execute(
@@ -98,6 +109,8 @@ async def shadow_summary(sf=Depends(get_session_factory)):
         ).scalars().all()
         items = []
         for state in states:
+            if state.shadow_id in _disabled_shadows(settings):
+                continue
             latest = session.execute(
                 select(ShadowNavSnapshot)
                 .where(ShadowNavSnapshot.shadow_id == state.shadow_id)
@@ -390,6 +403,8 @@ async def portfolio_overview(
             })
 
         for state in session.execute(select(ShadowInstanceState)).scalars().all():
+            if state.shadow_id in _disabled_shadows(settings):
+                continue
             latest = session.execute(
                 select(ShadowNavSnapshot)
                 .where(ShadowNavSnapshot.shadow_id == state.shadow_id)
@@ -606,6 +621,8 @@ async def admin_health(
             })
 
         for st_row in session.execute(select(ShadowInstanceState)).scalars().all():
+            if st_row.shadow_id in _disabled_shadows(settings):
+                continue
             latest_perf = session.execute(
                 select(ShadowNavSnapshot)
                 .where(ShadowNavSnapshot.shadow_id == st_row.shadow_id)
