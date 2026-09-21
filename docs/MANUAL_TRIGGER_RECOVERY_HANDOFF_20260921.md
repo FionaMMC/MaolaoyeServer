@@ -1,9 +1,9 @@
 # 模拟盘人工调仓补跑：实现、审阅与接入交接
 
-状态：独立审阅分支，**未部署、未修改现网任务、未调用真实 QMT 或生产 trigger**。
+状态：**服务器已于 2026-09-21 19:50:15（北京时间）部署到 `eedbde41`，补跑 worker/timer 已启用；Windows 未更新，未调用真实 QMT 或生产 trigger。**
 
 分支：`codex/manual-trigger-recovery-20260921`，基座 `702c3dd7`。
-本分支不包含同日其他工作区的 713 / dashboard / 实盘绩效改动。
+初版只包含人工补跑；部署前已合并并保留刚上线的 `c283e702`（713 / dashboard / 实盘绩效），未带入其他工作区未提交改动。上线回执见 [MANUAL_TRIGGER_RECOVERY_DEPLOYMENT_20260921.md](MANUAL_TRIGGER_RECOVERY_DEPLOYMENT_20260921.md)。
 
 ## 1. 用业务语言说明
 
@@ -55,12 +55,12 @@
 - 失败、阻塞、带警告的发布、worker 未运行/长期延迟进入既有 `/admin/alerts` 的 `pipeline_recovery` 类别。
 - 客户端等待期间沿用企微通知；等待结束后 worker 的结果留在任务接口、journal 和 dashboard 告警。**本分支没有新增独立的服务端企微推送守护进程**，部署时需确认团队已有告警轮询/通知渠道。
 
-## 3. 审阅与接入顺序（不是已执行记录）
+## 3. 审阅与接入顺序（流程说明；实际完成项见上线回执）
 
 1. 同伴先审阅本分支，特别是 pipeline 的分组范围、原单复用和状态/订单原子发布。先在脱敏数据库副本/预生产运行测试及故障恢复用例。
 2. 部署前备份数据库与配置，确认同一生产库目录对 `qmtserver` 可写（包括 `.pipeline.lock`）；不使用 chmod 777。初始化仅新增 pipeline_jobs，不改历史订单、持仓或资金。
 3. 发布时避免新旧代码的生成器并行：短暂停止旧版本 pipeline 生产任务，等待在途生成结束，再切换新 API/worker。旧版本不认识新的文件锁与发布保护，不能混跑。不要停止 QMT 成交回报来配合研究计算。
-4. 审核并安装 `deploy/qmt-pipeline-recovery.service` / `.timer`，在 Linux 用 `systemd-analyze verify` 检查并核对实际 Python、工作目录、运行用户及环境文件。本机是 macOS，未执行 Linux 原生 unit 验收。
+4. 审核并安装 `deploy/qmt-pipeline-recovery.service` / `.timer`，在 Linux 用 `systemd-analyze verify` 检查并核对实际 Python、工作目录、运行用户及环境文件。本轮服务器已完成此项，worker 空队列实际启动通过。
 5. worker 提供初始资源预算：MemoryHigh=768M、MemoryMax=1G、swap=0、一个 CPU、10 分钟超时。必须在目标机器用真实冻结输入测峰值后决定预算；不是已经验证适用于所有重模型的容量承诺。磁盘 IOWeight 是相对权重，不是磁盘带宽硬上限，也没有修改 V20H/713 重训的资源限制。
 6. 验收新接口只快速入队、worker 正常取任务、status 可查、同任务重复提交不换订单编号、客户端通知不设置 fetched_at，再交给同伴使用。
 7. Windows 只更新 `client/trigger_pipeline.py`；不用切换 Hydra 实盘 live_client，也不改变 09:10 实盘下单任务。本次入口是普通模拟盘的修复，不替代 Hydra live 的 target/close/retry 链。
@@ -95,11 +95,11 @@ python -m scripts.run_pipeline_jobs
 
 旧基座对照已复现两个问题：通知会调用领取接口；订单发布前失败已推进策略状态。新实现对应断言通过。
 
-本地验证：完整 server + V713 plugin + live-client + paper-client **908 passed, 1 skipped**；最终专项 **34 passed**；新增 Python 文件 Ruff 与 git diff --check 通过。测试使用隔离 SQLite 和合成行情，未连接生产/QMT。Linux systemd 原生验收与 Windows 真机验收未执行，不记作通过。
+初版验证：完整 server + V713 plugin + live-client + paper-client **908 passed, 1 skipped**；专项 **34 passed**；新增 Python 文件 Ruff 与 git diff --check 通过。部署合并后本地和 Linux 完整回归均 **920 passed, 1 skipped**，交叉专项 **44 passed**。Linux 测试隔离数据库、禁止网络且生产目录只读；另用生产数据库副本与当前真实输入检查迁移/启动/补跑，未连接 QMT。Linux systemd 验收已通过；Windows 真机验收仍未执行。
 
-仍未完成/不在本次范围：九月旧目标重建、真实九笔终局证据、实盘资源隔离整改、目录权限修复、Linux 部署、Windows 实测。当前九月实例缺旧月度目标，本功能不会偷偷用今日权重替代它，也不会把 EXPIRED 改回 PENDING。
+仍未完成/不在本次范围：九月旧目标重建、真实九笔终局证据、其他重任务资源隔离整改、目录权限修复、Windows 更新与实测。当前九月实例缺旧月度目标，本功能不会偷偷用今日权重替代它，也不会把 EXPIRED 改回 PENDING。当前真实输入副本运行结果为 NO_ORDERS，不代表九月目标恢复。
 
-与另一条 713 工作线可能重叠：pipeline.py 的 account_group 范围、ops_monitor.py 的增量。合并时应保留两边行为并重新全量测试，不整文件覆盖。
+与另一条 713 工作线的 pipeline.py 账户组范围、ops_monitor.py 增量已合并，保留两边行为并重跑完整回归；后续继续合并时仍须避免整文件覆盖。
 
 ## 5. 回退
 
