@@ -6,8 +6,9 @@ import math
 
 from sqlalchemy import select
 
-from app.models import CashFlowJournal, InstanceState, PerfSnapshot
+from app.models import CashFlowJournal, InstanceState, PerfSnapshot, PerfValuation
 from app.storage.parquet import ParquetStore
+from app.services.dividend_entitlement import outstanding_dividends
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ class PerfService:
     def snapshot_all(self, trade_date: int, execution_domain: str = "paper") -> int:
         """对所有 instance 生成当日快照。返回写入条数。
 
-        nav = virtual_cash + Σ(position[symbol] × close_price[symbol])
+        nav = virtual_cash + Σ(position[symbol] × close_price[symbol]) + dividend_receivable
 
         若某只持仓股票当日无 close 数据（停牌或新上市），用最近一条 close 兜底；
         仍无有效价格则该实例等待估值，不写伪造净值；其他实例继续。
@@ -39,6 +40,12 @@ class PerfService:
                 nav = self._compute_nav(inst, trade_date)
                 if nav is None:
                     continue
+                try:
+                    receivable = outstanding_dividends(session, inst.instance_id, execution_domain, date_str)
+                except ValueError:
+                    logger.exception("instance %s dividend valuation requires reconciliation; cash/trading unchanged", inst.instance_id)
+                    continue
+                nav = round(nav + float(receivable), 4)
                 positions_json = dict(inst.virtual_positions or {})
 
                 # upsert：先查再决定 add 或更新
@@ -61,6 +68,14 @@ class PerfService:
                         daily_return=daily_return,
                         positions_snapshot=positions_json,
                     ))
+                component = session.get(PerfValuation, (inst.instance_id, date_str))
+                if component is None:
+                    component = PerfValuation(instance_id=inst.instance_id, date=date_str)
+                    session.add(component)
+                component.execution_domain = execution_domain
+                component.nav = nav
+                component.cash = float(inst.virtual_cash)
+                component.dividend_receivable = float(receivable)
                 written += 1
             session.commit()
         return written

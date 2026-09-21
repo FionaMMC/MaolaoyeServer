@@ -77,6 +77,25 @@ def test_pipeline_no_yaml_returns_zero(setup):
     assert summary["orders"] == 0
 
 
+@pytest.mark.parametrize("fetched,reported,reconciliation,safe", [(False,False,None,True),(True,False,None,False),(True,True,None,True),(True,True,"pending",False),(True,True,"failed",False)])
+def test_v53_expired_fetch_requires_terminal_report_before_retry(setup,fetched,reported,reconciliation,safe):
+    pipeline,sf,store,path=setup
+    _write_yaml(path,{"account_groups":[{"group_id":"paper_v53","strategies":[{"strategy_id":"v53","virtual_initial_cash":100000}]}]})
+    instances=pipeline._load_instances()
+    pipeline._ensure_instance_states(instances)
+    with sf() as s:
+        s.get(InstanceState,"paper_v53_v53").strategy_state={"v53_rebalance":{"created_for_date":"20260901"},"reconciliation_status":reconciliation}
+        s.add(RawSignalRow(signal_id="s",instance_id="paper_v53_v53",symbol="511260.SH",direction="BUY",quantity=100,reference_price=100,price_offset=0,limit_price=100,valid_date="20260901",signal_time="now",precheck_status="PASS"))
+        s.add(Order(order_id="o",account_group="paper_v53",symbol="511260.SH",direction="BUY",quantity=100,limit_price=100,valid_date="20260901",status="EXPIRED",created_at="now",fetched_at="now" if fetched else None))
+        s.add(OrderSignalMap(order_id="o",signal_id="s",signal_quantity=100))
+        if reported:
+            s.add(Trade(order_id="o",filled_quantity=0,filled_price=0,status="CANCELLED",received_at="now"))
+        s.commit()
+    guard=pipeline._execution_guards(instances)["paper_v53_v53"]
+    assert guard["residual_retry_allowed"] is safe
+    assert guard["allowed"]  # uncertainty does not block unrelated strategies
+
+
 def test_pipeline_creates_default_instance_state(setup):
     pipeline, sf, store, yaml_path = setup
     _write_yaml(yaml_path, {

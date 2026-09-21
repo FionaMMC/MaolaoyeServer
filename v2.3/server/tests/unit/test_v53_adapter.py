@@ -44,6 +44,31 @@ def _reset_adapter_cache():
     V53Adapter._etf_divid = None
 
 
+@pytest.mark.parametrize("allowed,position,expected", [(True, 200, 800), (True, 1000, 0), (False, 200, 0)])
+def test_frozen_monthly_target_retries_only_confirmed_difference(tmp_path, monkeypatch, allowed, position, expected):
+    from plugins.v53_adapter import V53Adapter
+    monkeypatch.setattr(V53Adapter, "_cfg", {"dry_run": False})
+    monkeypatch.setattr(V53Adapter, "_load_resources", lambda self: pytest.fail("must not recalculate weights"))
+    ctx = _make_ctx(tmp_path, 20260921, cash=1_000_000,
+        positions={"510300.SH":position}, anchor_trade_dates=[20260918])
+    ctx._strategy_state = {"v53_rebalance":{"month":"202609","created_for_date":"20260901","target_quantities":{"510300.SH":1000}}}
+    ctx._execution_guard = {"residual_retry_allowed":allowed}
+    signals = V53Adapter().run(ctx, 20260921)
+    assert sum(s.quantity for s in signals) == expected
+    assert all(s.direction == "BUY" for s in signals)
+
+
+def test_missing_retry_price_does_not_mark_complete(tmp_path, monkeypatch):
+    from plugins.v53_adapter import V53Adapter
+    monkeypatch.setattr(V53Adapter, "_cfg", {"dry_run":False})
+    monkeypatch.setattr(V53Adapter, "_resolve_reference_price", lambda *args: None)
+    ctx = _make_ctx(tmp_path, 20260921)
+    ctx._strategy_state = {"v53_rebalance":{"month":"202609","target_quantities":{"510300.SH":1000}}}
+    ctx._execution_guard = {"residual_retry_allowed":True}
+    assert V53Adapter().run(ctx,20260921) == []
+    assert ctx.pop_next_strategy_state()["v53_rebalance"]["status"] == "RESIDUAL"
+
+
 # ── class attribute tests ─────────────────────────────────────────────────
 def test_adapter_class_attrs():
     from plugins.v53_adapter import V53Adapter

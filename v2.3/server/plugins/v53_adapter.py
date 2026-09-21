@@ -447,13 +447,38 @@ class V53Adapter(Strategy):
         from plugins.v53.strategy import V53Strategy
 
         target = pd.to_datetime(str(trade_date), format="%Y%m%d")
+        if type(self)._cfg is None:
+            try:
+                with (_V53_DIR / "config.yaml").open() as f:
+                    type(self)._cfg = yaml.safe_load(f)
+            except (OSError, ValueError) as e:
+                raise StrategyInputNotReady(f"V53 配置待补齐: {e}") from e
+        state = ctx.strategy_state()
+        frozen = state.get("v53_rebalance") or {}
+        if frozen.get("month") == target.strftime("%Y%m"):
+            if (type(self)._cfg or {}).get("dry_run", True):
+                return []
+            guard = ctx.execution_guard()
+            if not guard.get("residual_retry_allowed", False):
+                logger.warning("V53[%s] saved target awaits broker/ledger confirmation", ctx.instance_id)
+                return []
+            # Do not recompute weights/NAV after a transport failure. The same
+            # month's objective is immutable; only confirmed remaining shares
+            # are repriced for the new day-valid order.
+            target_qty = frozen["target_quantities"]
+            current_positions = ctx.positions()
+            signals = self._diff_and_emit(ctx, current_positions, target_qty, target)
+            state["v53_rebalance"] = frozen | {
+                "last_checked_date": str(trade_date),
+                "status": "RESIDUAL" if any(current_positions.get(code, 0) != target_qty.get(code, 0)
+                    for code in set(current_positions) | set(target_qty)) else "COMPLETE",
+            }
+            ctx.set_strategy_state(state)
+            return signals
 
         # Load calendar configuration first. Non-rebalance days do not require
         # the research bundle, but a due rebalance must report missing inputs.
         try:
-            if type(self)._cfg is None:
-                with (_V53_DIR / "config.yaml").open() as f:
-                    type(self)._cfg = yaml.safe_load(f)
             if not self._is_month_end(ctx, target):
                 return []
             self._load_resources()
@@ -511,6 +536,15 @@ class V53Adapter(Strategy):
             )
             return []
 
+        state["v53_rebalance"] = {
+            "month": target.strftime("%Y%m"),
+            "created_for_date": str(trade_date),
+            "target_quantities": target_qty,
+            "weights": weights,
+            "status": "RESIDUAL" if any(current_positions.get(code, 0) != target_qty.get(code, 0)
+                for code in set(current_positions) | set(target_qty)) else "COMPLETE",
+        }
+        ctx.set_strategy_state(state)
         logger.info(
             "V53[%s] go-live trade_date=%s nav=%.2f emitted=%d signals",
             ctx.instance_id, trade_date, nav, len(signals),

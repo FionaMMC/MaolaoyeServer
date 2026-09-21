@@ -12,11 +12,12 @@ from app.models import (
     CashFlowJournal,
     DailyRiskSnapshot,
     PerfSnapshot,
+    PerfValuation,
     ShadowNavSnapshot,
 )
 from app.services.metrics import compute_benchmark_comparison, date_range_for_period
 
-CALCULATION_VERSION = "daily-risk-v1"
+CALCULATION_VERSION = "daily-risk-v2"
 BENCHMARK_NAMES = {
     "000300.SH": "CSI 300",
     "000852.SH": "CSI 1000",
@@ -100,8 +101,17 @@ class DailyRiskSnapshotService:
                 )
             ).scalars().all()
             flows = session.execute(
-                select(CashFlowJournal).where(CashFlowJournal.status == "APPLIED")
+                select(CashFlowJournal).where(
+                    CashFlowJournal.status == "APPLIED",
+                    CashFlowJournal.event_type.in_((
+                        "DEPOSIT", "WITHDRAWAL", "CAPITAL_ALLOCATION", "CAPITAL_DEALLOCATION",
+                    )),
+                )
             ).scalars().all()
+            components = {
+                (row.instance_id, row.date): row
+                for row in session.execute(select(PerfValuation)).scalars()
+            }
 
         flow_totals: dict[tuple[str, str, str], list[float | int]] = defaultdict(
             lambda: [0.0, 0]
@@ -113,13 +123,16 @@ class DailyRiskSnapshotService:
 
         sources: list[dict] = []
         for row in regular:
+            component = components.get((row.instance_id, row.date))
+            # Match the published version, not today's entitlement registry.
+            published = component is not None and component.execution_domain == row.execution_domain and component.nav == row.nav
             sources.append({
                 "instance_id": row.instance_id,
                 "date": row.date,
                 "execution_domain": row.execution_domain,
                 "instance_kind": "regular",
                 "nav": float(row.nav),
-                "cash": None,
+                "cash": float(component.cash) if published else None,
                 "positions": _positions(row.positions_snapshot),
             })
         for row in shadow:

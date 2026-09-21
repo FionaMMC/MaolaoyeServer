@@ -10,7 +10,6 @@ import time
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-import requests
 from xtquant import xtdata
 
 # 子目录 client/ 运行需补 v2.3/ 到 sys.path 才能 import config
@@ -18,6 +17,7 @@ import sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config
+from live_client.network_retry import get_with_retry
 
 xtdata.data_dir = config.QMT_USERDATA_DIR
 log = config.setup_logger("order_query")
@@ -79,7 +79,7 @@ def _fetch_from_server(next_date: str) -> dict | None:
     url     = config.SERVER_BASE_URL.rstrip("/") + "/orders"
     headers = {"Authorization": f"Bearer {config.API_KEY}"}
     try:
-        resp = requests.get(url, params={"date": next_date}, headers=headers, timeout=30)
+        resp = get_with_retry(url, params={"date": next_date}, headers=headers, timeout=30)
         return resp.json()
     except Exception as e:
         log.error(f"GET /orders 请求异常：{e}")
@@ -153,7 +153,7 @@ def main():
 
         if body is None:
             _wechat_alert(f"order_query：GET /orders 网络请求失败（date={next_date}）")
-            return
+            raise RuntimeError(f"order_query network retries exhausted for {next_date}")
 
         code = body.get("code")
         if code == 3002:

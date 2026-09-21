@@ -558,7 +558,37 @@ class StrategyPipeline:
                     if strategy_state.get("reconciliation_status") in {"pending", "failed"}:
                         blockers.append("previous_rebalance_not_reconciled")
 
+                # A fetched order may have reached the broker even if its
+                # response was lost. Local EXPIRED alone is not zero-fill
+                # evidence. This flag scopes retry uncertainty to V53 only;
+                # it does not add a new global pipeline blocker.
+                residual_safe = False
+                if inst["strategy_id"] == "v53":
+                    state = session.get(InstanceState, inst["instance_id"])
+                    frozen = ((state.strategy_state or {}).get("v53_rebalance") or {}) if state else {}
+                    since_date = frozen.get("created_for_date", "99999999")
+                    prior_orders = session.execute(
+                        select(Order).join(OrderSignalMap, OrderSignalMap.order_id == Order.order_id)
+                        .join(RawSignal, RawSignal.signal_id == OrderSignalMap.signal_id)
+                        .where(RawSignal.instance_id == inst["instance_id"],
+                               Order.execution_domain == inst["execution_domain"],
+                               Order.valid_date >= since_date,
+                               RawSignal.execution_domain == inst["execution_domain"])
+                    ).scalars().unique().all()
+                    reported = set(session.scalars(select(Trade.order_id).where(
+                        Trade.execution_domain == inst["execution_domain"],
+                        Trade.order_id.in_([row.order_id for row in prior_orders]),
+                        Trade.status.in_(("FILLED", "CANCELLED", "REJECTED", "EXPIRED")),
+                    )).all()) if prior_orders else set()
+                    reconciliation_ready = not state or (state.strategy_state or {}).get("reconciliation_status") not in {"pending", "failed"}
+                    residual_safe = not blockers and reconciliation_ready and all(
+                        row.status in {"FILLED", "CANCELLED", "REJECTED", "EXPIRED"}
+                        and not row.bookkeeping_divergence
+                        and (row.fetched_at is None or row.order_id in reported)
+                        for row in prior_orders
+                    )
                 guards[inst["instance_id"]] = {
+                    "residual_retry_allowed": residual_safe,
                     "allowed": not blockers,
                     "blockers": blockers,
                     "orders_enabled": inst.get("orders_enabled", True),
