@@ -178,6 +178,8 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
     app.include_router(live_trigger.router, tags=["hydra-live-trigger"])
     app.include_router(canary.router, tags=["hydra-canary"])
     app.include_router(admin.router, tags=["admin"])
+    from app.api import pipeline_jobs
+    app.include_router(pipeline_jobs.router, tags=["paper-pipeline-jobs"])
     app.include_router(admin_query.router, tags=["admin-query"])
     app.include_router(ops.router, tags=["ops"])
     app.include_router(dashboard.router, tags=["dashboard"])

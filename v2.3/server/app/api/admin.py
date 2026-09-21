@@ -22,7 +22,7 @@ router = APIRouter(prefix="/admin")
     response_model=APIResponse[dict],
     dependencies=[Depends(verify_api_key)],
 )
-async def run_pipeline_now(
+def run_pipeline_now(
     trade_date: int = Query(ge=20000101, le=99991231),
     force: bool = Query(
         False,

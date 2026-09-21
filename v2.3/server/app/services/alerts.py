@@ -113,6 +113,14 @@ class AlertEngine:
                     message=f"{item['shadow_id']} 影子账本阻塞：{item['reason']}",
                     as_of=item["last_update"], detail=item,
                 ))
+        if hasattr(self.ops, "pipeline_recovery_issues"):
+            for item in self.ops.pipeline_recovery_issues(today=today):
+                alerts.append(Alert(
+                    id=f"pipeline_recovery:{item['job_id']}:{item['status']}",
+                    severity="warn", category="pipeline_recovery",
+                    message=f"{item['account_group']} 调仓补跑需检查：{item['reason']}",
+                    as_of=str(item["trade_date"]), detail=item,
+                ))
         for s in self.sinks:
             s.emit(alerts)
         return alerts

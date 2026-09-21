@@ -20,6 +20,7 @@ class StrategyRunner:
         self.registry = registry
         self.store = parquet_store
         self.input_statuses: dict[str, dict] = {}
+        self.errors: dict[str, str] = {}
 
     def run_all(
         self,
@@ -35,6 +36,7 @@ class StrategyRunner:
         """
         results: dict[str, list[RawSignal]] = {}
         self.input_statuses = {}
+        self.errors = {}
         next_states: dict[str, dict | None] = {}
         bl = set(risk_blacklist or ())
         guards = execution_guards or {}
@@ -45,6 +47,7 @@ class StrategyRunner:
 
             strategy_cls = self.registry.get(strategy_id)
             if strategy_cls is None:
+                self.errors[instance_id] = "strategy_not_registered"
                 logger.error(
                     "instance %s: strategy '%s' 未注册",
                     instance_id, strategy_id,
@@ -91,6 +94,7 @@ class StrategyRunner:
                 next_states[instance_id] = {**dict(inst.get("strategy_state") or {}), "input_readiness": status}
                 logger.warning("instance %s waiting_input: %s", instance_id, e)
             except Exception as e:
+                self.errors[instance_id] = type(e).__name__
                 logger.exception("instance %s strategy.run 抛异常: %s", instance_id, e)
                 results[instance_id] = []
                 next_states[instance_id] = None

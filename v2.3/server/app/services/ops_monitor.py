@@ -12,6 +12,7 @@ from app.models import (
     InstanceState,
     Order,
     OrderSignalMap,
+    PipelineJob,
     PerfSnapshot,
     RawSignal,
     ShadowInstanceState,
@@ -70,6 +71,31 @@ class OpsMonitorService:
         self.sf = session_factory
         self.store = parquet_store
         self.settings = settings
+
+    def pipeline_recovery_issues(self, today=None):
+        """Bounded read-only alerts, including an accepted job with no worker."""
+        now = datetime.now(ZoneInfo("Asia/Shanghai"))
+        day = _d(today) if today else now.date()
+        cutoff = int((day - timedelta(days=7)).strftime("%Y%m%d"))
+        issues = []
+        with self.sf() as session:
+            rows = session.scalars(select(PipelineJob).where(
+                PipelineJob.trade_date >= cutoff,
+                PipelineJob.status.in_(("FAILED", "BLOCKED", "EXPIRED", "READY_WITH_WARNINGS",
+                                       "QUEUED", "RUNNING", "WAITING_INPUT", "RETRY_WAIT")),
+            ).order_by(PipelineJob.updated_at.desc()).limit(100)).all()
+            for row in rows:
+                stalled = ((row.status == "QUEUED" and now.timestamp() - row.updated_at > 300)
+                           or (row.status == "RUNNING" and now.timestamp() - row.updated_at > 900)
+                           or (row.status in {"WAITING_INPUT", "RETRY_WAIT"}
+                               and now.timestamp() - row.next_attempt_at > 300))
+                terminal = row.status in {"FAILED", "BLOCKED", "EXPIRED", "READY_WITH_WARNINGS"}
+                if terminal or stalled or now.timestamp() >= row.deadline:
+                    issues.append({"job_id": row.job_id, "account_group": row.account_group,
+                                   "trade_date": row.trade_date, "status": row.status,
+                                   "reason": "worker_delayed_or_missing" if stalled else
+                                   (row.result or {}).get("reason", row.status)})
+        return issues
 
     def _snaps(self, session, instance_id, lookback):
         if instance_id.startswith("Shadow_"):

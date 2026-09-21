@@ -1,0 +1,22 @@
+[Unit]
+Description=Process one durable paper rebalance recovery job (never QMT submit)
+After=qmt-server.service
+
+[Service]
+Type=oneshot
+User=qmtserver
+WorkingDirectory=/opt/qmt-server/v2.3/server
+EnvironmentFile=/opt/qmt-server/v2.3/server/.env
+Environment=PYTHONPATH=.
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=OMP_NUM_THREADS=1
+ExecStart=/opt/qmt-server/venv/bin/python -m scripts.run_pipeline_jobs --apply
+TimeoutStartSec=10min
+Nice=5
+MemoryHigh=768M
+MemoryMax=1G
+MemorySwapMax=0
+CPUQuota=100%
+IOWeight=200
+NoNewPrivileges=true
