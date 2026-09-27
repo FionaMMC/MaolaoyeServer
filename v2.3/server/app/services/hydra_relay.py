@@ -32,6 +32,7 @@ from app.services.hydra_data import HydraDataStore
 from app.services.blacklist import BlacklistService
 from app.services.reconcile import ReconcileService
 from app.services.ledger_transaction import begin_ledger_transaction
+from app.services.emergency_guard import assert_no_emergency
 from app.services.hydra_late_fills import unresolved_late_fill_review
 from app.services.hydra_execution_policy import (
     eligible, remember_initial_wait, wait_result, policy_evidence,
@@ -203,6 +204,7 @@ class HydraRelayService:
 
         with self.session_factory() as session:
             begin_ledger_transaction(session, req.execution_domain, req.account_alias)
+            assert_no_emergency(session, req.execution_domain, req.account_alias)
             existing_target = session.execute(
                 select(HydraTarget).where(
                     HydraTarget.execution_domain == req.execution_domain,
@@ -211,6 +213,8 @@ class HydraRelayService:
                 )
             ).scalar_one_or_none()
             if existing_target is not None:
+                if existing_target.status == "SUPERSEDED_EMERGENCY":
+                    raise APIError(ErrorCode.BAD_REQUEST, "旧目标已被紧急处置终止，请提交新计划", http_status=409)
                 attempt = session.execute(
                     select(HydraExecutionAttempt)
                     .join(
@@ -382,6 +386,7 @@ class HydraRelayService:
         execution_policy = None
         with self.session_factory() as session:
             begin_ledger_transaction(session, req.execution_domain, req.account_alias)
+            assert_no_emergency(session, req.execution_domain, req.account_alias)
             rebalance = session.get(HydraRebalance, req.rebalance_id)
             if (
                 rebalance is None
@@ -390,6 +395,8 @@ class HydraRelayService:
             ):
                 raise APIError(ErrorCode.BAD_REQUEST, "rebalance 不存在或跨域", http_status=404)
             target = session.get(HydraTarget, rebalance.target_id)
+            if rebalance.status == "SUPERSEDED_EMERGENCY" or target.strategy_version == "MANUAL_EMERGENCY_V1":
+                raise APIError(ErrorCode.BAD_REQUEST, "紧急处置或已终止的周期不允许自动补单", http_status=409)
             if req.execution_domain == "live":
                 calendar_sha = req.execution_calendar_sha256 or target.input_hashes["trading_calendar"]
                 calendar, _ = self.data_store.load("hydra_trading_calendar", calendar_sha)
@@ -590,6 +597,8 @@ class HydraRelayService:
         buy_offset: float, sell_offset: float,
         reconciliation_evidence_sha256: str,
         execution_policy: dict | None = None,
+        explicit_limits: dict[str, float] | None = None,
+        emergency_audit: dict | None = None,
     ) -> HydraRelayResponseData:
         prior_count = session.execute(
             select(HydraExecutionAttempt).where(
@@ -613,7 +622,8 @@ class HydraRelayService:
                 "direction": direction,
                 "quantity": abs(delta),
                 "reference_price": round(float(prices[code]), 6),
-                "limit_price": _tick_price(float(prices[code]), direction, offset),
+                "limit_price": (explicit_limits[code] if explicit_limits is not None
+                                else _tick_price(float(prices[code]), direction, offset)),
             })
         batch_payload = {
             "rebalance_id": rebalance.rebalance_id,
@@ -641,6 +651,8 @@ class HydraRelayService:
         )
         if execution_policy is not None:
             risk_snapshot["execution_policy"] = execution_policy
+        if emergency_audit is not None:
+            risk_snapshot["emergency_authorization"] = emergency_audit
         buy_notional = sum(
             order["quantity"] * order["limit_price"]
             for order in canonical_orders if order["direction"] == "BUY"
@@ -689,7 +701,8 @@ class HydraRelayService:
                 valid_date=trade_date,
                 signal_time=now,
                 precheck_status="PASS",
-                precheck_reason="hydra_relay_validated",
+                precheck_reason=("emergency_manual_authorization; execution_risk_validated"
+                                 if emergency_audit else "hydra_relay_validated"),
             ))
             session.add(Order(
                 order_id=order_id,

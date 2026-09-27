@@ -23,12 +23,27 @@ from app.schemas.hydra_relay import HydraTargetRequest, HydraRetryRequest, hydra
 from app.services.hydra_execution_policy import eligible, wait_result
 from app.services.hydra_execution_publish import latest_execution_publication
 from app.services.hydra_relay import unresolved_late_fill_review
+from app.services.emergency_guard import active_emergency
 
 
 def advance_execution(service, req):
     if req.execution_domain != "live":
         raise APIError(ErrorCode.BAD_REQUEST, "该执行政策仅适用于 live Hydra")
     service._gate_live()
+    with service.session_factory() as session:
+        emergency = active_emergency(session, req.account_alias)
+        if emergency:
+            attempt = session.get(HydraExecutionAttempt, emergency.response_payload["attempt_id"])
+            target = session.get(HydraTarget, emergency.response_payload["target_id"])
+            if (emergency.instance_id == req.instance_id and target.as_of_date == req.reference_date
+                    and attempt.trade_date > req.reference_date and attempt.status == "PENDING"):
+                # A manual command already generated NORMAL order signals. Let
+                # existing query/preflight proceed; do not recompute a plan.
+                return {"status": "EXECUTION_ADVANCED", "reference_date": req.reference_date,
+                        "execution_date": attempt.trade_date,
+                        "results": [service._response(target, attempt, idempotent=True).model_dump()]}
+            return {"status": "WAITING_RECONCILIATION", "order_count": 0,
+                    "reason": "紧急指令处理中；普通生成和补单暂停，完成后显式恢复"}
     publication = latest_execution_publication(service, req.account_alias, req.reference_date)
     if publication is None:
         return {
@@ -100,7 +115,7 @@ def advance_execution(service, req):
                     HydraExecutionPlan.execution_domain == "live",
                     HydraExecutionPlan.account_alias == req.account_alias,
                     HydraExecutionPlan.instance_id == req.instance_id,
-                    HydraExecutionPlan.status != "STAGED",
+                    HydraExecutionPlan.status.not_in(("STAGED", "SUPERSEDED_EMERGENCY")),
                 )
                 .order_by(HydraExecutionPlan.created_at)
             )
@@ -134,6 +149,9 @@ def advance_execution(service, req):
         residual_ids = []
         existing = []
         for rebalance in rebalances:
+            target = session.get(HydraTarget, rebalance.target_id)
+            if rebalance.status == "SUPERSEDED_EMERGENCY" or target.strategy_version == "MANUAL_EMERGENCY_V1":
+                continue
             latest = session.scalar(
                 select(HydraExecutionAttempt)
                 .where(

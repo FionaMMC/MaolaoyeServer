@@ -301,6 +301,7 @@ class StrategyPipeline:
         operational_blockers = {
             "unresolved_order", "bookkeeping_divergence",
             "previous_rebalance_not_reconciled",
+            "emergency_execution_hold",
         }
         strict_blocked = {
             instance_id: sorted(operational_blockers & set(guard["blockers"]))
@@ -572,6 +573,10 @@ class StrategyPipeline:
         with self.session_factory() as session:
             for inst in instances:
                 blockers: list[str] = []
+                if inst["execution_domain"] == "live":
+                    from app.services.emergency_guard import active_emergency
+                    if active_emergency(session, inst.get("qmt_account_alias") or inst["account_group"]):
+                        blockers.append("emergency_execution_hold")
                 if not inst.get("orders_enabled", True):
                     blockers.append("orders_disabled")
                 if (

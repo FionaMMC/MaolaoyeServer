@@ -135,6 +135,33 @@ def test_shadow_target_schema_and_hash_fail_closed(tmp_path):
         assert session.query(Order).count() == 0
 
 
+def test_expired_target_keeps_valuing_accepted_book_without_trading(tmp_path):
+    target = tmp_path / "shadow.parquet"
+    target_frame().to_parquet(target, index=False)
+    service, sf, store = make_service(tmp_path, config_for(target))
+    add_prices(store, 20260701)
+    service.run_all(20260701)
+    with sf() as session:
+        state = session.get(ShadowInstanceState, "Shadow_Base")
+        frozen = (state.virtual_cash, dict(state.virtual_positions), state.target_hash, state.cumulative_cost)
+    # A stale file with changed weights must not replace the accepted book.
+    stale = target_frame()
+    stale["weight"] = [0.1, 0.9]
+    stale.to_parquet(target, index=False)
+    add_prices(store, 20260903, stock=12)
+    result = service.run_all(20260903)["instances"][0]
+    assert result["status"] == "stale_target" and result["valuation_only"]
+    assert result["transaction_cost"] == result["turnover"] == 0
+    with sf() as session:
+        state = session.get(ShadowInstanceState, "Shadow_Base")
+        assert frozen == (state.virtual_cash, state.virtual_positions, state.target_hash, state.cumulative_cost)
+        snapshot = session.get(ShadowNavSnapshot, ("Shadow_Base", "20260903"))
+        assert snapshot and "valuation_only" in snapshot.state_reason
+        assert session.query(Order).count() == session.query(Trade).count() == 0
+    assert service.run_all(20260920)["instances"][0]["status"] == "blocked"  # stale prices
+    assert service.run_all(20260902)["instances"][0]["status"] == "blocked"  # backward book
+
+
 def test_direct_ledger_requires_and_validates_producer_sidecar(tmp_path):
     target = tmp_path / "shadow.parquet"
     frame = target_frame()

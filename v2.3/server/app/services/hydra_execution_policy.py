@@ -9,6 +9,7 @@ from sqlalchemy import select
 from app.models import HydraExecutionPlan
 from app.schemas.hydra_relay import HydraExecutionWaitResponseData
 from app.services.ledger_transaction import begin_ledger_transaction
+from app.services.emergency_guard import assert_no_emergency
 from app.exceptions import APIError, ErrorCode
 
 POLICY_ID = "HYDRA_ADJACENT_DAY_50BP_V1"
@@ -69,8 +70,11 @@ def remember_initial_wait(sf, req, calendar):
     )
     with sf() as session:
         begin_ledger_transaction(session, req.execution_domain, req.account_alias)
+        assert_no_emergency(session, req.execution_domain, req.account_alias)
         prior = session.get(HydraExecutionPlan, plan_id)
         if prior:
+            if prior.status == "SUPERSEDED_EMERGENCY":
+                raise APIError(ErrorCode.BAD_REQUEST, "旧计划已被紧急处置终止", http_status=409)
             if prior.status == "STAGED":
                 from app.schemas.hydra_relay import HydraRelayResponseData
 
@@ -81,7 +85,7 @@ def remember_initial_wait(sf, req, calendar):
                 HydraExecutionPlan.execution_domain == req.execution_domain,
                 HydraExecutionPlan.account_alias == req.account_alias,
                 HydraExecutionPlan.instance_id == req.instance_id,
-                HydraExecutionPlan.status != "STAGED",
+                HydraExecutionPlan.status.not_in(("STAGED", "SUPERSEDED_EMERGENCY")),
             )
         ).all()
         if pending:

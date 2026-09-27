@@ -101,6 +101,10 @@ class ShadowBoundaryError(ValueError):
     """A configuration or target attempted to cross the no-order boundary."""
 
 
+class StaleShadowTarget(ValueError):
+    """Expired research cannot rebalance, but accepted holdings still have value."""
+
+
 class ShadowLedgerService:
     """Consume versioned targets and maintain theoretical cash/positions/NAV.
 
@@ -277,7 +281,7 @@ class ShadowLedgerService:
         max_target_age_days = constraints.get("max_target_age_days")
         if (max_target_age_days is not None
                 and (run_date - as_of).days > int(max_target_age_days)):
-            raise ValueError(
+            raise StaleShadowTarget(
                 f"shadow target is stale: as_of_date={as_of:%Y%m%d} "
                 f"max_age_days={int(max_target_age_days)}"
             )
@@ -339,9 +343,12 @@ class ShadowLedgerService:
         if not path.exists():
             raise FileNotFoundError(f"target missing: {path}")
         frame = pd.read_parquet(path) if path.suffix.lower() == ".parquet" else pd.read_csv(path)
-        target, target_hash = self.validate_target(
-            frame, cfg["shadow_id"], trade_date, constraints=cfg
-        )
+        try:
+            target, target_hash = self.validate_target(
+                frame, cfg["shadow_id"], trade_date, constraints=cfg
+            )
+        except StaleShadowTarget as exc:
+            return self._mark_accepted_holdings(cfg, trade_date, str(exc))
         if cfg["require_sidecar"]:
             sidecar_path = path.with_suffix(".json")
             if not sidecar_path.is_file():
@@ -462,6 +469,35 @@ class ShadowLedgerService:
             "target_hash": target_hash,
             "held_reason": held_reason,
         }
+
+    def _mark_accepted_holdings(self, cfg: dict, trade_date: int, reason: str) -> dict:
+        """Value only the persisted book; never accept or trade an expired file."""
+        with self.session_factory() as session:
+            state = session.get(ShadowInstanceState, cfg["shadow_id"])
+            if state is None or not state.target_hash:
+                raise StaleShadowTarget(reason + "; no accepted holdings to value")
+            accepted = list(session.scalars(select(ShadowTarget).where(
+                ShadowTarget.shadow_id == cfg["shadow_id"],
+                ShadowTarget.target_hash == state.target_hash,
+            )))
+            if not accepted:
+                raise ValueError("accepted shadow allocation is missing")
+            latest = session.scalar(select(ShadowNavSnapshot.date).where(
+                ShadowNavSnapshot.shadow_id == cfg["shadow_id"],
+            ).order_by(ShadowNavSnapshot.date.desc()).limit(1))
+            if latest and str(trade_date) < latest:
+                raise ValueError("cannot value historical dates from a later shadow book")
+            positions = dict(state.virtual_positions or {})
+            prices = self._prices(set(positions), trade_date, cfg["max_price_staleness_days"])
+            nav = self._nav(state.virtual_cash, positions, prices)
+            state.status = "stale_target"
+            state.state_reason = reason + "; valuation_only: holding accepted allocation"
+            state.last_turnover = 0
+            state.last_update = _now_iso()
+            self._upsert_snapshot(session, state, trade_date, nav, 0, 0)
+            session.commit()
+        return {"shadow_id": cfg["shadow_id"], "status": "stale_target", "nav": nav,
+                "valuation_only": True, "reason": reason, "transaction_cost": 0, "turnover": 0}
 
     def _prices(
         self, symbols: set[str], trade_date: int, max_staleness_days: int
