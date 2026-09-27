@@ -24,11 +24,10 @@ from app.schemas.hydra_monthly import HydraMonthlySnapshotRequest
 from app.services.hydra_monthly import receive_snapshot
 from app.settings import get_settings, Settings
 
-router = APIRouter(prefix="/hydra")
-
-
 from app.schemas.emergency_execution import EmergencyStageRequest, EmergencyResumeRequest
 from app.services.emergency_execution import stage_emergency, resume_after_emergency
+
+router = APIRouter(prefix="/hydra")
 
 
 @router.post("/emergency/stage", response_model=APIResponse[dict])

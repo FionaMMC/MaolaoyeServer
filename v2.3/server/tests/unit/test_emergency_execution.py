@@ -6,7 +6,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from app.exceptions import APIError
-from app.models import EmergencyExecution, HydraExecutionAttempt, HydraRebalance, HydraTarget, InstanceState, Order, OrderSignalMap
+from app.models import EmergencyExecution, HydraExecutionAttempt, HydraTarget, InstanceState, Order, OrderSignalMap
 from app.schemas.emergency_execution import EmergencyStageRequest, EmergencyResumeRequest
 from app.services import emergency_execution as emergency
 from app.services.emergency_guard import assert_no_emergency
@@ -214,3 +214,16 @@ def test_next_day_emergency_flows_through_existing_evening_advance(setup, monkey
     assert result["results"][0]["batch_sha256"] == staged["batch_sha256"]
     with sf() as session:
         assert len(list(session.scalars(select(Order)))) == 1
+
+
+def test_emergency_cannot_race_pipeline_clear_and_recompute(setup):
+    import fcntl
+    service, sf, *_ = setup
+    with sf() as session:
+        database = session.get_bind().url.database
+    with open(database + ".pipeline.lock", "a+b") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(APIError, match="普通管线正在运行"):
+            emergency.stage_emergency(service, request(setup), "owner")
+    with sf() as session:
+        assert session.scalar(select(Order)) is None

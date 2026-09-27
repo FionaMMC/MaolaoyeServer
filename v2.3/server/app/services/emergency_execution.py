@@ -14,6 +14,7 @@ from app.services.hydra_closure import TERMINAL_ORDER_STATUSES, has_policy_expir
 from app.services.hydra_late_fills import unresolved_late_fill_review
 from app.services.hydra_relay import _hash, _now_iso
 from app.services.ledger_transaction import begin_ledger_transaction
+from app.scheduler.pipeline_lock import PipelineBusy, pipeline_mutex
 
 
 def authorization_id(req):
@@ -37,6 +38,16 @@ def _replay(session, key, digest):
 
 
 def stage_emergency(service, req, authenticated_client):
+    # Share the deployed pipeline's mutex so its clear/recompute phase cannot
+    # erase an emergency signal published concurrently with ordinary generation.
+    try:
+        with pipeline_mutex(service.session_factory):
+            return _stage_emergency(service, req, authenticated_client)
+    except PipelineBusy as exc:
+        raise APIError(ErrorCode.BAD_REQUEST, "普通管线正在运行，完成后重试同一紧急请求", http_status=409) from exc
+
+
+def _stage_emergency(service, req, authenticated_client):
     payload = req.model_dump(mode="json")
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     key = authorization_id(req)
