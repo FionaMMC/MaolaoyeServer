@@ -183,6 +183,7 @@ class HydraExecutionWaitResponseData(BaseModel):
     execution_domain: ExecutionDomain
     plan_id: str | None = None
     rebalance_id: str | None = None
+    retry_outcome: str | None = None
     next_reference_date: str | None = None
     next_execution_date: str | None = None
     reason: str

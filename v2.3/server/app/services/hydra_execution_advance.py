@@ -220,6 +220,7 @@ def advance_execution(service, req):
             row.response_payload = staged.model_dump(mode="json")
             session.commit()
         results.append(staged.model_dump(mode="json"))
+    deferred_results = []
     for rebalance_id in residual_ids:
         staged = service.stage_retry(
             HydraRetryRequest(
@@ -234,11 +235,16 @@ def advance_execution(service, req):
                 reconciliation_evidence_sha256=req.reconciliation_evidence_sha256,
             )
         )
-        results.append(staged.model_dump(mode="json"))
+        payload = staged.model_dump(mode="json")
+        if "attempt_id" in payload:
+            results.append(payload)
+        else:
+            deferred_results.append(payload)
     results = list({result["attempt_id"]: result for result in results}.values())
     return {
         "status": "EXECUTION_ADVANCED" if results else "NO_PENDING_EXECUTION",
         "reference_date": req.reference_date,
         "execution_date": execution_date,
         "results": results,
+        "deferred": deferred_results,
     }

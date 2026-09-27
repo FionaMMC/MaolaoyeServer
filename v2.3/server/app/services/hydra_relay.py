@@ -37,6 +37,7 @@ from app.services.hydra_late_fills import unresolved_late_fill_review
 from app.services.hydra_execution_policy import (
     eligible, remember_initial_wait, wait_result, policy_evidence,
 )
+from app.services.etf_retry_policy import envelope, window_outcome, deferred, guarded_orders, unproven_expiry
 from app.services.hydra_closure import (
     TERMINAL_ORDER_STATUSES, close_execution_window, unresolved_orders,
     has_policy_expired_orders,
@@ -132,6 +133,7 @@ class HydraRelayService:
         live_limits: HydraRiskLimits,
         blacklist_service: BlacklistService | None = None,
         lot_size: int = 100,
+        etf_execution_policy: str = "guarded_3d",
     ):
         self.session_factory = session_factory
         self.data_store = data_store
@@ -141,6 +143,9 @@ class HydraRelayService:
         self.live_limits = live_limits
         self.blacklist_service = blacklist_service
         self.lot_size = lot_size
+        if etf_execution_policy not in {"guarded_3d", "legacy"}:
+            raise ValueError("unknown ETF execution policy")
+        self.etf_execution_policy = etf_execution_policy
 
     def stage_initial(self, req: HydraTargetRequest, *, source_plan_id=None, physical_snapshot=None):
         self._gate_request(req)
@@ -284,6 +289,8 @@ class HydraRelayService:
                 ].tolist())
                 raise APIError(ErrorCode.BAD_REQUEST, f"执行原价标记停牌: {blocked}")
             prices = raw_as_of_all.set_index("symbol")["close"].astype(float).to_dict()
+            if execution_policy is not None and self.etf_execution_policy == "guarded_3d":
+                execution_policy["retry_guard"] = envelope(req.execution_date, reference_date, raw_manifest.file_sha256, prices)
             nav = cash + sum(qty * prices[code] for code, qty in positions.items())
             if not math.isfinite(nav) or nav <= 0:
                 raise APIError(ErrorCode.BAD_REQUEST, "Hydra 调仓前 NAV 非法")
@@ -404,6 +411,31 @@ class HydraRelayService:
                     return wait_result(req.execution_domain, calendar, req.trade_date,
                                        reason="补单等待新参考日；不得沿用周末/长假前原价", rebalance_id=req.rebalance_id)
                 execution_policy = policy_evidence(manifest.as_of_date, manifest.file_sha256, calendar_sha)
+                if self.etf_execution_policy == "guarded_3d":
+                    first = session.scalar(select(HydraExecutionAttempt).where(
+                        HydraExecutionAttempt.rebalance_id == rebalance.rebalance_id,
+                    ).order_by(HydraExecutionAttempt.attempt_number).limit(1))
+                    if first is None:
+                        raise APIError(ErrorCode.BAD_REQUEST, "补单缺少初始 attempt", http_status=409)
+                    original = (first.risk_snapshot or {}).get("execution_policy") or {}
+                    original_calendar, _ = self.data_store.load("hydra_trading_calendar",
+                        original.get("execution_calendar_sha256") or target.input_hashes["trading_calendar"])
+                    # Daily publications intentionally drop older sessions. Count
+                    # the elapsed window against the FIRST frozen calendar.
+                    outcome = window_outcome(original_calendar, first.trade_date, req.trade_date)
+                    if outcome != "ELIGIBLE":
+                        return deferred(req.execution_domain, req.rebalance_id, outcome,
+                                        "首次执行日起最多三个交易日；窗口到期不再补单，日历不完整时等待数据")
+                    guard = original.get("retry_guard")
+                    if guard is None:
+                        sha = original.get("execution_raw_sha256") or target.input_hashes["execution_raw"]
+                        anchor_raw, anchor_manifest = self.data_store.load("hydra_execution_raw", sha)
+                        codes = set(rebalance.target_shares) | set(rebalance.baseline_positions)
+                        rows = self._require_as_of_coverage(anchor_raw, anchor_manifest.as_of_date, codes, "execution_raw")
+                        guard = envelope(first.trade_date, anchor_manifest.as_of_date, sha,
+                                         rows.set_index("symbol")["close"].astype(float).to_dict())
+                    execution_policy["retry_guard"] = guard
+
             # A response-lost retry can return the already frozen SAME attempt.
             replay = session.scalar(select(HydraExecutionAttempt).where(
                 HydraExecutionAttempt.rebalance_id == rebalance.rebalance_id,
@@ -427,6 +459,24 @@ class HydraRelayService:
             if req.trade_date <= previous.trade_date:
                 raise APIError(ErrorCode.BAD_REQUEST, "补单执行日必须晚于上一 attempt 交易日")
             instance_id = self._instance_id_for_rebalance(session, rebalance.rebalance_id)
+            if req.execution_domain == "live" and self.etf_execution_policy == "guarded_3d":
+                if unproven_expiry(session, rebalance.rebalance_id):
+                    return deferred(req.execution_domain, req.rebalance_id, "BROKER_NOT_FINAL",
+                                    "旧单缺少最终状态或已批准当日到期政策的有效证据；核实后才能补单")
+                if unresolved_late_fill_review(session, instance_id, req.execution_domain, req.account_alias):
+                    return deferred(req.execution_domain, req.rebalance_id, "LATE_FILL_REVIEW",
+                                    "迟到成交待对账；停止补单")
+                newer = session.scalar(select(Order.order_id).join(OrderSignalMap,
+                    OrderSignalMap.order_id == Order.order_id).join(RawSignal,
+                    RawSignal.signal_id == OrderSignalMap.signal_id).where(
+                    RawSignal.instance_id == instance_id, Order.execution_domain == "live",
+                    Order.qmt_account_alias == req.account_alias,
+                    Order.rebalance_id != rebalance.rebalance_id,
+                    Order.valid_date > first.trade_date,
+                ).limit(1))
+                if newer:
+                    return deferred(req.execution_domain, req.rebalance_id, "SUPERSEDED_TARGET",
+                                    "已有更新目标的执行记录，不再恢复旧目标补单")
             state = self._validated_state(
                 session, instance_id, req.execution_domain, req.account_alias,
             )
@@ -472,7 +522,8 @@ class HydraRelayService:
                 execution_policy=execution_policy,
                 reconciliation_evidence_sha256=req.reconciliation_evidence_sha256,
             )
-            rebalance.reconciliation_status = "RETRY_PRE_TRADE_OK"
+            if isinstance(response, HydraRelayResponseData):
+                rebalance.reconciliation_status = "RETRY_PRE_TRADE_OK"
             session.commit()
             return response
 
@@ -625,6 +676,12 @@ class HydraRelayService:
                 "limit_price": (explicit_limits[code] if explicit_limits is not None
                                 else _tick_price(float(prices[code]), direction, offset)),
             })
+        guard = (execution_policy or {}).get("retry_guard")
+        if guard is not None and attempt_number > 1:
+            canonical_orders = guarded_orders(canonical_orders, guard["anchor_prices"], actual_cash, self.lot_size)
+            if not canonical_orders and residual:
+                return deferred(target.execution_domain, rebalance.rebalance_id, "WAITING_CASH",
+                                "当前资金不足一个交易单位，保留剩余目标并等待；不创建空补单")
         batch_payload = {
             "rebalance_id": rebalance.rebalance_id,
             "attempt_number": attempt_number,

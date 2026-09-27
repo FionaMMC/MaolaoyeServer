@@ -263,7 +263,7 @@ def test_concurrent_execution_publication_is_idempotent(live):
         assert len(session.scalars(select(HydraExecutionPublication)).all()) == 1
 
 
-def test_server_residual_uses_new_prices_but_keeps_target_shares(live):
+def test_server_residual_uses_fresh_valuation_but_keeps_price_anchor_and_target(live):
     service, sf, req = live
     service.stage_initial(req)
     publication(service, "20260803")
@@ -302,7 +302,10 @@ def test_server_residual_uses_new_prices_but_keeps_target_shares(live):
     assert direct.idempotent_replay and direct.attempt_id == retry["attempt_id"]
     orders = OrdersQueueService(sf).list_pending("20260805", "live", ("hydra-live",))
     assert {row.symbol: row.quantity for row in orders} == target_shares
-    assert {round(row.execution_reference_price, 2) for row in orders} == {1.9, 3.8}
+    assert {round(row.execution_reference_price, 2) for row in orders} == {2.0, 4.0}
+    assert {row.limit_price for row in orders} == {2.01, 4.02}
+    assert all(row.execution_policy["execution_raw_sha256"] == pub["execution_raw_sha256"] for row in orders)
+    assert all(row.execution_policy["retry_guard"]["first_trade_date"] == "20260804" for row in orders)
 
 
 def test_publication_scoped_and_idempotent(live):
