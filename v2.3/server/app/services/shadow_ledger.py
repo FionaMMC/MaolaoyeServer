@@ -205,6 +205,9 @@ class ShadowLedgerService:
                         f"{shadow_id} publisher commits must be unique full Git SHAs"
                     )
             max_target_age_days = int(item.get("max_target_age_days", 45))
+            rebalance_cadence = item.get("rebalance_cadence", "allocation_change")
+            if rebalance_cadence not in {"monthly", "allocation_change"}:
+                raise ShadowBoundaryError(f"{shadow_id} invalid rebalance_cadence")
             if max_target_age_days < 0:
                 raise ShadowBoundaryError(
                     f"{shadow_id} max_target_age_days must be non-negative"
@@ -219,6 +222,7 @@ class ShadowLedgerService:
                 "lot_size": int(item.get("lot_size", 100)),
                 "max_price_staleness_days": int(item.get("max_price_staleness_days", 7)),
                 "max_target_age_days": max_target_age_days,
+                "rebalance_cadence": rebalance_cadence,
                 "allowed_symbols": allowed_symbols,
                 "allowed_symbol_fallback_state_reasons": fallback_reasons,
                 "required_symbols": required_symbols,
@@ -345,6 +349,42 @@ class ShadowLedgerService:
                     f"required producer sidecar missing: {sidecar_path}"
                 )
             validate_shadow_sidecar(sidecar_path, target, cfg)
+        held_reason = None
+        # A monthly control must follow the accepted monthly allocation even
+        # when the weekly publisher changes weights, not just metadata. Keep
+        # valuing the accepted holdings without installing the rejected target.
+        if cfg.get("rebalance_cadence") == "monthly":
+            with self.session_factory() as session:
+                prior = session.get(ShadowInstanceState, cfg["shadow_id"])
+                if prior is not None and prior.target_hash and prior.as_of_date:
+                    new_cycle = str(target["as_of_date"].iloc[0])[:6]
+                    old_cycle = str(prior.as_of_date)[:6]
+                    if new_cycle <= old_cycle and target_hash != prior.target_hash:
+                        accepted = session.scalars(select(ShadowTarget).where(
+                            ShadowTarget.shadow_id == cfg["shadow_id"],
+                            ShadowTarget.target_hash == prior.target_hash,
+                        )).all()
+                        old_weights = {row.code: float(row.weight) for row in accepted}
+                        new_weights = dict(zip(target["code"], target["weight"]))
+                        same_weights = (
+                            old_weights.keys() == new_weights.keys()
+                            and all(abs(old_weights[code] - float(weight)) <= 1e-12
+                                    for code, weight in new_weights.items())
+                        )
+                        if new_cycle < old_cycle or not same_weights:
+                            if not accepted:
+                                raise ValueError("accepted monthly shadow allocation is missing")
+                            held_reason = (
+                                "monthly_cycle_rollback_rejected" if new_cycle < old_cycle
+                                else "monthly_cycle_already_consumed"
+                            )
+                            logger.warning("shadow %s: %s; holding accepted target",
+                                           cfg["shadow_id"], held_reason)
+                            target = pd.DataFrame([
+                                {column: getattr(row, column) for column in TARGET_COLUMNS}
+                                for row in accepted
+                            ])
+                            target_hash = prior.target_hash
         prices = self._prices(
             set(target["code"].tolist()), trade_date, cfg["max_price_staleness_days"]
         )
@@ -380,7 +420,10 @@ class ShadowLedgerService:
                 old_weights = {row.code: float(row.weight) for row in previous}
                 new_weights = dict(zip(target["code"], target["weight"]))
                 same_allocation = (
-                    state.as_of_date == target["as_of_date"].iloc[0]
+                    (state.as_of_date == target["as_of_date"].iloc[0]
+                     or (cfg.get("rebalance_cadence") == "monthly"
+                         and str(state.as_of_date)[:6]
+                         == str(target["as_of_date"].iloc[0])[:6]))
                     and old_weights.keys() == new_weights.keys()
                     and all(abs(old_weights[code] - float(weight)) <= 1e-12
                             for code, weight in new_weights.items())
@@ -417,6 +460,7 @@ class ShadowLedgerService:
             "shadow_id": cfg["shadow_id"], "status": "active", "nav": nav,
             "turnover": turnover, "transaction_cost": transaction_cost,
             "target_hash": target_hash,
+            "held_reason": held_reason,
         }
 
     def _prices(

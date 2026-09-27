@@ -391,3 +391,56 @@ def test_metadata_republication_does_not_reset_drifted_holdings(tmp_path):
     frame.to_parquet(target,index=False)
     add_prices(store,20260803,stock=12.0,etf=98.0)
     assert service.run_all(20260803)["instances"][0]["transaction_cost"] > 0
+
+
+def test_monthly_control_holds_revised_weights_but_keeps_valuing(tmp_path):
+    target = tmp_path / "target.parquet"
+    frame = target_frame()
+    frame.to_parquet(target, index=False)
+    service, sf, store = make_service(
+        tmp_path, config_for(target) + "    rebalance_cadence: monthly\n"
+    )
+    add_prices(store, 20260701)
+    first = service.run_all(20260701)["instances"][0]
+    with sf() as session:
+        old = session.get(ShadowInstanceState, "Shadow_Base")
+        positions, cash, cost = dict(old.virtual_positions), old.virtual_cash, old.cumulative_cost
+    frame["decision_date"] = "20260708"
+    frame["weight"] = [0.2, 0.8]
+    frame.to_parquet(target, index=False)
+    add_prices(store, 20260708, stock=12.0, etf=98.0)
+    result = service.run_all(20260708)["instances"][0]
+    assert result["held_reason"] == "monthly_cycle_already_consumed"
+    assert result["turnover"] == result["transaction_cost"] == 0
+    assert result["nav"] != first["nav"]
+    with sf() as session:
+        new = session.get(ShadowInstanceState, "Shadow_Base")
+        assert (new.virtual_positions, new.virtual_cash, new.cumulative_cost) == (positions, cash, cost)
+        assert new.target_hash == first["target_hash"]
+        assert session.query(ShadowTarget).count() == 2
+        assert session.get(ShadowNavSnapshot, ("Shadow_Base", "20260708")) is not None
+        assert session.query(Order).count() == session.query(Trade).count() == 0
+    # The next cycle can trade the revised weights, then refuses rollback.
+    frame["decision_date"] = "20260803"
+    frame["as_of_date"] = "20260731"
+    frame.to_parquet(target, index=False)
+    add_prices(store, 20260803, stock=12.0, etf=98.0)
+    second = service.run_all(20260803)["instances"][0]
+    assert second["transaction_cost"] > 0
+    assert second["held_reason"] is None
+    frame["decision_date"] = "20260804"
+    frame["as_of_date"] = "20260630"
+    frame.to_parquet(target, index=False)
+    add_prices(store, 20260804, stock=12.2, etf=98.0)
+    rollback = service.run_all(20260804)["instances"][0]
+    assert rollback["held_reason"] == "monthly_cycle_rollback_rejected"
+    assert rollback["turnover"] == 0
+    assert rollback["target_hash"] == second["target_hash"]
+
+
+def test_monthly_cadence_rejects_unknown_configuration(tmp_path):
+    service, _, _ = make_service(
+        tmp_path, config_for(tmp_path / "target.parquet") + "    rebalance_cadence: weekly_typo\n"
+    )
+    with pytest.raises(ShadowBoundaryError, match="rebalance_cadence"):
+        service.load_instances()
