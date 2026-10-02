@@ -18,7 +18,8 @@ import math
 import numpy as np
 import pandas as pd
 
-from allocation_code import allocate_buys
+# One implementation for backtest and live: needs v2.3/server on PYTHONPATH.
+from app.oms.planner import allocate_buys, buy_limit, lot_target, sell_limit  # noqa: F401
 
 TICK = .001
 LOT = 100
@@ -55,41 +56,6 @@ class Policy:
 def next_pair(dates, signal):
     return next(((a, b) for a, b in zip(dates[:-1], dates[1:]) if a > signal and (b - a).days == 1),
                 (None, None))
-
-
-def lot_target(nav, weights, prices, policy):
-    """Whole-lot target. ``nearest`` rounds up a lot only while it cuts the error
-    and the whole basket, grossed up by ``size_factor``, still fits the budget."""
-    investable = nav * (1 - policy.reserve)
-    target = {s: (math.floor(investable * w / prices[s] / policy.size_factor / LOT) * LOT if w > 0 else 0)
-              for s, w in weights.items()}
-    if policy.lot == 'floor':
-        return target
-    if policy.lot != 'nearest':
-        raise ValueError(policy.lot)
-    spent = sum(q * prices[s] for s, q in target.items() if q) * policy.size_factor
-    while True:
-        best, best_gain = None, 0.
-        for s in sorted(weights):
-            if weights[s] <= 0:
-                continue
-            gap = investable * weights[s] - target[s] * prices[s]
-            step = LOT * prices[s]
-            gain = gap - abs(gap - step)
-            if gain > best_gain + 1e-9 and spent + step * policy.size_factor <= investable + 1e-9:
-                best, best_gain = s, gain
-        if best is None:
-            return target
-        target[best] += LOT
-        spent += LOT * prices[best] * policy.size_factor
-
-
-def buy_limit(anchor, bps):
-    return math.floor(anchor * (1 + bps / 1e4) / TICK + 1e-8) * TICK
-
-
-def sell_limit(anchor, bps):
-    return math.ceil(anchor * (1 - bps / 1e4) / TICK - 1e-8) * TICK
 
 
 def auction_fill(bar, side, limit, slip_bps, touch):
