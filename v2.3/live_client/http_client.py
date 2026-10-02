@@ -84,6 +84,40 @@ class LiveServerClient:
     def post_cash_flow(self, payload: dict) -> dict:
         return self._post("/cash-flows", payload)
 
+    def post_oms_snapshot(self, payload: dict) -> dict:
+        return self._post("/oms/live/snapshot", payload)
+
+    def get_oms_plan(self, account_alias: str, trade_date: str, phase: str) -> dict:
+        response = requests.get(
+            f"{self.base_url}/oms/live/plan",
+            params={"account_alias": account_alias, "trade_date": trade_date, "phase": phase},
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        if response.status_code == 404:
+            raise LookupError(f"no {phase} plan on {trade_date}")
+        response.raise_for_status()
+        body = response.json()
+        if body.get("code") != 0:
+            raise RuntimeError(f"GET /oms/live/plan 失败: {body}")
+        return body["data"]
+
+    def get_oms_status(self, account_alias: str) -> dict:
+        response = requests.get(
+            f"{self.base_url}/oms/live/status",
+            params={"account_alias": account_alias},
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        body = response.json()
+        if body.get("code") != 0:
+            raise RuntimeError(f"GET /oms/live/status 失败: {body}")
+        return body["data"]
+
+    def post_oms_events(self, account_alias: str, events: list[dict]) -> dict:
+        return self._post("/oms/live/events", {"account_alias": account_alias, "events": events})
+
     def _post(self, path: str, payload: dict) -> dict:
         response = requests.post(
             f"{self.base_url}{path}",

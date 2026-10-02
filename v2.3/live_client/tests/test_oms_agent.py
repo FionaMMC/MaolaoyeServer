@@ -1,0 +1,155 @@
+"""OMS agent: journal before submit, never resubmit an unknown, cap buys at live positions."""
+from datetime import datetime, timedelta
+
+import pytest
+
+from live_client.oms_agent import OmsAgent
+from live_client.oms_journal import OmsJournal
+from live_client.sim_exchange import SimExchange, SimQMTGateway
+
+ALIAS = "hydra-live"
+D1, D2 = "20261008", "20261009"
+BARS = {
+    (D1, "510300.SH"): dict(open=4.62, high=4.66, low=4.58, close=4.60, volume=5_000_000),
+    (D1, "513100.SH"): dict(open=2.20, high=2.21, low=2.19, close=2.20, volume=1_000_000),
+    (D2, "510300.SH"): dict(open=4.61, high=4.65, low=4.59, close=4.62, volume=5_000_000),
+    (D2, "513100.SH"): dict(open=2.21, high=2.24, low=2.20, close=2.22, volume=1_000_000),
+}
+
+
+class FakeServer:
+    def __init__(self, plans):
+        self.plans, self.snapshots, self.events, self.down = plans, [], [], False
+
+    def _check(self):
+        if self.down:
+            raise ConnectionError("server down")
+
+    def post_oms_snapshot(self, payload):
+        self._check()
+        self.snapshots.append(payload)
+        return {"reconciliation": {"passed": True}}
+
+    def get_oms_plan(self, alias, trade_date, phase):
+        self._check()
+        if (trade_date, phase) not in self.plans:
+            raise LookupError(phase)
+        return self.plans[(trade_date, phase)]
+
+    def post_oms_events(self, alias, events):
+        self._check()
+        self.events.extend(events)
+        return {"applied": len(events)}
+
+
+def _plan(day, phase, orders, frozen, executable=True, seq=1):
+    return {"account_alias": ALIAS, "cycle_id": "C00001", "session_id": f"C00001:{seq}", "trade_date": day,
+            "phase": phase, "executable": executable, "plan_sha256": f"{day}{phase}".ljust(64, "0"),
+            "frozen_target": frozen, "orders": orders}
+
+
+SELL = {"client_order_id": "H000010101", "symbol": "510300.SH", "side": "SELL", "quantity": 1800, "limit_price": 4.577}
+BUY = {"client_order_id": "H000010201", "symbol": "513100.SH", "side": "BUY", "quantity": 1000, "limit_price": 2.233}
+FROZEN = {"510300.SH": 1200, "513100.SH": 1000}
+
+
+def _setup(tmp_path, plans, *, positions=None, cash=100000.0, at=(D1, "145705")):
+    exchange = SimExchange(BARS, cash=cash, positions=positions or {"510300.SH": 3000})
+    exchange.set_clock(*at)
+    gateway = SimQMTGateway(exchange)
+    gateway.connect()
+    server = FakeServer(plans)
+    journal = OmsJournal(tmp_path / "oms-agent.db", clock=exchange.now)
+
+    def sleep(seconds):
+        later = exchange.now() + timedelta(seconds=seconds)
+        exchange.set_clock(later.strftime("%Y%m%d"), later.strftime("%H%M%S"))
+
+    agent = OmsAgent(account_alias=ALIAS, gateway=gateway, server=server, journal=journal, clock=exchange.now,
+                     symbols=["510300.SH", "513100.SH"], sleep=sleep, spool_dir=tmp_path / "spool")
+    return agent, exchange, server, journal
+
+
+def test_sell_outside_window_is_refused(tmp_path):
+    agent, exchange, _, _ = _setup(tmp_path, {(D1, "SELL"): _plan(D1, "SELL", [SELL], FROZEN)}, at=(D1, "145000"))
+    assert agent.execute(D1, "SELL")["status"] == "OUTSIDE_WINDOW"
+    assert exchange.orders() == []
+
+
+def test_sell_in_closing_auction_fills_at_close_and_eod_reports_it(tmp_path):
+    agent, exchange, server, journal = _setup(tmp_path, {(D1, "SELL"): _plan(D1, "SELL", [SELL], FROZEN)})
+    out = agent.execute(D1, "SELL")
+    assert out["status"] == "EXECUTED" and journal.intent("H000010101")["state"] == "ACKED"
+    assert [e["kind"] for e in server.events] == ["SUBMIT_STARTED", "ACKED"]
+    exchange.set_clock(D1, "150500")
+    agent.eod()
+    reported = server.snapshots[-1]
+    assert reported["kind"] == "EOD"
+    order = [o for o in reported["orders"] if o["remark"] == "H000010101"][0]
+    assert order["status"] == 56 and order["traded_volume"] == 1800 and order["side"] == "SELL"
+    assert reported["positions"]["510300.SH"] == 1200
+
+
+def test_unknown_submit_is_never_resubmitted_and_resolves_by_remark(tmp_path):
+    agent, exchange, _, journal = _setup(tmp_path, {(D1, "SELL"): _plan(D1, "SELL", [SELL], FROZEN)})
+    exchange.faults.add("submit_raises_after_accept")
+    agent.execute(D1, "SELL")
+    assert journal.intent("H000010101")["state"] == "UNKNOWN"
+    exchange.faults.discard("submit_raises_after_accept")
+    agent.execute(D1, "SELL")
+    assert len(exchange.orders()) == 1
+    assert journal.intent("H000010101")["state"] == "ACKED"
+
+
+def test_server_down_uses_cached_plan_and_replays_events_later(tmp_path):
+    plans = {(D1, "SELL"): _plan(D1, "SELL", [SELL], FROZEN)}
+    agent, exchange, server, journal = _setup(tmp_path, plans, at=(D1, "144500"))
+    agent.pre(D1)                       # caches the plan while the server is up
+    server.down = True
+    exchange.set_clock(D1, "145705")
+    assert agent.execute(D1, "SELL")["status"] == "EXECUTED"
+    assert len(exchange.orders()) == 1 and server.events == []
+    assert len(journal.outbox()) == 2
+    server.down = False
+    agent.flush_events()
+    assert [e["kind"] for e in server.events] == ["SUBMIT_STARTED", "ACKED"] and journal.outbox() == []
+
+
+def test_local_hold_blocks_execution(tmp_path):
+    agent, exchange, _, _ = _setup(tmp_path, {(D1, "SELL"): _plan(D1, "SELL", [SELL], FROZEN)})
+    (tmp_path / "HOLD").write_text("manual hold")
+    assert agent.execute(D1, "SELL")["status"] == "HOLD_LOCAL"
+    assert exchange.orders() == []
+
+
+def test_buy_is_capped_by_live_position_against_frozen_target(tmp_path):
+    plans = {(D2, "BUY"): _plan(D2, "BUY", [BUY], FROZEN, seq=2)}
+    # A late fill already brought 600 shares in; only 400 more fit under the frozen target.
+    agent, exchange, _, _ = _setup(tmp_path, plans, positions={"510300.SH": 1200, "513100.SH": 600},
+                                   at=(D2, "091505"))
+    agent.execute(D2, "BUY")
+    assert [o["order_volume"] for o in exchange.orders()] == [400]
+
+
+def test_not_executable_plan_and_dry_run_never_submit(tmp_path):
+    plans = {(D1, "SELL"): _plan(D1, "SELL", [SELL], FROZEN, executable=False)}
+    agent, exchange, _, _ = _setup(tmp_path, plans)
+    assert agent.execute(D1, "SELL")["status"] == "NOT_EXECUTABLE"
+    dry = agent.execute(D1, "SELL", dry_run=True)
+    assert dry["status"] == "DRY_RUN" and dry["orders"][0]["quantity"] == 1800
+    assert exchange.orders() == []
+
+
+def test_cancel_open_only_touches_our_buy_orders_and_refuses_after_1457(tmp_path):
+    plans = {(D2, "BUY"): _plan(D2, "BUY", [dict(BUY, limit_price=2.15)], FROZEN, seq=2)}
+    agent, exchange, _, _ = _setup(tmp_path, plans, positions={"510300.SH": 1200}, at=(D2, "091505"))
+    agent.execute(D2, "BUY")                                   # 2.15 never trades: rests all day
+    manual = exchange.order_stock("510300.SH", "BUY", 100, 4.50, "manual")
+    exchange.set_clock(D2, "145500")
+    out = agent.cancel_open()
+    assert out["requested"] == ["H000010201"]
+    statuses = {o["order_remark"]: o["order_status"] for o in exchange.orders()}
+    assert statuses["manual"] == 50 and statuses["H000010201"] in (51, 54)
+    exchange.set_clock(D2, "145700")
+    assert agent.cancel_open()["status"] == "TOO_LATE"
+    assert manual > 0
