@@ -107,6 +107,10 @@ async def verify_api_key(
             "/hydra/execution/data",
             "/hydra/attempts/close",
             "/hydra/canary/stage",
+            "/oms/live/snapshot",
+            "/oms/live/plan",
+            "/oms/live/events",
+            "/oms/live/status",
         }
         if path not in live_exact_paths:
             raise APIError(

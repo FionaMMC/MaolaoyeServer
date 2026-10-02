@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     live_account_initialization_enabled: bool = False
     live_canary_staging_enabled: bool = False
     live_qmt_account_sha256: str = ""
+    # Execution core owns live order state once enabled; legacy live write paths then refuse.
+    oms_live_enabled: bool = False
 
     # Hydra live relay allowlists / limits。risk_mode 默认 disabled；只有显式选择
     # static/auto 且打开生成闸门后才能产出 live 订单。

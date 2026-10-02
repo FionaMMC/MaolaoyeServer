@@ -175,6 +175,22 @@ def get_metrics_service(
     return MetricsService(session_factory=sf)
 
 
+def get_oms_cycle_service(
+    sf: sessionmaker = Depends(get_session_factory),
+    settings: Settings = Depends(get_settings),
+):
+    from app.oms.cycles import CycleService
+    from app.oms.ledger import OrderLedger
+
+    settlement = SettlementService(
+        session_factory=sf,
+        commission_rate=settings.stock_commission_rate,
+        min_commission=settings.stock_min_commission,
+        stamp_duty_sell=settings.stock_stamp_duty_sell,
+    )
+    return CycleService(sf, OrderLedger(sf, settlement), ReconcileService(session_factory=sf))
+
+
 def get_reconcile_service(
     sf: sessionmaker = Depends(get_session_factory),
     settings: Settings = Depends(get_settings),
