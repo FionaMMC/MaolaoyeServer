@@ -5,7 +5,7 @@ import logging
 from typing import Type
 
 from app.storage.parquet import ParquetStore
-from app.strategy.base import RawSignal, Strategy
+from app.strategy.base import RawSignal, Strategy, StrategyInputNotReady
 from app.strategy.context import Context
 
 logger = logging.getLogger(__name__)
@@ -19,6 +19,8 @@ class StrategyRunner:
     ):
         self.registry = registry
         self.store = parquet_store
+        self.input_statuses: dict[str, dict] = {}
+        self.errors: dict[str, str] = {}
 
     def run_all(
         self,
@@ -33,6 +35,8 @@ class StrategyRunner:
         若策略没调用 set，则该 key 对应 None（pipeline 不会更新）。
         """
         results: dict[str, list[RawSignal]] = {}
+        self.input_statuses = {}
+        self.errors = {}
         next_states: dict[str, dict | None] = {}
         bl = set(risk_blacklist or ())
         guards = execution_guards or {}
@@ -43,6 +47,7 @@ class StrategyRunner:
 
             strategy_cls = self.registry.get(strategy_id)
             if strategy_cls is None:
+                self.errors[instance_id] = "strategy_not_registered"
                 logger.error(
                     "instance %s: strategy '%s' 未注册",
                     instance_id, strategy_id,
@@ -70,7 +75,26 @@ class StrategyRunner:
                     )
                 results[instance_id] = signals
                 next_states[instance_id] = ctx.pop_next_strategy_state()
+                previous = dict(inst.get("strategy_state") or {})
+                if "input_readiness" in previous:
+                    updated = dict(next_states[instance_id] if next_states[instance_id] is not None else previous)
+                    pending = previous["input_readiness"]
+                    if pending.get("status") == "WAITING_INPUT" and pending.get("requested_trade_date") != str(trade_date):
+                        # A later no-op day does not prove the missed rebalance
+                        # recovered. Retain its business date for explicit replay.
+                        updated["input_readiness"] = pending
+                        self.input_statuses[instance_id] = pending
+                    else:
+                        updated["input_readiness"] = {"status": "READY", "requested_trade_date": str(trade_date)}
+                    next_states[instance_id] = updated
+            except StrategyInputNotReady as e:
+                status = {"status": "WAITING_INPUT", "requested_trade_date": str(trade_date), "reason": str(e)}
+                self.input_statuses[instance_id] = status
+                results[instance_id] = []
+                next_states[instance_id] = {**dict(inst.get("strategy_state") or {}), "input_readiness": status}
+                logger.warning("instance %s waiting_input: %s", instance_id, e)
             except Exception as e:
+                self.errors[instance_id] = type(e).__name__
                 logger.exception("instance %s strategy.run 抛异常: %s", instance_id, e)
                 results[instance_id] = []
                 next_states[instance_id] = None

@@ -3,8 +3,15 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+HYDRA_LIVE_EXECUTABLE_SYMBOLS = {
+    "510300.SH", "159915.SZ", "511260.SH", "518880.SH", "159981.SZ",
+    "159985.SZ", "159930.SZ", "513500.SH", "513100.SH",
+}
 
 
 class Settings(BaseSettings):
@@ -22,9 +29,54 @@ class Settings(BaseSettings):
     )
 
     # HTTP / 鉴权
+    # api_key 是兼容现有模拟盘部署的 legacy paper token；新部署优先使用
+    # paper_api_key / live_api_key 两把互不相同的 key。
     api_key: str = ""
+    paper_api_key: str = ""
+    live_api_key: str = ""
+    # 16:00 实盘信号生成专用 token。它不能查询/领取订单，也不能调用 admin。
+    live_trigger_api_key: str = ""
+    live_data_backup_api_key: str = ""
+    live_data_backup_source_ids_csv: str = ""
+    paper_client_id: str = "legacy-paper-client"
+    live_client_id: str = ""
+    paper_account_aliases_csv: str = ""
+    live_account_aliases_csv: str = ""
     host: str = "0.0.0.0"
     port: int = 8000
+
+    # 双重闸门：即使 live token 已配置，也不代表允许生成或领取实盘订单。
+    # 开启实盘时必须由部署环境显式设置，代码库默认永远 fail-closed。
+    live_order_generation_enabled: bool = False
+    live_order_delivery_enabled: bool = False
+    live_cash_flow_ingest_enabled: bool = False
+    live_account_initialization_enabled: bool = False
+    live_canary_staging_enabled: bool = False
+    live_qmt_account_sha256: str = ""
+
+    # Hydra live relay allowlists / limits。risk_mode 默认 disabled；只有显式选择
+    # static/auto 且打开生成闸门后才能产出 live 订单。
+    hydra_allowed_symbols_csv: str = (
+        "510300.SH,159915.SZ,511260.SH,518880.SH,159981.SZ,"
+        "159985.SZ,159930.SZ,513500.SH,513100.SH"
+    )
+    hydra_allowed_publisher_commits_csv: str = ""
+    # Dedicated systemd worker: never run expensive research in the API process.
+    hydra_monthly_enabled: bool = False
+    hydra_monthly_instance_id: str = "live_hydra_v481_rb"
+    hydra_monthly_account_alias: str = ""
+    hydra_monthly_start_date: str = "20260918"
+    hydra_monthly_research_dir: Path = Path("/opt/qmt-refresh/releases/hydra-aa6b60d")
+    hydra_live_risk_mode: str = "disabled"
+    hydra_etf_execution_policy: Literal["guarded_3d", "legacy"] = "guarded_3d"
+    live_max_daily_orders: int = 0
+    live_max_single_order_notional: float = 0.0
+    live_max_daily_buy_notional: float = 0.0
+    live_max_daily_sell_notional: float = 0.0
+    live_max_daily_turnover_notional: float = 0.0
+    live_max_price_offset_bps: float = 0.0
+    live_auto_max_daily_orders: int = 100
+    live_auto_buffer_bps: float = 100.0
 
     # 业务数据
     db_url: str = "sqlite:///./pipeline-server.db"
@@ -55,6 +107,34 @@ class Settings(BaseSettings):
     max_data_staleness_days: int = 5
     data_freshness_probe_category: str = "indexes"
     data_freshness_probe_symbol: str = "000852.SH"
+
+    @model_validator(mode="after")
+    def validate_execution_domain_secrets(self) -> "Settings":
+        """禁止 paper/live 共用凭据，避免客户端误连后静默跨域。"""
+        paper_key = self.paper_api_key or self.api_key
+        if paper_key and self.live_api_key and paper_key == self.live_api_key:
+            raise ValueError("paper_api_key 与 live_api_key 必须不同")
+        scoped_live_keys = {
+            value for value in (
+                paper_key, self.live_api_key, self.live_trigger_api_key,
+            ) if value
+        }
+        if self.live_data_backup_api_key and self.live_data_backup_api_key in scoped_live_keys:
+            raise ValueError("live_data_backup_api_key 必须与 paper/live/trigger token 不同")
+        if self.live_trigger_api_key and self.live_trigger_api_key in {
+            value for value in (paper_key, self.live_api_key) if value
+        }:
+            raise ValueError("live_trigger_api_key 必须与 paper/live 执行 token 不同")
+        if self.hydra_live_risk_mode not in {"disabled", "static", "auto"}:
+            raise ValueError("hydra_live_risk_mode 必须是 disabled/static/auto")
+        configured_symbols = {
+            value.strip()
+            for value in self.hydra_allowed_symbols_csv.split(",")
+            if value.strip()
+        }
+        if configured_symbols != HYDRA_LIVE_EXECUTABLE_SYMBOLS:
+            raise ValueError("Hydra live 白名单必须恰好是已批准的 9 只 ETF")
+        return self
 
 
 @lru_cache(maxsize=1)

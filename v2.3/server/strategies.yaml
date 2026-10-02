@@ -1,17 +1,10 @@
 # 实际生产配置：
-#   - paper_v20h: V20H CSI1000 多头 + cap_weight + vol_target（已上线）
+#   - V20H: 2026-09-28 已休眠下线；历史账本保留，恢复须显式授权。
 #   - paper_v53:  V53 10 ETF 全天候双层 inv_vol（M0 dry_run, plugins/v53/config.yaml 控制）
 # real_A 是历史示例策略，已废弃，不再激活
 # （如需重新启用 demo 策略做联调测试，看 git 历史 commit 0936d80）
 
 account_groups:
-  - group_id: paper_v20h
-    qmt_account_id: "301300148788"
-    strategies:
-      - strategy_id: v20h_v1_3
-        virtual_initial_cash: 10000000
-        # owned_symbols 未设 → null → legacy 模式 (reconcile 看到的 positions = "全部 - 其他 instance 的 owned")
-
   - group_id: paper_v53
     qmt_account_id: "301300148788"       # 同一 QMT 账户，server 侧逻辑隔离
     strategies:
@@ -33,7 +26,7 @@ account_groups:
     qmt_account_id: "301300148788"
     strategies:
       # V7.13_Base replaces V79 on the existing paper_v79 client route.
-      # V20H and V53 remain unchanged on the same QMT account.  Fills are
+      # V20H is retired; V53 remains on the same QMT account. Fills are
       # attributed to this virtual ledger through order_signal_map.
       - strategy_id: v713_relay
         display_name: V7.13_Base
@@ -48,6 +41,7 @@ account_groups:
 # identity and are processed only by ShadowLedgerService into shadow_* tables.
 shadow_instances:
   - shadow_id: Shadow_Base
+    rebalance_cadence: monthly
     mode: shadow
     orders_enabled: false
     initial_cash: 10000000
@@ -59,7 +53,7 @@ shadow_instances:
     orders_enabled: false
     # Active logistic plus the retained legacy TOP2 stop maps explicitly to
     # 511880.SH; this is a virtual ledger target, never a QMT order.
-    enabled: true
+    enabled: false
     initial_cash: 10000000
     require_sidecar: true
     max_target_age_days: 40
@@ -88,7 +82,7 @@ shadow_instances:
   - shadow_id: Shadow_Aux_Hard_TOP2_ShortCredit
     mode: shadow
     orders_enabled: false
-    enabled: true
+    enabled: false
     initial_cash: 10000000
     require_sidecar: true
     max_target_age_days: 40
@@ -112,6 +106,7 @@ shadow_instances:
       - 512480.SH
     target_file: plugins/v713/shadow_targets/Shadow_Aux_Hard_TOP2_ShortCredit_latest.parquet
   - shadow_id: Shadow_ML_TOP2
+    enabled: false
     mode: shadow
     orders_enabled: false
     initial_cash: 10000000
@@ -119,6 +114,7 @@ shadow_instances:
     max_target_age_days: 40
     target_file: plugins/v713/shadow_targets/Shadow_ML_TOP2_latest.parquet
   - shadow_id: Shadow_Hydra_V481_RB
+    rebalance_cadence: monthly
     mode: shadow
     orders_enabled: false
     initial_cash: 10000000

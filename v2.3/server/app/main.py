@@ -8,7 +8,25 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.api import admin, admin_query, dashboard, health, market_data, ops, orders, trade_result
+from app.api import (
+    admin,
+    architecture_blueprint,
+    architecture_review,
+    canary,
+    admin_query,
+    account_initialization,
+    cash_flow,
+    strategy_capital,
+    account_cash_observation,
+    dashboard,
+    health,
+    hydra_relay,
+    live_trigger,
+    market_data,
+    ops,
+    orders,
+    trade_result,
+)
 from app.exceptions import APIError, ErrorCode
 from app.logging_setup import get_logger, setup_logging
 from app.settings import Settings, get_settings
@@ -20,21 +38,32 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     log = get_logger("app")
     log.info("server_starting", version="2.3.0")
 
-    # 启动校验：owned_symbols 两两不重叠（多实例共用 QMT 账户时防止 symbol 归属冲突）
+    # 启动校验是最后一道诊断防线。写入路径本身必须阻止重叠；即使历史
+    # 数据已损坏，也要保留订单下载、回报和诊断 API，不能让整个服务退出。
+    ownership_safe = True
     try:
-        from app.dependencies import get_session_factory, get_engine
         from app.db import init_db, make_engine, make_session_factory
-        settings = get_settings()
+        settings = getattr(app.state, "settings", None) or get_settings()
         _engine = make_engine(settings.db_url)
         init_db(_engine)
         _sf = make_session_factory(_engine)
         ReconcileService(_sf).validate_no_overlap()
         log.info("validate_no_overlap: OK (owned_symbols 无重叠)")
     except OwnershipOverlap as e:
-        log.error("validate_no_overlap FAILED — owned_symbols 有重叠，请检查 strategies.yaml: %s", e)
-        raise SystemExit(1) from e
+        ownership_safe = False
+        log.critical(
+            "validate_no_overlap FAILED — 自动 scheduler 已隔离，HTTP 服务继续提供"
+            "冻结订单与诊断能力；请修复 owned_symbols: %s",
+            e,
+        )
     except Exception as e:
-        log.warning("validate_no_overlap 跳过（DB 尚未初始化或无 instance_state 表）: %s", e)
+        ownership_safe = False
+        log.error(
+            "validate_no_overlap 无法完成 — 自动 scheduler 已隔离，HTTP 服务继续: %s",
+            e,
+        )
+
+    app.state.ownership_safe = ownership_safe
 
     # 启动 APScheduler
     # ⚠ 多 worker 部署注意：每个 worker 各起一个 scheduler，cron 会重复触发。
@@ -43,7 +72,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.scheduler = None
     try:
         settings = getattr(app.state, "settings", None) or get_settings()
-        if settings.scheduler_enabled:
+        if settings.scheduler_enabled and ownership_safe:
             from app.db import make_engine, make_session_factory
             from app.dependencies import (
                 get_blacklist_service, get_orders_queue_service,
@@ -85,7 +114,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 settings.max_data_staleness_days,
             )
         else:
-            log.info("scheduler_disabled (set QMT_SCHEDULER_ENABLED=true to enable)")
+            reason = (
+                "ownership_overlap"
+                if settings.scheduler_enabled and not ownership_safe
+                else "configuration"
+            )
+            log.info("scheduler_disabled reason=%s", reason)
     except Exception as e:
         log.warning("scheduler 启动失败: %s", e)
 
@@ -132,12 +166,25 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
 
     app.include_router(health.router, tags=["health"])
     app.include_router(market_data.router, tags=["market-data"])
+    from app.api import live_qmt_backup
+    app.include_router(live_qmt_backup.router, tags=["live-qmt-backup"])
     app.include_router(orders.router, tags=["orders"])
     app.include_router(trade_result.router, tags=["trade-result"])
+    app.include_router(cash_flow.router, tags=["cash-flow"])
+    app.include_router(strategy_capital.router, tags=["strategy-capital"])
+    app.include_router(account_cash_observation.router, tags=["account-cash-observations"])
+    app.include_router(account_initialization.router, tags=["account-initialization"])
+    app.include_router(hydra_relay.router, tags=["hydra-relay"])
+    app.include_router(live_trigger.router, tags=["hydra-live-trigger"])
+    app.include_router(canary.router, tags=["hydra-canary"])
     app.include_router(admin.router, tags=["admin"])
+    from app.api import pipeline_jobs
+    app.include_router(pipeline_jobs.router, tags=["paper-pipeline-jobs"])
     app.include_router(admin_query.router, tags=["admin-query"])
     app.include_router(ops.router, tags=["ops"])
     app.include_router(dashboard.router, tags=["dashboard"])
+    app.include_router(architecture_review.router, tags=["architecture-review"])
+    app.include_router(architecture_blueprint.router, tags=["architecture-blueprint"])
 
     if settings_override is not None:
         app.dependency_overrides[get_settings] = lambda: settings_override

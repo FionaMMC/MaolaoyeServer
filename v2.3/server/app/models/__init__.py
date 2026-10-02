@@ -8,28 +8,73 @@ class Base(DeclarativeBase):
 
 # 触发 model 注册到 Base.metadata
 from app.models.instance_state import InstanceState  # noqa: E402, F401
+from app.models.emergency_execution import EmergencyExecution  # noqa: E402, F401
+from app.models.pipeline_job import PipelineJob  # noqa: E402, F401
 from app.models.raw_signal import RawSignal  # noqa: E402, F401
 from app.models.order import Order  # noqa: E402, F401
 from app.models.order_signal_map import OrderSignalMap  # noqa: E402, F401
 from app.models.trade import Trade  # noqa: E402, F401
+from app.models.order_status_evidence import OrderStatusEvidence  # noqa: E402, F401
+from app.models.hydra_execution_plan import HydraExecutionPlan  # noqa: E402, F401
+from app.models.hydra_execution_publication import HydraExecutionPublication  # noqa: E402, F401
 from app.models.perf_snapshot import PerfSnapshot  # noqa: E402, F401
+from app.models.perf_valuation import PerfValuation  # noqa: E402, F401
+from app.models.cash_flow import CashFlowJournal  # noqa: E402, F401
+from app.models.dividend_entitlement import DividendEntitlement  # noqa: E402, F401
+from app.models.daily_risk_snapshot import DailyRiskSnapshot  # noqa: E402, F401
+from app.models.execution_quality import ExecutionQualityObservation  # noqa: E402, F401
+from app.models.hydra_execution import (  # noqa: E402, F401
+    HydraExecutionAttempt,
+    HydraRebalance,
+    HydraTarget,
+)
+from app.models.hydra_closure import HydraWorkflowClosure  # noqa: E402, F401
+from app.models.account_cash_observation import AccountCashObservation  # noqa: E402, F401
+from app.models.capital_movement_receipt import CapitalMovementReceipt  # noqa: E402, F401
+from app.models.income_allocation_receipt import IncomeAllocationReceipt  # noqa: E402, F401
+from app.models.hydra_monthly import HydraMonthlyCycle  # noqa: E402, F401
 from app.models.risk_blacklist import RiskBlacklistEntry  # noqa: E402, F401
 from app.models.shadow import (  # noqa: E402, F401
+    ShadowFill,
     ShadowInstanceState,
     ShadowNavSnapshot,
     ShadowTarget,
+)
+from app.models.architecture_review import (  # noqa: E402, F401
+    ArchitectureReviewComment,
+    ArchitectureReviewDecision,
 )
 
 __all__ = [
     "Base",
     "InstanceState",
+    "EmergencyExecution",
     "RawSignal",
     "Order",
     "OrderSignalMap",
     "Trade",
+    "OrderStatusEvidence",
+    "HydraExecutionPlan",
+    "HydraExecutionPublication",
+    "HydraMonthlyCycle",
     "PerfSnapshot",
+    "PerfValuation",
+    "CashFlowJournal",
+    "DividendEntitlement",
+    "DailyRiskSnapshot",
+    "ExecutionQualityObservation",
+    "HydraTarget",
+    "HydraRebalance",
+    "HydraExecutionAttempt",
+    "HydraWorkflowClosure",
+    "AccountCashObservation",
+    "CapitalMovementReceipt",
+    "IncomeAllocationReceipt",
     "RiskBlacklistEntry",
     "ShadowInstanceState",
+    "ShadowFill",
     "ShadowNavSnapshot",
     "ShadowTarget",
+    "ArchitectureReviewComment",
+    "ArchitectureReviewDecision",
 ]

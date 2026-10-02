@@ -11,6 +11,9 @@ class Trade(Base):
     __tablename__ = "trades"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    execution_domain: Mapped[str] = mapped_column(
+        String, nullable=False, default="paper", server_default="paper", index=True,
+    )
     order_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     filled_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     filled_price: Mapped[float] = mapped_column(Float, nullable=False)

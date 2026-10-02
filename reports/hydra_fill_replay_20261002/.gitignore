@@ -1,0 +1,8 @@
+# Intermediate/embedded payloads, not authoritative results
+*bootstrap.py
+audit_refresh.py
+initial_summary.json
+second_summary.json
+summary.json
+continuous_summary.json
+continuous_audit.json

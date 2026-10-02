@@ -102,8 +102,8 @@ def test_snapshot_falls_back_to_etfs_category(tmp_path: Path):
         assert snap.nav == 4000.0
 
 
-def test_snapshot_unknown_position_treated_as_zero(tmp_path: Path):
-    """完全没数据的持仓按 0 市值。"""
+def test_snapshot_unknown_position_waits_for_price(tmp_path: Path):
+    """Missing prices do not manufacture a zero-value holding."""
     sf, store = _setup(tmp_path)
     with sf() as s:
         s.add(InstanceState(instance_id="i1", virtual_cash=1000.0,
@@ -116,7 +116,8 @@ def test_snapshot_unknown_position_treated_as_zero(tmp_path: Path):
 
     with sf() as s:
         snap = s.get(PerfSnapshot, ("i1", "20260430"))
-        assert snap.nav == 1000.0   # 仅现金
+        assert snap is None
+        assert s.get(InstanceState, "i1").strategy_state["valuation_status"]["status"] == "WAITING_PRICE"
 
 
 def test_snapshot_daily_return_uses_yesterday(tmp_path: Path):
@@ -167,3 +168,26 @@ def test_snapshot_no_instances_returns_zero(tmp_path: Path):
     sf, store = _setup(tmp_path)
     svc = PerfService(session_factory=sf, parquet_store=store)
     assert svc.snapshot_all(20260430) == 0
+
+
+def test_snapshot_never_crosses_execution_domain(tmp_path: Path):
+    sf, store = _setup(tmp_path)
+    with sf() as s:
+        s.add_all([
+            InstanceState(
+                instance_id="paper-i", execution_domain="paper",
+                virtual_cash=100.0, virtual_positions={}, last_update=_now(),
+            ),
+            InstanceState(
+                instance_id="live-i", execution_domain="live",
+                virtual_cash=200.0, virtual_positions={}, last_update=_now(),
+            ),
+        ])
+        s.commit()
+    svc = PerfService(session_factory=sf, parquet_store=store)
+    assert svc.snapshot_all(20260430, execution_domain="live") == 1
+    with sf() as s:
+        assert s.get(PerfSnapshot, ("paper-i", "20260430")) is None
+        live = s.get(PerfSnapshot, ("live-i", "20260430"))
+        assert live.execution_domain == "live"
+        assert live.nav == 200.0

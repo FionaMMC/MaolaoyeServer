@@ -4,7 +4,7 @@ These tables are deliberately separate from instance_state/raw_signals/orders/tr
 """
 from __future__ import annotations
 
-from sqlalchemy import JSON, Float, String
+from sqlalchemy import JSON, Float, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models import Base
@@ -41,6 +41,25 @@ class ShadowTarget(Base):
     source_version: Mapped[str] = mapped_column(String, nullable=False)
     input_hash: Mapped[str] = mapped_column(String, nullable=False)
     target_hash: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class ShadowFill(Base):
+    """Theoretical close fills only; never broker executions or order signals."""
+
+    __tablename__ = "shadow_fills"
+
+    fill_id: Mapped[str] = mapped_column(String, primary_key=True)
+    shadow_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    trade_date: Mapped[str] = mapped_column(String, nullable=False)
+    target_hash: Mapped[str] = mapped_column(String, nullable=False)
+    code: Mapped[str] = mapped_column(String, nullable=False)
+    direction: Mapped[str] = mapped_column(String, nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    price: Mapped[float] = mapped_column(Float, nullable=False)
+    price_basis: Mapped[str] = mapped_column(String, nullable=False)
+    fee: Mapped[float] = mapped_column(Float, nullable=False)
+    cash_after: Mapped[float] = mapped_column(Float, nullable=False)
     created_at: Mapped[str] = mapped_column(String, nullable=False)
 
 

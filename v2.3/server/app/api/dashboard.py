@@ -39,14 +39,14 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     .toolbar {
       display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
     }
-    .toolbar select, .toolbar button {
+    .toolbar select, .toolbar button, .toolbar a {
       background: #0f1419; color: #d4d8de;
       border: 1px solid #2a3340; padding: 5px 10px;
-      border-radius: 4px; font-size: 0.85em; cursor: pointer;
+      border-radius: 4px; font-size: 0.85em; cursor: pointer; text-decoration: none;
     }
     .toolbar button.primary { background: #4ea1ff; color: #fff; border-color: #4ea1ff; }
     .toolbar button.primary:hover { background: #6db4ff; }
-    .toolbar button:hover { background: #2a3340; }
+    .toolbar button:hover, .toolbar a:hover { background: #2a3340; }
 
     .tabs {
       display: flex; gap: 4px; margin-bottom: 12px; padding: 4px;
@@ -161,17 +161,262 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     .dot.bad { background: #f87171; }
     .stale   { color: #fbbf24; }
     .crit    { color: #f87171; }
+
+    /* 2026 live-operations renovation: dense, restrained, terminal-first. */
+    :root {
+      --bg: #070a0f; --surface: #0e141c; --surface-2: #121a24;
+      --line: #202b39; --text: #eef4fb; --muted: #687789;
+      --accent: #51c8f2; --positive: #40d6a0; --negative: #ff647c;
+      --warning: #f6bd58; --mono: "SFMono-Regular", Consolas, monospace;
+    }
+    body {
+      max-width: 1720px; margin: 0 auto; padding: 0 24px 44px;
+      background: radial-gradient(circle at 72% -30%, rgba(54,111,142,.13), transparent 38%), var(--bg);
+      color: var(--text); font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+      font-size: 14px;
+    }
+    .header {
+      position: sticky; top: 0; z-index: 30; min-height: 76px; margin: 0 -24px;
+      padding: 13px 24px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0;
+      background: rgba(7,10,15,.92); backdrop-filter: blur(18px);
+    }
+    .header h1 { font-size: 1.12em; letter-spacing: .03em; font-weight: 680; }
+    .header .meta { color: var(--muted); font: 10px/1.4 var(--mono); margin-top: 6px; }
+    .brand-kicker { color: var(--accent); font: 9px/1 var(--mono); letter-spacing: .18em; margin-bottom: 7px; }
+    .toolbar select, .toolbar button {
+      height: 34px; border-radius: 7px; border-color: #263444; background: #0d131b;
+      color: #cdd9e6; font-size: .78em; padding: 0 10px;
+    }
+    .toolbar button.primary { background: var(--accent); border-color: var(--accent); color: #061017; font-weight: 750; }
+    .toolbar button.primary:hover { background: #75d7f8; }
+    #health-strip {
+      margin: 0 -24px 14px; min-height: 36px; padding: 0 24px; border-width: 0 0 1px;
+      border-radius: 0; background: #090d13; color: var(--muted); gap: 22px; font: 10px var(--mono);
+      overflow-x: auto; white-space: nowrap;
+    }
+    #health-strip b { color: #d8e3ee; }
+    .tabs {
+      position: sticky; top: 76px; z-index: 25; gap: 2px; margin: 0 -24px 18px; padding: 7px 24px;
+      border-radius: 0; border-bottom: 1px solid var(--line); background: rgba(9,13,19,.94);
+      backdrop-filter: blur(14px); overflow-x: auto;
+    }
+    .tabs, #health-strip { scrollbar-width: none; }
+    .tabs::-webkit-scrollbar, #health-strip::-webkit-scrollbar { display: none; }
+    .tab { white-space: nowrap; padding: 8px 12px; border: 1px solid transparent; border-radius: 7px; font-size: .78em; }
+    .tab:hover { background: #111923; }
+    .tab.active { background: rgba(81,200,242,.09); border-color: rgba(81,200,242,.22); color: #e9f9ff; font-weight: 620; }
+    .tab .icon { color: var(--accent); font: 9px var(--mono); margin-right: 7px; }
+    .grid, .grid-4 { gap: 10px; }
+    .grid-4 { grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); }
+    .card {
+      min-width: 0;
+      border: 1px solid var(--line); border-radius: 11px; background: var(--surface);
+      padding: 15px; box-shadow: 0 10px 35px rgba(0,0,0,.12);
+    }
+    .card h2 {
+      min-height: 30px; margin: -3px 0 12px; padding: 0 0 10px; color: #cdd9e5;
+      border-color: rgba(135,157,184,.13); font-size: .74em; letter-spacing: .07em;
+      font-family: var(--mono); text-transform: uppercase;
+    }
+    .card h2 .hint { color: var(--muted); text-transform: none; letter-spacing: 0; }
+    .kpi {
+      min-height: 107px; padding: 14px; border: 1px solid var(--line); border-left: 1px solid var(--line);
+      border-radius: 10px; background: linear-gradient(145deg, #101720, #0d131b); position: relative; overflow: hidden;
+    }
+    .kpi::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: #253341; }
+    .kpi:has(.kpi-value.pos)::after { background: var(--positive); }
+    .kpi:has(.kpi-value.neg)::after { background: var(--negative); }
+    .kpi:has(.kpi-value.warn)::after { background: var(--warning); }
+    .kpi-label { color: #718196; font: 9px/1.3 var(--mono); letter-spacing: .09em; }
+    .kpi-value { margin-top: 13px; font: 22px/1 var(--mono); letter-spacing: -.04em; }
+    .kpi-value.pos, .num.pos { color: var(--positive); }
+    .kpi-value.neg, .num.neg { color: var(--negative); }
+    .kpi-value.warn { color: var(--warning); }
+    .kpi-sub { margin-top: 10px; color: #5e6e81; font: 9px/1.25 var(--mono); }
+    table { font-size: .72em; }
+    table th { height: 34px; color: #5c6b7e; background: #0b1017; font: 9px var(--mono); }
+    table td { height: 38px; color: #aebbc9; }
+    table th, table td { padding: 0 11px; border-color: rgba(135,157,184,.11); }
+    table tr:hover { background: rgba(81,200,242,.025); }
+    .badge { border-radius: 4px; font-family: var(--mono); }
+    .chart-container { height: 270px; }
+    .chart-container.tall { height: 330px; }
+    .trajectory-card { min-height: 430px; padding: 0; overflow: hidden; }
+    .trajectory-header {
+      min-height: 65px; padding: 14px 16px 12px; display: flex; justify-content: space-between;
+      align-items: center; gap: 16px; border-bottom: 1px solid rgba(135,157,184,.13);
+      background: linear-gradient(180deg, rgba(19,29,40,.86), rgba(14,20,28,.35));
+    }
+    .trajectory-title-wrap { min-width: 0; display: flex; align-items: center; gap: 11px; }
+    .trajectory-glyph {
+      position: relative; flex: 0 0 32px; width: 32px; height: 32px; border-radius: 8px;
+      border: 1px solid rgba(81,200,242,.26); overflow: hidden;
+      background:
+        linear-gradient(rgba(81,200,242,.07) 1px, transparent 1px) 0 0 / 100% 8px,
+        linear-gradient(90deg, rgba(81,200,242,.07) 1px, transparent 1px) 0 0 / 8px 100%,
+        #0a121a;
+    }
+    .trajectory-glyph::before {
+      content: ""; position: absolute; width: 27px; height: 2px; left: 3px; top: 17px;
+      border-radius: 2px; transform: rotate(-24deg);
+      background: linear-gradient(90deg, #3e7790 0 22%, var(--accent) 23% 67%, #d9f7ff 68%);
+      box-shadow: 0 0 9px rgba(81,200,242,.45);
+    }
+    .trajectory-glyph::after {
+      content: ""; position: absolute; width: 4px; height: 4px; right: 3px; top: 9px;
+      border-radius: 50%; background: #e5faff; box-shadow: 0 0 8px var(--accent);
+    }
+    .trajectory-title h2 {
+      min-height: 0; margin: 0; padding: 0; border: 0; color: #edf6ff;
+      font: 660 12px/1.2 var(--mono); letter-spacing: .065em;
+    }
+    .trajectory-title p { margin-top: 5px; color: var(--muted); font: 8px/1.35 var(--mono); }
+    .trajectory-actions { display: flex; align-items: center; gap: 8px; }
+    .trajectory-modes button { min-width: 54px; }
+    .trajectory-benchmark {
+      height: 31px; padding: 0 26px 0 9px; border: 1px solid #263442; border-radius: 7px;
+      color: #aebfce; background: #090e14; font: 8px var(--mono); letter-spacing: .03em;
+      cursor: pointer;
+    }
+    .trajectory-benchmark:focus { outline: 1px solid rgba(81,200,242,.45); outline-offset: 1px; }
+    .trajectory-segmented {
+      display: inline-flex; padding: 3px; gap: 2px; border: 1px solid #263442;
+      border-radius: 7px; background: #090e14;
+    }
+    .trajectory-segmented button {
+      min-width: 38px; height: 24px; padding: 0 8px; border: 0; border-radius: 4px;
+      color: #66778a; background: transparent; font: 8px var(--mono); cursor: pointer;
+    }
+    .trajectory-segmented button:hover { color: #c7d7e7; background: #121c27; }
+    .trajectory-segmented button.active {
+      color: #dff8ff; background: rgba(81,200,242,.13); box-shadow: inset 0 0 0 1px rgba(81,200,242,.22);
+    }
+    .trajectory-context {
+      min-height: 32px; padding: 0 16px; display: flex; align-items: center; gap: 13px;
+      border-bottom: 1px solid rgba(135,157,184,.09); color: #617286; font: 8px var(--mono);
+      white-space: nowrap; overflow-x: auto; scrollbar-width: none;
+    }
+    .trajectory-context::-webkit-scrollbar { display: none; }
+    .trajectory-context .observed { color: var(--positive); }
+    .trajectory-context .missing { color: #8a6d48; }
+    .trajectory-feed { display: inline-flex; align-items: center; gap: 6px; }
+    .trajectory-feed i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+    .trajectory-stats {
+      display: grid; grid-template-columns: repeat(6, minmax(0,1fr)); padding: 12px 16px 10px;
+      border-bottom: 1px solid rgba(135,157,184,.09);
+    }
+    .trajectory-stat { min-width: 0; padding: 0 12px; border-left: 1px solid rgba(135,157,184,.1); }
+    .trajectory-stat:first-child { padding-left: 0; border-left: 0; }
+    .trajectory-stat-label { color: #617286; font: 8px/1.2 var(--mono); letter-spacing: .05em; }
+    .trajectory-stat-value {
+      margin-top: 6px; color: #dce8f4; font: 13px/1 var(--mono); letter-spacing: -.035em;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .trajectory-stat-value.pos { color: var(--positive); }
+    .trajectory-stat-value.neg { color: var(--negative); }
+    .trajectory-chart { height: 268px; padding: 12px 12px 4px 6px; cursor: crosshair; }
+    .trajectory-footer {
+      min-height: 31px; display: flex; justify-content: space-between; align-items: center; gap: 12px;
+      padding: 0 16px; border-top: 1px solid rgba(135,157,184,.09); color: #566679; font: 8px var(--mono);
+    }
+    .trajectory-legend { display: inline-flex; align-items: center; gap: 13px; }
+    .trajectory-legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .trajectory-legend i { display: inline-block; width: 14px; height: 2px; background: var(--accent); }
+    .trajectory-legend i.hwm { height: 1px; opacity: .55; background: repeating-linear-gradient(90deg,#8092a6 0 3px,transparent 3px 5px); }
+    .live-heading { display: flex; justify-content: space-between; align-items: end; gap: 16px; margin: 3px 0 15px; }
+    .live-heading h2 { margin: 0; font-size: 1.08em; letter-spacing: -.01em; }
+    .live-heading p { margin: 5px 0 0; color: var(--muted); font-size: .72em; }
+    .live-asof { color: var(--muted); font: 9px var(--mono); }
+    .live-main-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(300px, .78fr); gap: 10px; margin-top: 10px; }
+    .live-three-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 10px; }
+    .control-list { display: grid; gap: 1px; margin: -15px; background: rgba(135,157,184,.1); }
+    .control-row { padding: 11px 14px; background: var(--surface); display: grid; grid-template-columns: 9px minmax(0,1fr) auto; gap: 10px; align-items: center; }
+    .control-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+    .control-dot.ok { background: var(--positive); }
+    .control-dot.warn { background: var(--warning); }
+    .control-dot.bad { background: var(--negative); }
+    .control-name { color: #c4d0dc; font-size: .74em; }
+    .control-desc { color: var(--muted); font: 9px/1.4 var(--mono); margin-top: 3px; }
+    .control-value { color: #cdd9e6; font: 9px var(--mono); text-align: right; }
+    .metric-list { display: grid; gap: 12px; }
+    .metric-line { display: grid; grid-template-columns: 105px minmax(0,1fr) 58px; gap: 10px; align-items: center; }
+    .metric-name { color: #aebbc9; font: 9px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .metric-track { height: 5px; border-radius: 9px; background: #1d2834; overflow: hidden; }
+    .metric-track i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg,#4d86ef,var(--accent)); }
+    .metric-value { text-align: right; color: #c5d0dc; font: 9px var(--mono); }
+    .coverage-list { display: grid; gap: 7px; }
+    .coverage-item { padding: 9px 10px; border: 1px solid rgba(135,157,184,.13); border-radius: 7px; background: #0b1118; }
+    .coverage-top { display: flex; justify-content: space-between; gap: 8px; color: #c8d3df; font-size: .7em; }
+    .coverage-next { margin-top: 5px; color: var(--muted); font: 8px/1.45 var(--mono); }
+    .empty-state { min-height: 76px; display: grid; place-items: center; color: var(--muted); font: 9px/1.5 var(--mono); text-align: center; }
+    .alert-stack { display: grid; gap: 7px; }
+    .alert-item { padding: 9px 10px; border: 1px solid rgba(135,157,184,.13); border-left: 3px solid #73a6ff; border-radius: 7px; background: #0b1118; }
+    .alert-item.critical { border-left-color: var(--negative); }
+    .alert-item.warn { border-left-color: var(--warning); }
+    .alert-title { color: #c7d2de; font-size: .72em; line-height: 1.45; }
+    .alert-meta { margin-top: 4px; color: var(--muted); font: 8px var(--mono); }
+    .live-note { margin-top: 13px; padding-top: 10px; border-top: 1px solid rgba(135,157,184,.13); color: var(--muted); font: 8px/1.45 var(--mono); }
+    #live-orders { overflow-x: auto; }
+    .hydra-summary { border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin-bottom: 16px; background: var(--surface); }
+    .hydra-summary[hidden] { display: none; }
+    .hydra-summary h2 { font-size: 18px; margin-bottom: 8px; }
+    .hydra-summary p { color: #aebccb; line-height: 1.6; max-width: 72ch; }
+    .hydra-facts { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 20px; margin: 20px 0; }
+    .hydra-facts dt { color: #aebccb; font-size: 12px; margin-bottom: 7px; }
+    .hydra-facts dd { line-height: 1.5; overflow-wrap: anywhere; }
+    .hydra-summary details { margin-top: 12px; }
+    .hydra-summary summary { cursor: pointer; padding: 8px 0; color: #cceefa; }
+    .hydra-summary summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    @media (max-width: 700px) { .hydra-facts { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+    #execution-price-table { overflow-x: auto; }
+    #execution-price-table table { min-width: 980px; }
+    .execution-method {
+      margin: -3px 0 12px; padding: 8px 10px; border: 1px solid rgba(81,200,242,.13);
+      border-radius: 6px; color: #718398; background: rgba(81,200,242,.025);
+      font: 8px/1.5 var(--mono);
+    }
+    .modal-box { border-radius: 13px; background: #0d131b; border-color: #293847; box-shadow: 0 30px 100px rgba(0,0,0,.55); }
+    .modal-box input { border-radius: 7px; background: #080d13; border-color: #2b3a49; }
+    .modal-box button { border-radius: 7px; background: var(--accent); color: #061017; font-weight: 750; }
+    @media (max-width: 1100px) {
+      .live-three-grid { grid-template-columns: 1fr; }
+      .live-three-grid > .card { grid-column: auto !important; }
+    }
+    @media (max-width: 820px) {
+      body { padding: 0 13px 30px; }
+      .header, #health-strip, .tabs { margin-left: -13px; margin-right: -13px; padding-left: 13px; padding-right: 13px; }
+      .header { position: relative; align-items: flex-start; flex-direction: column; gap: 12px; }
+      .header > div:first-child, .toolbar { width: 100%; }
+      .header h1 { white-space: nowrap; }
+      .tabs { top: 0; }
+      .live-main-grid { grid-template-columns: 1fr; }
+      .trajectory-header { align-items: flex-start; flex-direction: column; }
+      .trajectory-actions {
+        width: 100%; display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr);
+        gap: 6px; overflow: visible;
+      }
+      .trajectory-modes { grid-column: 1 / -1; }
+      .trajectory-benchmark { width: 100%; }
+      .trajectory-segmented { min-width: 0; width: 100%; }
+      .trajectory-segmented button { min-width: 0; flex: 1 1 0; padding: 0 3px; font-size: 7px; }
+      .trajectory-context { min-height: 50px; padding-top: 8px; padding-bottom: 8px; flex-wrap: wrap; white-space: normal; gap: 6px 12px; }
+      .trajectory-stats { grid-template-columns: repeat(3, minmax(0,1fr)); gap: 13px 0; }
+      .trajectory-stat:nth-child(4) { border-left: 0; padding-left: 0; }
+      .trajectory-chart { height: 250px; }
+      .trajectory-footer > span:last-child { display: none; }
+    }
   </style>
 </head>
 <body>
   <div id="login-modal">
     <div class="modal-box">
-      <h3>🔐 V20H Quant Dashboard</h3>
+      <div class="brand-kicker">AURORA QUANT / READ ONLY</div>
+      <h3>Live Operations Control</h3>
       <p style="color:#8a93a0; font-size:0.9em; margin-bottom:12px;">
-        请输入 API Key（仅存浏览器 localStorage）:
+        API Key 仅保存在当前浏览器 localStorage，不写入页面或 URL。
       </p>
       <input type="password" id="api-key-input"
-             placeholder="pipeline-v23-shared-secret-2026"
+             placeholder="API Key"
              onkeypress="if(event.key==='Enter') saveKey()">
       <button onclick="saveKey()">登录</button>
     </div>
@@ -179,11 +424,12 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 
   <div class="header">
     <div>
-      <h1>📊 QMT Multi-Strategy Dashboard</h1>
+      <div class="brand-kicker">AURORA QUANT / LIVE CONTROL</div>
+      <h1>实盘运营与风险监控</h1>
       <div class="meta" id="meta">Loading...</div>
     </div>
     <div class="toolbar">
-      <label style="font-size:0.85em;color:#8a93a0;">实例:</label>
+      <label for="instSel" style="font-size:0.85em;color:#8a93a0;">实例:</label>
       <select id="instSel" onchange="onInstanceChange()" disabled>
         <option value="">加载实例...</option>
       </select>
@@ -197,6 +443,8 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         <option value="1y">最近 1 年</option>
         <option value="all">全部</option>
       </select>
+      <a href="/dashboard/review">设计与风控审阅</a>
+      <a href="/dashboard/blueprint">三盘新架构 · 交互讲解</a>
       <button class="primary" onclick="refreshAll()">↻ 刷新</button>
     </div>
   </div>
@@ -204,28 +452,109 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
   <div id="health-strip"><span style="color:#8a93a0">加载中…</span></div>
 
   <div class="tabs">
-    <div class="tab active" data-view="overview" onclick="showTab('overview')">
-      <span class="icon">📌</span>概览
+    <div class="tab active" data-view="live" onclick="showTab('live')">
+      <span class="icon">L1</span>实盘总控
+    </div>
+    <div class="tab" data-view="overview" onclick="showTab('overview')">
+      <span class="icon">PF</span>组合概览
     </div>
     <div class="tab" data-view="returns" onclick="showTab('returns')">
-      <span class="icon">📈</span>收益分析
+      <span class="icon">PN</span>绩效归因
     </div>
     <div class="tab" data-view="risk" onclick="showTab('risk')">
-      <span class="icon">📉</span>风险分析
+      <span class="icon">RK</span>风险分析
     </div>
     <div class="tab" data-view="strategy" onclick="showTab('strategy')">
-      <span class="icon">⚙️</span>策略内部
+      <span class="icon">ST</span>策略状态
     </div>
     <div class="tab" data-view="trades" onclick="showTab('trades')">
-      <span class="icon">💼</span>交易分析
+      <span class="icon">EX</span>执行分析
     </div>
     <div class="tab" data-view="ops" onclick="showTab('ops')">
-      <span class="icon">🛠</span>运营与对账
+      <span class="icon">OP</span>运营审计
+    </div>
+  </div>
+
+  <!-- 24h 实盘总控：只展示真实可观测数据，缺失遥测显式暴露。 -->
+  <div class="view active" id="view-live">
+    <div class="live-heading">
+      <div><h2>Live Command Center</h2><p>风险、执行、对账和数据链路的一屏式值守视图</p></div>
+      <div class="live-asof" id="live-asof">—</div>
+    </div>
+    <section id="hydra-summary" class="hydra-summary" aria-label="Hydra 实盘运行状态" hidden></section>
+    <div class="grid-4" id="live-kpis"><div class="loading">读取实盘快照…</div></div>
+    <div class="live-main-grid">
+      <div class="card tall trajectory-card">
+        <div class="trajectory-header">
+          <div class="trajectory-title-wrap">
+            <span class="trajectory-glyph" aria-hidden="true"></span>
+            <div class="trajectory-title">
+              <h2>PORTFOLIO EQUITY CURVE</h2>
+              <p id="trajectory-subtitle">读取日终权益账本…</p>
+            </div>
+          </div>
+          <div class="trajectory-actions">
+            <div class="trajectory-segmented trajectory-modes" aria-label="曲线指标" role="group">
+              <button class="active" data-trajectory-mode="capital" onclick="setTrajectoryMode('capital')" aria-pressed="true">CAPITAL</button>
+              <button data-trajectory-mode="return" onclick="setTrajectoryMode('return')" aria-pressed="false">RETURN</button>
+              <button data-trajectory-mode="drawdown" onclick="setTrajectoryMode('drawdown')" aria-pressed="false">DRAWDOWN</button>
+              <button data-trajectory-mode="exposure" onclick="setTrajectoryMode('exposure')" aria-pressed="false">EXPOSURE</button>
+            </div>
+            <select id="trajectory-benchmark" class="trajectory-benchmark" aria-label="对比基准" onchange="onTrajectoryBenchmarkChange()">
+              <option value="000852.SH">CSI 1000</option>
+              <option value="000300.SH">CSI 300</option>
+            </select>
+            <div class="trajectory-segmented" aria-label="曲线区间" role="group">
+              <button data-trajectory-range="1m" onclick="setTrajectoryRange('1m')" aria-pressed="false">1M</button>
+              <button data-trajectory-range="3m" onclick="setTrajectoryRange('3m')" aria-pressed="false">3M</button>
+              <button data-trajectory-range="ytd" onclick="setTrajectoryRange('ytd')" aria-pressed="false">YTD</button>
+              <button class="active" data-trajectory-range="all" onclick="setTrajectoryRange('all')" aria-pressed="true">ALL</button>
+            </div>
+          </div>
+        </div>
+        <div class="trajectory-context" id="trajectory-context">
+          <span class="trajectory-feed observed"><i></i>EOD OBSERVED</span>
+          <span class="trajectory-feed missing"><i></i>INTRADAY NOT INGESTED</span>
+          <span class="trajectory-feed"><i></i>BENCHMARK LOADING</span>
+        </div>
+        <div class="trajectory-stats" id="trajectory-stats"></div>
+        <div class="chart-container trajectory-chart"><canvas id="live-nav-chart"></canvas></div>
+        <div class="trajectory-footer">
+          <div class="trajectory-legend" id="trajectory-legend"><span><i></i>PORTFOLIO NAV</span><span><i class="hwm"></i>HIGH-WATER MARK</span></div>
+          <span>HOVER TO INSPECT · RANGE IS LOCAL TO THIS CHART</span>
+        </div>
+      </div>
+      <div class="card tall">
+        <h2>CONTROL LEDGER <span class="hint">read only</span></h2>
+        <div class="control-list" id="live-controls"><div class="loading">检查控制项…</div></div>
+      </div>
+    </div>
+    <div class="live-three-grid">
+      <div class="card">
+        <h2>EXECUTION FUNNEL · 30D <span class="hint" id="execution-scope">—</span></h2>
+        <div id="execution-funnel"><div class="loading">读取订单…</div></div>
+      </div>
+      <div class="card">
+        <h2>POSITION INVENTORY <span class="hint">EOD 市值 / NAV 权重</span></h2>
+        <div id="position-inventory"><div class="loading">读取持仓…</div></div>
+      </div>
+      <div class="card">
+        <h2>TELEMETRY COVERAGE <span class="hint">P0 / P1 gaps</span></h2>
+        <div id="telemetry-coverage"><div class="loading">检查覆盖率…</div></div>
+      </div>
+      <div class="card" style="grid-column:span 2">
+        <h2>RECENT ORDER LIFECYCLE <span class="hint">最新 12 笔</span></h2>
+        <div id="live-orders"><div class="loading">读取订单生命周期…</div></div>
+      </div>
+      <div class="card">
+        <h2>全服务器告警 <span class="hint">包含其他策略 · critical first</span></h2>
+        <div id="live-alerts"><div class="loading">运行告警检查…</div></div>
+      </div>
     </div>
   </div>
 
   <!-- 概览 -->
-  <div class="view active" id="view-overview">
+  <div class="view" id="view-overview">
     <div class="grid-4" id="kpis-overview"><div class="loading">Loading...</div></div>
     <div style="height:12px"></div>
     <div class="grid">
@@ -296,7 +625,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
   <div class="view" id="view-strategy">
     <div class="grid">
       <div class="card wide">
-        <h2>V20H 策略状态</h2>
+        <h2 id="strategy-state-heading">策略状态</h2>
         <div id="strategy-state"><div class="loading">Loading...</div></div>
       </div>
       <div class="card">
@@ -320,7 +649,12 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     <div style="height:12px"></div>
     <div class="grid">
       <div class="card wide">
-        <h2>Orders 状态矩阵 <span class="hint">按当前期间</span></h2>
+        <h2>STRATEGY → FILL PRICE ATTRIBUTION <span class="hint" id="execution-analysis-scope">当前实例</span></h2>
+        <div class="execution-method">RAW STRATEGY REFERENCE → ACTUAL FILL VWAP · 方向调整后正值表示不利成交，负值表示价格改善</div>
+        <div id="execution-price-table"><div class="loading">读取实例成交归因…</div></div>
+      </div>
+      <div class="card wide">
+        <h2>Orders 状态矩阵 <span class="hint">当前实例 · 当前期间</span></h2>
         <div id="orders-matrix"><div class="loading">Loading...</div></div>
       </div>
     </div>
@@ -355,8 +689,12 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
   <script>
     const API_BASE = window.location.origin;
     let API_KEY = localStorage.getItem('qmt_api_key') || '';
-    let currentTab = 'overview';
+    let currentTab = 'live';
     let charts = {};
+    let LIVE_TRAJECTORY_DATA = null;
+    let liveTrajectoryMode = 'capital';
+    let liveTrajectoryRange = 'all';
+    let liveBenchmarkSymbol = localStorage.getItem('qmt_dashboard_benchmark') || '000852.SH';
 
     async function saveKey() {
       const k = document.getElementById('api-key-input').value.trim();
@@ -394,6 +732,20 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     function fmtNum(x){ return x==null?'—':Number(x).toLocaleString(); }
     function fmtPct(x){ return x==null?'—':(x*100).toFixed(2)+'%'; }
     function staleClass(lagDays){ if(lagDays==null) return ''; return lagDays>5?'crit':(lagDays>1?'stale':''); }
+    function esc(x){ return String(x ?? '—').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+    function fmtLiveBps(x){ return x==null?'—':Number(x).toFixed(1)+' bp'; }
+    function fmtSignedBps(x){
+      if(x==null) return '—';
+      const value=Number(x);
+      return (value>0?'+':'')+value.toFixed(1)+' bp';
+    }
+    function ageText(seconds){
+      if(seconds==null) return '—';
+      if(seconds<60) return Math.round(seconds)+'s';
+      if(seconds<3600) return Math.floor(seconds/60)+'m';
+      if(seconds<86400) return Math.floor(seconds/3600)+'h';
+      return Math.floor(seconds/86400)+'d';
+    }
 
     let META = null, LAST_VERSION = null;
 
@@ -406,15 +758,16 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     async function loadInstanceOptions() {
       const health = await api('/admin/health');
       const select = document.getElementById('instSel');
-      const previous = localStorage.getItem('qmt_dashboard_instance') || select.value;
+      const requested = new URLSearchParams(location.search).get('instance_id');
+      const previous = requested || localStorage.getItem('qmt_dashboard_instance') || select.value;
       const instances = health.instances || [];
       if (!instances.length) throw new Error('服务器尚无可展示的实例');
       INSTANCE_META = Object.fromEntries(instances.map(i => [i.instance_id, i]));
       select.innerHTML = instances.map(i =>
-        `<option value="${i.instance_id}">${i.display_name || i.instance_id}${i.is_shadow ? ' [shadow]' : ''}</option>`
+        `<option value="${esc(i.instance_id)}">${esc(i.display_name || i.instance_id)} [${i.is_shadow ? '影子盘' : i.execution_domain === 'live' ? '实盘' : '模拟盘'}]</option>`
       ).join('');
       select.value = instances.some(i => i.instance_id === previous)
-        ? previous : instances[0].instance_id;
+        ? previous : (instances.find(i => i.execution_domain === 'live' && i.instance_id === 'live_hydra_v481_rb') || instances[0]).instance_id;
       select.disabled = false;
     }
 
@@ -438,8 +791,12 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       const lastRun = m.last_pipeline_run;
       const el = document.getElementById('health-strip');
       if(!el) return;
+      if (INSTANCE_META[getInstanceId()]?.execution_domain === 'live') {
+        el.textContent = '实盘独立账本 · 只展示归属于当前策略的资金与持仓；不等于券商账户总资金。';
+        return;
+      }
       el.innerHTML =
-        '<span>账户 NAV <b>' + fmtNum(m.account_nav) + '</b></span>' +
+        '<span>多实例账面 NAV（非实盘账户） <b>' + fmtNum(m.account_nav) + '</b></span>' +
         '<span>行情 <span class="' + staleClass(lag) + '">' + (fr.market_latest||'—') + (lag!=null?' ('+lag+'d)':'') + '</span></span>' +
         '<span>管线 <span class="dot ' + (lastRun&&lastRun.status==='ok'?'ok':'bad') + '"></span>' + (lastRun?lastRun.valid_date:'—') + '</span>' +
         '<span class="' + (a.critical?'crit':'') + '">告警 ' + (a.critical||0) + '🔴 / ' + (a.warn||0) + '🟡</span>' +
@@ -456,8 +813,8 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       const sign = opts.sign && n > 0 ? '+' : '';
       if (opts.pct) return sign + (n * 100).toFixed(2) + '%';
       if (opts.bps) return sign + (n * 10000).toFixed(0) + 'bps';
-      if (opts.cur) return '¥' + n.toLocaleString('en-US', {maximumFractionDigits: 0});
-      if (opts.curMM) return '¥' + (n/1e6).toFixed(2) + 'M';
+      if (opts.cur) return (n < 0 ? '-¥' : '¥') + Math.abs(n).toLocaleString('en-US', {maximumFractionDigits: 0});
+      if (opts.curMM) return (n < 0 ? '-¥' : '¥') + (Math.abs(n)/1e6).toFixed(2) + 'M';
       if (opts.dec !== undefined) return sign + n.toFixed(opts.dec);
       return sign + n.toString();
     }
@@ -497,6 +854,9 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 
     function onInstanceChange() {
       localStorage.setItem('qmt_dashboard_instance', getInstanceId());
+      const url = new URL(location.href);
+      url.searchParams.set('instance_id', getInstanceId());
+      history.replaceState(null, '', url);
       metaPoll();
       refreshAll();
     }
@@ -506,6 +866,522 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === name));
       document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
       refreshAll();
+    }
+
+    // ── 24h 实盘总控 ────────────────────────────────────────────
+    function liveControlRows(snapshot) {
+      const c = snapshot.controls || {}, fr = snapshot.freshness || {};
+      const rows = [
+        ['账本一致性', c.bookkeeping_divergences === 0 ? 'ok' : 'bad',
+         c.bookkeeping_divergences === 0 ? '无分叉' : `${c.bookkeeping_divergences} 项`,
+         '真实成交 ↔ 策略账本'],
+        ['僵尸挂单', c.stale_pending_orders === 0 ? 'ok' : 'bad',
+         String(c.stale_pending_orders ?? '—'), 'PENDING > 2 days'],
+        ['价格保护', c.price_protection_utilization == null ? 'warn' :
+         (c.price_protection_utilization <= 1 ? 'ok' : 'bad'),
+         fmtLiveBps(c.max_price_offset_bps_observed), `硬约束 ${c.price_protection_limit_bps ?? '—'} bp`],
+        ['快照完整性', c.snapshot_integrity_issues === 0 ? 'ok' : 'warn',
+         c.snapshot_integrity_issues === 0 ? '通过' : `${c.snapshot_integrity_issues} 项`,
+         'NAV freeze / gap'],
+        ['隔夜仓位', c.overnight_position_anomalies === 0 ? 'ok' : 'bad',
+         c.overnight_position_anomalies === 0 ? '正常' : `${c.overnight_position_anomalies} 项`,
+         '单标的变化 > 50%'],
+        ['行情 EOD', fr.market_lag_days == null ? 'warn' :
+         (fr.market_lag_days <= 1 ? 'ok' : (fr.market_lag_days <= 3 ? 'warn' : 'bad')),
+         fr.market_latest || '未接入', fr.market_lag_days == null ? '无探针' : `lag ${fr.market_lag_days}d`],
+      ];
+      return rows.map(([name,status,value,desc]) => `<div class="control-row">
+        <i class="control-dot ${status}"></i><div><div class="control-name">${esc(name)}</div>
+        <div class="control-desc">${esc(desc)}</div></div><div class="control-value">${esc(value)}</div>
+      </div>`).join('');
+    }
+
+    function renderExecutionFunnel(execution) {
+      const statuses = execution.status_counts || {};
+      const total = Math.max(execution.orders_total || 0, 1);
+      const metrics = [
+        ['Submitted', execution.orders_total || 0, 100],
+        ['Filled / Partial', (statuses.FILLED||0)+(statuses.PARTIAL||0),
+         ((statuses.FILLED||0)+(statuses.PARTIAL||0))/total*100],
+        ['Pending', statuses.PENDING||0, (statuses.PENDING||0)/total*100],
+        ['Rejected', statuses.REJECTED||0, (statuses.REJECTED||0)/total*100],
+      ];
+      document.getElementById('execution-scope').textContent = execution.scope || '—';
+      document.getElementById('execution-funnel').innerHTML = `
+        <div class="metric-list">${metrics.map(m => `<div class="metric-line">
+          <span class="metric-name">${m[0]}</span><span class="metric-track"><i style="width:${Math.max(0,Math.min(100,m[2]))}%"></i></span>
+          <span class="metric-value">${m[1]}</span></div>`).join('')}</div>
+        <div class="live-note">FILLED ${fmt(execution.filled_notional,{curMM:true})} · FEES ${fmt(execution.estimated_fees,{cur:true})}<br>
+          REJECT ${fmt(execution.reject_rate,{pct:true})} · MAX SHORTFALL ${fmtLiveBps(execution.max_abs_shortfall_bps)}</div>`;
+    }
+
+    function renderPositionInventory(items, latestRisk = {}) {
+      const el = document.getElementById('position-inventory');
+      if (!items || !items.length) {
+        el.innerHTML = '<div class="empty-state">暂无持仓，或实例尚未完成账本快照</div>';
+        return;
+      }
+      const top = items.slice(0, 8);
+      const maxWeight = Math.max(...top.map(i => Math.abs(Number(i.weight) || 0)), .0001);
+      el.innerHTML = `<div class="metric-list">${top.map(i => `<div class="metric-line">
+        <span class="metric-name">${esc(i.symbol)}</span><span class="metric-track"><i style="width:${Math.abs(Number(i.weight)||0)/maxWeight*100}%"></i></span>
+        <span class="metric-value ${Number(i.weight)<0?'neg':'pos'}">${fmt(Number(i.weight),{pct:true,sign:true})}</span></div>`).join('')}</div>
+        <div class="live-note">TOP ${top.length} BY |MARKET VALUE| · ${fmt(latestRisk.pricing_coverage,{pct:true})} PRICED<br>
+          ${latestRisk.stale_mark_count||0} STALE · ${latestRisk.missing_mark_count||0} MISSING · EOD CLOSE / LAST CLOSE FALLBACK</div>`;
+    }
+
+    function renderTelemetryCoverage(items) {
+      document.getElementById('telemetry-coverage').innerHTML = `<div class="coverage-list">
+        ${(items||[]).map(item => `<div class="coverage-item"><div class="coverage-top">
+          <span>${esc(item.label)}</span>${badge(item.priority, item.priority==='P0'?'danger':'warn')}</div>
+          <div class="coverage-next">${esc(item.next)}</div></div>`).join('')}</div>`;
+    }
+
+    function renderLiveOrders(items) {
+      const el = document.getElementById('live-orders');
+      if (!items || !items.length) {
+        el.innerHTML = '<div class="empty-state">该实例在窗口内没有可映射订单</div>';
+        return;
+      }
+      const statusType = s => s==='FILLED'?'success':(s==='REJECTED'?'danger':(s==='PENDING'?'warn':'info'));
+      el.innerHTML = `<table><tr><th>Time</th><th>Symbol</th><th>Side</th><th class="num">Qty</th>
+        <th class="num">Limit</th><th>Status</th></tr>${items.map(o => `<tr>
+        <td>${esc(o.created_at || o.valid_date)}</td><td>${esc(o.symbol)}</td>
+        <td class="${o.direction==='BUY'?'pos':'neg'}">${esc(o.direction)}</td>
+        <td class="num">${fmtNum(o.quantity)}</td><td class="num">${fmt(o.limit_price,{dec:3})}</td>
+        <td>${badge(o.status,statusType(o.status))}</td></tr>`).join('')}</table>`;
+    }
+
+    function renderLiveAlerts(alerts) {
+      const severity = {critical:0,warn:1,info:2};
+      const sorted = (alerts||[]).slice().sort((a,b)=>(severity[a.severity]??9)-(severity[b.severity]??9));
+      const el = document.getElementById('live-alerts');
+      if (!sorted.length) {
+        el.innerHTML = '<div class="empty-state"><span style="color:var(--positive)">ALL CLEAR</span><br>当前检查未发现可操作告警</div>';
+        return;
+      }
+      el.innerHTML = `<div class="alert-stack">${sorted.map(a => `<div class="alert-item ${esc(a.severity)}">
+        <div class="alert-title">${esc(a.message)}</div><div class="alert-meta">${esc(a.category)} · ${esc(a.as_of)}</div>
+      </div>`).join('')}</div>`;
+    }
+
+    const trajectoryCrosshairPlugin = {
+      id: 'trajectoryCrosshair',
+      afterDraw(chart) {
+        const active = chart.tooltip?.getActiveElements?.() || [];
+        if (!active.length) return;
+        const x = active[0].element.x;
+        const {ctx, chartArea} = chart;
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(x, chartArea.top);
+        ctx.lineTo(x, chartArea.bottom);
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = 'rgba(174,211,229,.28)';
+        ctx.setLineDash([3, 4]);
+        ctx.stroke();
+        ctx.restore();
+      },
+    };
+
+    function trajectoryDate(value) {
+      const raw = String(value || '');
+      if (/^\d{8}$/.test(raw)) return `${raw.slice(0,4)}-${raw.slice(4,6)}-${raw.slice(6,8)}`;
+      return raw;
+    }
+
+    function trajectoryDateValue(value) {
+      const raw = String(value || '').replaceAll('-', '');
+      if (!/^\d{8}$/.test(raw)) return null;
+      return new Date(Number(raw.slice(0,4)), Number(raw.slice(4,6))-1, Number(raw.slice(6,8)));
+    }
+
+    function trajectoryRows(riskData) {
+      const ordered = (riskData?.items || []).slice().sort((a,b) => String(a.date).localeCompare(String(b.date)))
+        .filter(i => Number.isFinite(Number(i.nav)));
+      const latestDate = trajectoryDateValue(ordered.at(-1)?.date);
+      const cutoff = latestDate ? new Date(latestDate) : null;
+      if (cutoff && liveTrajectoryRange === '1m') cutoff.setDate(cutoff.getDate() - 31);
+      if (cutoff && liveTrajectoryRange === '3m') cutoff.setDate(cutoff.getDate() - 93);
+      if (cutoff && liveTrajectoryRange === 'ytd') cutoff.setMonth(0, 1);
+      const filtered = liveTrajectoryRange === 'all' || !cutoff ? ordered : ordered.filter(i => {
+        const date = trajectoryDateValue(i.date);
+        return date && date >= cutoff;
+      });
+      let peak = -Infinity, performancePeak = 1, portfolioGrowth = 1;
+      let alignedPortfolioGrowth = 1, alignedBenchmarkGrowth = 1, comparisonStarted = false;
+      return filtered.map((item, index) => {
+        const nav = Number(item.nav);
+        peak = Math.max(peak, nav);
+        const previous = index ? Number(filtered[index - 1].nav) : null;
+        const portfolioReturn = item.portfolio_return == null ? null : Number(item.portfolio_return);
+        const benchmarkReturn = item.benchmark_return == null ? null : Number(item.benchmark_return);
+        if (index && portfolioReturn != null) portfolioGrowth *= 1 + portfolioReturn;
+        performancePeak = Math.max(performancePeak, portfolioGrowth);
+        const portfolioCumulativeReturn = portfolioGrowth - 1;
+        let alignedPortfolioCumulativeReturn = null;
+        let benchmarkCumulativeReturn = null;
+        let excessCumulativeReturn = null;
+        if (!comparisonStarted && item.benchmark_close != null) {
+          comparisonStarted = true;
+          alignedPortfolioCumulativeReturn = 0;
+          benchmarkCumulativeReturn = 0;
+          excessCumulativeReturn = 0;
+        } else if (comparisonStarted && portfolioReturn != null && benchmarkReturn != null) {
+          alignedPortfolioGrowth *= 1 + portfolioReturn;
+          alignedBenchmarkGrowth *= 1 + benchmarkReturn;
+          alignedPortfolioCumulativeReturn = alignedPortfolioGrowth - 1;
+          benchmarkCumulativeReturn = alignedBenchmarkGrowth - 1;
+          excessCumulativeReturn = alignedPortfolioGrowth - alignedBenchmarkGrowth;
+        }
+        return {
+          date: item.date, nav, peak, portfolioReturn, benchmarkReturn,
+          portfolioCumulativeReturn, alignedPortfolioCumulativeReturn,
+          benchmarkCumulativeReturn, excessCumulativeReturn,
+          externalCashFlow: Number(item.external_cash_flow) || 0,
+          cashFlowStatus: item.cash_flow_status,
+          grossExposure: item.gross_exposure == null ? null : Number(item.gross_exposure),
+          netExposure: item.net_exposure == null ? null : Number(item.net_exposure),
+          cashRatio: item.cash_ratio == null ? null : Number(item.cash_ratio),
+          longMarketValue: Number(item.long_market_value) || 0,
+          shortMarketValue: Number(item.short_market_value) || 0,
+          pricingCoverage: item.pricing_coverage == null ? null : Number(item.pricing_coverage),
+          staleMarkCount: Number(item.stale_mark_count) || 0,
+          missingMarkCount: Number(item.missing_mark_count) || 0,
+          dailyPnl: previous == null ? null : nav - previous - (Number(item.external_cash_flow) || 0),
+          drawdown: performancePeak ? portfolioGrowth / performancePeak - 1 : 0,
+        };
+      });
+    }
+
+    function trajectoryComparison(rows) {
+      const aligned = rows.slice(1).filter(row => row.portfolioReturn != null && row.benchmarkReturn != null);
+      const p = aligned.map(row => row.portfolioReturn), b = aligned.map(row => row.benchmarkReturn);
+      const mean = values => values.length ? values.reduce((a,c)=>a+c,0)/values.length : null;
+      const sampleVar = values => {
+        if (values.length < 2) return null;
+        const avg = mean(values);
+        return values.reduce((a,c)=>a+(c-avg)**2,0)/(values.length-1);
+      };
+      const pMean = mean(p), bMean = mean(b), bVar = sampleVar(b);
+      const covariance = p.length < 2 ? null : p.reduce((a,c,i)=>a+(c-pMean)*(b[i]-bMean),0)/(p.length-1);
+      const beta = bVar ? covariance / bVar : null;
+      const pVar = sampleVar(p);
+      const correlation = covariance == null || !pVar || !bVar ? null : covariance / Math.sqrt(pVar*bVar);
+      const excess = p.map((value,index)=>value-b[index]);
+      const excessVar = sampleVar(excess), trackingError = excessVar == null ? null : Math.sqrt(excessVar*252);
+      const informationRatio = trackingError ? mean(excess)*252/trackingError : null;
+      const last = rows.at(-1);
+      const compound = values => values.reduce((growth,value)=>growth*(1+value),1)-1;
+      return {
+        alignedDays: aligned.length,
+        rangePortfolioReturn: last?.portfolioCumulativeReturn ?? null,
+        portfolioReturn: p.length ? compound(p) : null,
+        benchmarkReturn: b.length ? compound(b) : null,
+        excessReturn: p.length && b.length ? compound(p)-compound(b) : null,
+        beta, correlation, trackingError, informationRatio,
+      };
+    }
+
+    function setTrajectoryMode(mode) {
+      liveTrajectoryMode = mode;
+      document.querySelectorAll('[data-trajectory-mode]').forEach(button => {
+        const active = button.dataset.trajectoryMode === mode;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
+      renderCapitalTrajectory(LIVE_TRAJECTORY_DATA);
+    }
+
+    function setTrajectoryRange(range) {
+      liveTrajectoryRange = range;
+      document.querySelectorAll('[data-trajectory-range]').forEach(button => {
+        const active = button.dataset.trajectoryRange === range;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
+      renderCapitalTrajectory(LIVE_TRAJECTORY_DATA);
+    }
+
+    function onTrajectoryBenchmarkChange() {
+      liveBenchmarkSymbol = document.getElementById('trajectory-benchmark').value;
+      localStorage.setItem('qmt_dashboard_benchmark', liveBenchmarkSymbol);
+      renderLive();
+    }
+
+    function trajectoryStat(label, value, cls = '') {
+      return `<div class="trajectory-stat"><div class="trajectory-stat-label">${label}</div>
+        <div class="trajectory-stat-value ${cls}">${value}</div></div>`;
+    }
+
+    function renderCapitalTrajectory(riskData) {
+      LIVE_TRAJECTORY_DATA = riskData;
+      const rows = trajectoryRows(riskData);
+      const statsEl = document.getElementById('trajectory-stats');
+      const subtitle = document.getElementById('trajectory-subtitle');
+      if (!rows.length) {
+        statsEl.innerHTML = '<div class="empty-state">当前实例尚无日终风险快照，请先运行回填</div>';
+        subtitle.textContent = 'NO MATERIALIZED EOD RISK DATA';
+        destroyChart('live-nav-chart');
+        return;
+      }
+
+      const first = rows[0], last = rows.at(-1);
+      const comparison = trajectoryComparison(rows);
+      const benchmark = riskData?.benchmark || {};
+      const benchmarkAvailable = Boolean(benchmark.available && comparison.alignedDays);
+      if (!benchmarkAvailable) {
+        comparison.benchmarkReturn = null;
+        comparison.excessReturn = null;
+      }
+      const displayedPortfolioReturn = benchmarkAvailable
+        ? comparison.portfolioReturn : comparison.rangePortfolioReturn;
+      const pnl = rows.slice(1).reduce((sum,row)=>sum+(row.dailyPnl||0),0);
+      const maxDrawdown = Math.min(...rows.map(row => row.drawdown));
+      const totalFlow = rows.slice(1).reduce((sum,row)=>sum+row.externalCashFlow,0);
+      subtitle.textContent = `EOD · ${rows.length} OBSERVATIONS · ${trajectoryDate(first.date)} → ${trajectoryDate(last.date)} · ${benchmark.name||benchmark.symbol||'NO BENCHMARK'}`;
+      const flowClass = last.cashFlowStatus === 'observed' ? 'observed' : 'missing';
+      const flowText = last.cashFlowStatus === 'observed'
+        ? `CASH FLOW OBSERVED · ${fmt(totalFlow,{cur:true,sign:true})}`
+        : (last.cashFlowStatus === 'missing_live' ? 'LIVE CASH FLOW JOURNAL MISSING'
+          : (last.cashFlowStatus === 'not_applicable_shadow' ? 'SHADOW CASH LEDGER' : 'PAPER CASH FLOW ASSUMED ZERO'));
+      document.getElementById('trajectory-context').innerHTML = `
+        <span class="trajectory-feed observed"><i></i>EOD OBSERVED · ${rows.length} SNAPSHOTS</span>
+        <span class="trajectory-feed ${benchmarkAvailable?'observed':'missing'}"><i></i>${benchmarkAvailable ? `${benchmark.name} · ${comparison.alignedDays} ALIGNED DAYS` : 'BENCHMARK UNAVAILABLE'}</span>
+        <span class="trajectory-feed ${last.missingMarkCount?'missing':'observed'}"><i></i>PRICED ${fmt(last.pricingCoverage,{pct:true})} · ${last.staleMarkCount} STALE · ${last.missingMarkCount} MISSING</span>
+        <span class="trajectory-feed ${flowClass}"><i></i>${flowText}</span>
+        <span class="trajectory-feed missing"><i></i>INTRADAY NOT INGESTED</span>`;
+
+      let stats;
+      if (liveTrajectoryMode === 'return') {
+        stats = [
+          trajectoryStat('PORTFOLIO', fmt(displayedPortfolioReturn,{pct:true,sign:true}), colorOf(displayedPortfolioReturn)),
+          trajectoryStat(benchmark.name||'BENCHMARK', fmt(comparison.benchmarkReturn,{pct:true,sign:true}), colorOf(comparison.benchmarkReturn)),
+          trajectoryStat('EXCESS RETURN', fmt(comparison.excessReturn,{pct:true,sign:true}), colorOf(comparison.excessReturn)),
+          trajectoryStat('BETA', fmt(comparison.beta,{dec:3})),
+          trajectoryStat('TRACKING ERROR', fmt(comparison.trackingError,{pct:true})),
+          trajectoryStat('INFORMATION RATIO', fmt(comparison.informationRatio,{dec:3}), colorOf(comparison.informationRatio)),
+        ];
+      } else if (liveTrajectoryMode === 'drawdown') {
+        stats = [
+          trajectoryStat('CURRENT DRAWDOWN', fmt(last.drawdown,{pct:true}), last.drawdown<0?'neg':''),
+          trajectoryStat('MAX DRAWDOWN', fmt(maxDrawdown,{pct:true}), maxDrawdown<0?'neg':''),
+          trajectoryStat('HIGH-WATER', fmt(last.peak,{curMM:true})),
+          trajectoryStat('CURRENT NAV', fmt(last.nav,{curMM:true})),
+          trajectoryStat('RANGE RETURN', fmt(comparison.rangePortfolioReturn,{pct:true,sign:true}), colorOf(comparison.rangePortfolioReturn)),
+          trajectoryStat('OBSERVATIONS', String(rows.length)),
+        ];
+      } else if (liveTrajectoryMode === 'exposure') {
+        stats = [
+          trajectoryStat('GROSS EXPOSURE', fmt(last.grossExposure,{pct:true})),
+          trajectoryStat('NET EXPOSURE', fmt(last.netExposure,{pct:true,sign:true}), colorOf(last.netExposure)),
+          trajectoryStat('CASH / NAV', fmt(last.cashRatio,{pct:true,sign:true}), colorOf(last.cashRatio)),
+          trajectoryStat('LONG MARKET VALUE', fmt(last.longMarketValue,{curMM:true})),
+          trajectoryStat('SHORT MARKET VALUE', fmt(last.shortMarketValue,{curMM:true})),
+          trajectoryStat('PRICING COVERAGE', fmt(last.pricingCoverage,{pct:true}), last.pricingCoverage<1?'warn':'pos'),
+        ];
+      } else {
+        stats = [
+          trajectoryStat('START NAV', fmt(first.nav,{curMM:true})),
+          trajectoryStat('CURRENT NAV', fmt(last.nav,{curMM:true})),
+          trajectoryStat('TRADING P&L', fmt(pnl,{cur:true,sign:true}), colorOf(pnl)),
+          trajectoryStat('TOTAL RETURN', fmt(comparison.rangePortfolioReturn,{pct:true,sign:true}), colorOf(comparison.rangePortfolioReturn)),
+          trajectoryStat('HIGH-WATER', fmt(last.peak,{curMM:true})),
+          trajectoryStat('MAX DRAWDOWN', fmt(maxDrawdown,{pct:true}), maxDrawdown < 0 ? 'neg' : ''),
+        ];
+      }
+      statsEl.innerHTML = stats.join('');
+
+      const labels = rows.map(row => trajectoryDate(row.date));
+      let tick = value => '¥' + (Number(value)/1e6).toFixed(2) + 'M';
+      let legend = '<span><i></i>PORTFOLIO NAV</span><span><i class="hwm"></i>HIGH-WATER MARK</span>';
+      let datasets = [{
+        label: 'Portfolio NAV', data: rows.map(row=>row.nav), borderColor: '#51c8f2',
+        backgroundColor: 'rgba(81,200,242,.10)', fill: true, tension: .22,
+        pointRadius: 0, pointHoverRadius: 4, pointHoverBackgroundColor: '#e7fbff',
+        pointHoverBorderColor: '#51c8f2', pointHoverBorderWidth: 2, borderWidth: 2,
+      }, {
+        label: 'High-water mark', data: rows.map(row => row.peak), borderColor: 'rgba(147,168,191,.48)',
+        backgroundColor: 'transparent', fill: false, tension: 0, pointRadius: 0,
+        pointHoverRadius: 0, borderWidth: 1, borderDash: [4,4],
+      }];
+      if (liveTrajectoryMode === 'return') {
+        tick = value => Number(value).toFixed(1) + '%';
+        datasets = [{
+          label:'Portfolio return', data:rows.map(row => (benchmarkAvailable
+            ? (row.alignedPortfolioCumulativeReturn==null?null:row.alignedPortfolioCumulativeReturn*100)
+            : row.portfolioCumulativeReturn*100)),
+          borderColor:'#40d6a0', backgroundColor:'rgba(64,214,160,.07)', fill:true,
+          tension:.2, pointRadius:0, pointHoverRadius:4, borderWidth:2,
+        }];
+        if (benchmarkAvailable) datasets.push({
+          label:benchmark.name, data:rows.map(row=>row.benchmarkCumulativeReturn*100),
+          borderColor:'#8fa5b8', backgroundColor:'transparent', fill:false,
+          tension:.2, pointRadius:0, pointHoverRadius:3, borderWidth:1.3,
+        }, {
+          label:'Excess return', data:rows.map(row=>row.excessCumulativeReturn*100),
+          borderColor:'#f4b860', backgroundColor:'transparent', fill:false,
+          tension:.2, pointRadius:0, pointHoverRadius:3, borderWidth:1.5, borderDash:[5,3],
+        });
+        legend = `<span><i style="background:var(--positive)"></i>PORTFOLIO</span>${benchmarkAvailable?`<span><i style="background:#8fa5b8"></i>${esc(benchmark.name)}</span><span><i style="background:#f4b860"></i>EXCESS</span>`:''}`;
+      } else if (liveTrajectoryMode === 'drawdown') {
+        tick = value => Number(value).toFixed(1) + '%';
+        datasets = [{
+          label:'Drawdown', data:rows.map(row=>row.drawdown*100), borderColor:'#ff647c',
+          backgroundColor:'rgba(255,100,124,.13)', fill:true, tension:.18,
+          pointRadius:0, pointHoverRadius:4, borderWidth:2,
+        }];
+        legend = '<span><i style="background:var(--negative)"></i>UNDERWATER CURVE</span>';
+      } else if (liveTrajectoryMode === 'exposure') {
+        tick = value => Number(value).toFixed(0) + '%';
+        datasets = [{
+          label:'Gross exposure', data:rows.map(row=>row.grossExposure==null?null:row.grossExposure*100),
+          borderColor:'#51c8f2', backgroundColor:'rgba(81,200,242,.06)', fill:true,
+          tension:.18, pointRadius:0, pointHoverRadius:4, borderWidth:2,
+        }, {
+          label:'Net exposure', data:rows.map(row=>row.netExposure==null?null:row.netExposure*100),
+          borderColor:'#40d6a0', backgroundColor:'transparent', fill:false,
+          tension:.18, pointRadius:0, pointHoverRadius:3, borderWidth:1.5,
+        }, {
+          label:'Cash / NAV', data:rows.map(row=>row.cashRatio==null?null:row.cashRatio*100),
+          borderColor:'#f4b860', backgroundColor:'transparent', fill:false,
+          tension:.18, pointRadius:0, pointHoverRadius:3, borderWidth:1.3, borderDash:[5,3],
+        }];
+        legend = '<span><i></i>GROSS</span><span><i style="background:var(--positive)"></i>NET</span><span><i style="background:#f4b860"></i>CASH / NAV</span>';
+      }
+      document.getElementById('trajectory-legend').innerHTML = legend;
+
+      destroyChart('live-nav-chart');
+      charts['live-nav-chart'] = new Chart(document.getElementById('live-nav-chart'), {
+        type: 'line', data: {labels, datasets}, plugins: [trajectoryCrosshairPlugin],
+        options: {
+          responsive: true, maintainAspectRatio: false, normalized: true,
+          animation: {duration: 280}, interaction: {mode: 'index', intersect: false},
+          layout: {padding: {left: 4, right: 4, top: 8, bottom: 0}},
+          scales: {
+            y: {
+              position: 'right', beginAtZero: liveTrajectoryMode === 'drawdown',
+              max: liveTrajectoryMode === 'drawdown' ? 0 : undefined,
+              ticks: {color:'#65778a', font:{family:'SFMono-Regular',size:9}, callback:tick, maxTicksLimit:6},
+              grid: {color:'rgba(114,139,164,.11)', drawTicks:false}, border:{display:false},
+            },
+            x: {
+              ticks: {
+                color:'#586a7e', font:{family:'SFMono-Regular',size:8},
+                autoSkip:true, maxTicksLimit:window.innerWidth < 600 ? 5 : 7, maxRotation:0,
+                callback:function(value){
+                  const label = this.getLabelForValue(value);
+                  return window.innerWidth < 600 ? label.slice(5) : label;
+                },
+              },
+              grid: {display:false}, border:{color:'rgba(114,139,164,.16)'},
+            },
+          },
+          plugins: {
+            legend: {display:false},
+            tooltip: {
+              enabled:true, displayColors:false, padding:11, cornerRadius:7,
+              backgroundColor:'rgba(5,10,15,.96)', borderColor:'rgba(81,200,242,.24)', borderWidth:1,
+              titleColor:'#edf7ff', bodyColor:'#aebdcb', titleFont:{family:'SFMono-Regular',size:10},
+              bodyFont:{family:'SFMono-Regular',size:9},
+              callbacks: {
+                title: items => items.length ? rows[items[0].dataIndex].date + ' · EOD' : '',
+                label: context => {
+                  const value = context.parsed.y;
+                  if (context.dataset.label === 'Portfolio NAV' || context.dataset.label === 'High-water mark') {
+                    return `${context.dataset.label}  ${fmt(value,{cur:true})}`;
+                  }
+                  return `${context.dataset.label}  ${Number(value).toFixed(2)}%`;
+                },
+                afterBody: items => {
+                  if (!items.length) return [];
+                  const row = rows[items[0].dataIndex];
+                  return [
+                    `Day P&L       ${fmt(row.dailyPnl,{cur:true,sign:true})}`,
+                    `Portfolio     ${fmt(row.portfolioReturn,{pct:true,sign:true})}`,
+                    `${String(benchmark.name||'Benchmark').padEnd(13,' ')}${fmt(row.benchmarkReturn,{pct:true,sign:true})}`,
+                    `Cum. excess   ${fmt(row.excessCumulativeReturn,{pct:true,sign:true})}`,
+                    `Drawdown      ${fmt(row.drawdown,{pct:true})}`,
+                    `Gross / Net   ${fmt(row.grossExposure,{pct:true})} / ${fmt(row.netExposure,{pct:true})}`,
+                    `Cash flow     ${fmt(row.externalCashFlow,{cur:true,sign:true})}`,
+                  ];
+                },
+              },
+            },
+          },
+        },
+      });
+    }
+
+    function hydraSummaryHTML(h) {
+      const monthly = {NO_MONTHLY_INPUT:'尚未收到月末冻结包', RECEIVED:'已收件，等待计算或重试', PLANNED:'本期新目标已生成'};
+      const plans = {WAITING_EXECUTION_DATA:'等待合格交易日与新执行价', STAGED:'已转换为执行批次'};
+      return `<h2>${esc(h.name)} ${badge('实盘','info')}</h2>
+        <p>服务器计算目标，本地 MiniQMT 执行。策略只使用自己的资金、持仓与后续盈亏，不把券商账户其余现金当作可用预算。</p>
+        <dl class="hydra-facts">
+          <div><dt>策略账本现金 · 非总资产</dt><dd>${fmt(h.cash,{cur:true})}<br>${esc(h.ledger_mode === 'attributed' ? '独立归属账本' : h.ledger_mode)}</dd></div>
+          <div><dt>策略总资产 · ${h.valuation?.registered_dividend_rights === 0 ? '待核对分红' : '日终'}</dt><dd>${fmt(h.valuation?.nav,{cur:true})}<br>${esc(h.valuation?.date || '等待估值数据')} · ${h.valuation?.registered_dividend_rights === 0 ? '应收分红未登记' : '含应收分红 ' + fmt(h.valuation?.dividend_receivable,{cur:true})}</dd></div>
+          <div><dt>服务器月度研究</dt><dd>${h.monthly_configured ? '月度计算已配置' : '月度计算未启用'}<br>源码 ${esc(h.research_commit.slice(0,7))}</dd></div>
+          <div><dt>最近月度数据 / 新目标</dt><dd>${esc(monthly[h.monthly_status] || h.monthly_status)}<br>${esc(h.monthly_as_of || '无收件日期')}</dd></div>
+          <div><dt>最近执行计划</dt><dd>${esc(plans[h.plan_status] || h.plan_status || '暂无执行计划')}<br>${esc(h.plan_as_of || '不代表没有历史成交')}</dd></div>
+        </dl>
+        <p>Windows 升级与连接状态：尚无可核实回执。服务器配置完成不等于客户端已验收；下单仍使用本地冻结批次，不在 09:10 重新依赖服务器。</p>
+        ${h.valuation?.registered_dividend_rights === 0 ? '<p class="warn">分红权益尚未登记，除息期间的净值与收益待核对；当前显示现金和持仓估值。</p>' : ''}
+        <details><summary>查看策略持仓与执行设置（只读）</summary>
+          <p>生成订单：${h.generation_enabled ? '已开启' : '未开启'} · 领取订单：${h.delivery_enabled ? '已开启' : '未开启'} · 账本更新时间：${esc(h.ledger_updated_at)}</p>
+          <table><thead><tr><th>标的</th><th class="num">归属股数</th></tr></thead><tbody>
+            ${Object.entries(h.positions).map(([symbol,quantity])=>`<tr><td>${esc(symbol)}</td><td class="num">${fmtNum(quantity)}</td></tr>`).join('') || '<tr><td colspan="2">当前无归属持仓</td></tr>'}
+          </tbody></table>
+        </details>`;
+    }
+
+    async function renderLive() {
+      const selectedInstance = getInstanceId();
+      const hydraPanel = document.getElementById('hydra-summary');
+      hydraPanel.hidden = true;
+      try {
+        const [snapshotResult, alertsResult, riskResult] = await Promise.allSettled([
+          api('/admin/ops/live-snapshot?' + selectedQuery({days:30})),
+          api('/admin/alerts'),
+          api('/admin/metrics/daily-risk?' + selectedQuery({period:'all', benchmark_symbol:liveBenchmarkSymbol})),
+        ]);
+        if (snapshotResult.status === 'rejected') throw snapshotResult.reason;
+        const snapshot = snapshotResult.value;
+        const alerts = alertsResult.status === 'fulfilled' ? alertsResult.value : {alerts:[]};
+        const dailyRisk = riskResult.status === 'fulfilled' ? riskResult.value : {items:[],summary:{},latest_positions:[]};
+        if (selectedInstance !== getInstanceId()) return;
+        const selected = INSTANCE_META[selectedInstance] || {};
+        document.querySelector('.live-heading h2').textContent = selected.display_name || selectedInstance;
+        document.querySelector('.live-heading p').textContent = selected.is_shadow ? '影子盘 · 仅虚拟记账，不产生订单' : selected.execution_domain === 'live' ? '实盘 · 独立策略账本与真实执行记录' : '模拟盘 · 不代表真实券商账户';
+        hydraPanel.hidden = !snapshot.hydra;
+        if (snapshot.hydra) hydraPanel.innerHTML = hydraSummaryHTML(snapshot.hydra);
+        const inst = snapshot.instance || {}, risk = snapshot.risk || {}, execution = snapshot.execution || {};
+        const latestRisk = dailyRisk.summary?.latest || {};
+        const comparison = dailyRisk.summary || {};
+        document.getElementById('live-asof').textContent = `AS OF ${snapshot.as_of || '—'}`;
+        document.getElementById('live-kpis').innerHTML = `
+          ${kpiCard('NAV · EOD', fmt(inst.nav,{cur:true}), '', `${inst.nav_date||'—'} · cash ${fmt(inst.cash_ratio,{pct:true})}`)}
+          ${kpiCard('Day P&L · EOD', fmt(risk.daily_pnl,{cur:true}), colorOf(risk.daily_pnl), fmt(risk.daily_return,{pct:true,sign:true}))}
+          ${kpiCard('Current Drawdown', fmt(risk.current_drawdown,{pct:true}), risk.current_drawdown<0?'neg':'pos', 'from high-water mark')}
+          ${kpiCard('20D Ann. Vol', fmt(risk.rolling_volatility_20d,{pct:true}), risk.rolling_volatility_20d==null?'warn':'', `VaR ${fmt(risk.historical_var_95_1d,{pct:true})} · ES ${fmt(risk.expected_shortfall_95_1d,{pct:true})}`)}
+          ${kpiCard('Gross Exposure · EOD', fmt(latestRisk.gross_exposure,{pct:true}), latestRisk.gross_exposure==null?'warn':'', `net ${fmt(latestRisk.net_exposure,{pct:true})} · cash ${fmt(latestRisk.cash_ratio,{pct:true})}`)}
+          ${kpiCard(`Excess · ${dailyRisk.benchmark?.name||'Benchmark'}`, fmt(comparison.excess_return,{pct:true,sign:true}), colorOf(comparison.excess_return), `${dailyRisk.benchmark?.aligned_return_days||0} aligned days`)}
+          ${kpiCard('Fill Rate · 30D', fmt(execution.fill_rate,{pct:true}), execution.fill_rate==null?'warn':(execution.fill_rate>=.9?'pos':(execution.fill_rate<.7?'neg':'warn')), `${execution.orders_total||0} orders`)}
+          ${kpiCard('Exec Shortfall', fmtLiveBps(execution.weighted_shortfall_bps), execution.weighted_shortfall_bps==null?'warn':(Math.abs(execution.weighted_shortfall_bps)<=10?'pos':'warn'), 'directional · notional weighted')}`;
+        document.getElementById('live-controls').innerHTML = liveControlRows(snapshot);
+        renderCapitalTrajectory(dailyRisk);
+        renderExecutionFunnel(execution);
+        renderPositionInventory(dailyRisk.latest_positions, latestRisk);
+        renderTelemetryCoverage(snapshot.coverage_gaps);
+        renderLiveOrders(snapshot.recent_orders);
+        renderLiveAlerts(alerts.alerts);
+        if (alertsResult.status === 'rejected') document.getElementById('live-alerts').innerHTML = '<p class="muted">告警数据暂不可用；持仓与净值已独立加载。</p>';
+        if (riskResult.status === 'rejected') document.getElementById('trajectory-subtitle').textContent = '净值曲线暂不可用；请稍后刷新。';
+      } catch (e) {
+        if (selectedInstance !== getInstanceId()) return;
+        hydraPanel.hidden = true;
+        document.getElementById('live-kpis').innerHTML = `<div class="error">${esc(e.message)}</div>`;
+      }
     }
 
     // ── 概览 ────────────────────────────────────────────────────
@@ -578,7 +1454,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       </div>`;
     }
 
-    function renderNavChart(canvasId, navData) {
+    function renderNavChart(canvasId, navData, lineColor = '#40d6a0') {
       const items = navData.items.slice().reverse();
       const labels = items.map(i => i.date);
       const navs = items.map(i => i.nav);
@@ -589,7 +1465,8 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
           labels,
           datasets: [{
             label: 'NAV', data: navs,
-            borderColor: '#4ade80', backgroundColor: 'rgba(74,222,128,0.1)',
+            borderColor: lineColor,
+            backgroundColor: lineColor === '#51c8f2' ? 'rgba(81,200,242,0.08)' : 'rgba(64,214,160,0.08)',
             fill: true, tension: 0.2, pointRadius: 2, borderWidth: 2,
           }],
         },
@@ -799,7 +1676,20 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 
     // ── 策略内部 ────────────────────────────────────────────────
     async function renderStrategy() {
+      const selectedInstance = getInstanceId();
       try {
+        const selected = INSTANCE_META[getInstanceId()] || {};
+        document.getElementById('strategy-state-heading').textContent = `${selected.display_name || getInstanceId()} · 策略状态`;
+        if (selected.execution_domain === 'live' && getInstanceId() === 'live_hydra_v481_rb') {
+          const snapshot = await api('/admin/ops/live-snapshot?' + selectedQuery({days:30}));
+          if (selectedInstance !== getInstanceId()) return;
+          document.getElementById('strategy-state').innerHTML = snapshot.hydra ? `<section class="hydra-summary">${hydraSummaryHTML(snapshot.hydra)}</section>` : '<p>该实例暂无可核实的 Hydra 运行状态。</p>';
+          document.getElementById('bl-total').textContent = '—';
+          document.getElementById('blacklist').textContent = '本页不展示其他策略的全局黑名单。';
+          document.getElementById('recent-rejected').textContent = '真实委托状态请查看执行分析或实盘总控。';
+          document.getElementById('bk-divergence').textContent = '账本归属与对账结果以实盘总控的事实记录为准。';
+          return;
+        }
         if (isShadowSelected()) {
           const summary = await api('/admin/shadow/summary');
           const item = summary.items.find(i => i.shadow_id === getInstanceId());
@@ -919,25 +1809,65 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
             </p></div>`;
           document.getElementById('orders-matrix').innerHTML =
             '<p class="loading">无订单：shadow 边界已启用</p>';
+          document.getElementById('execution-price-table').innerHTML =
+            '<div class="empty-state">Shadow 实例没有真实订单或成交价格</div>';
+          document.getElementById('execution-analysis-scope').textContent = getInstanceId();
           return;
         }
-        const [trade, ordSummary] = await Promise.all([
-          api('/admin/metrics/trade-analytics?period=' + period),
-          api('/admin/orders-summary?days=' + ({7:7, '7d':7, '30d':30, '90d':90, '180d':180, ytd:365, '1y':365, all:365}[period] || 30)),
+        const days = ({'7d':7, '30d':30, '90d':90, '180d':180, ytd:365, '1y':365, all:365}[period] || 30);
+        const [execution, ordSummary] = await Promise.all([
+          api('/admin/metrics/execution-analysis?' + selectedQuery({period, limit:200})),
+          api('/admin/orders-summary?' + selectedQuery({days})),
         ]);
+        const trade = execution.summary || {};
 
         const fillBadge = trade.fill_rate === null ? 'muted' :
                          (trade.fill_rate > 0.9 ? 'pos' : (trade.fill_rate > 0.7 ? 'warn' : 'neg'));
+        const shortfallClass = trade.weighted_strategy_to_fill_bps == null ? 'warn' :
+          (trade.weighted_strategy_to_fill_bps > 0 ? 'neg' : (trade.weighted_strategy_to_fill_bps < 0 ? 'pos' : ''));
+        const costClass = trade.implementation_shortfall > 0 ? 'neg' :
+          (trade.implementation_shortfall < 0 ? 'pos' : '');
         document.getElementById('kpis-trades').innerHTML = `
           ${kpiCard('订单总数', trade.n_orders, 'muted', `期间 ${period}`)}
           ${kpiCard('Fill Rate', fmt(trade.fill_rate, {pct:true}), fillBadge,
-                   'FILLED+PARTIAL / 总')}
+                   '有实际成交订单 / 总订单')}
           ${kpiCard('成交金额', fmt(trade.total_filled_amount, {curMM:true}), 'muted',
-                   `${trade.n_trades} 笔成交`)}
-          ${kpiCard('对账分叉', trade.bookkeeping_divergence_count,
-                   trade.bookkeeping_divergence_count === 0 ? 'pos' : 'neg',
-                   '需要人工对账')}
+                   `${trade.filled_orders||0} 个成交订单`)}
+          ${kpiCard('Strategy → Fill', fmtSignedBps(trade.weighted_strategy_to_fill_bps), shortfallClass,
+                   '按实例成交金额加权 · 正值不利')}
+          ${kpiCard('Implementation Cost', fmt(trade.implementation_shortfall,{cur:true}), costClass,
+                   '相对策略参考价 · 正值为损耗')}
+          ${kpiCard('Price Coverage', fmt(trade.strategy_price_coverage,{pct:true}), trade.strategy_price_coverage===1?'pos':'warn',
+                   `arrival ${fmt(trade.arrival_price_coverage,{pct:true})}`)}
         `;
+        document.getElementById('execution-analysis-scope').textContent =
+          `${execution.instance_id} · ${period} · ${execution.count} FILLED`;
+
+        const priceRows = execution.items || [];
+        document.getElementById('execution-price-table').innerHTML = priceRows.length ? `
+          <table><tr><th>Date / Fill Time</th><th>Symbol</th><th>Side</th>
+            <th class="num">Strategy Px</th><th class="num">Limit Px</th>
+            <th class="num">Actual Fill</th><th class="num">Δ Price</th>
+            <th class="num">Strategy → Fill</th><th class="num">Alloc. Qty</th>
+            <th class="num">Cost</th></tr>
+          ${priceRows.map(item => {
+            const adverseClass = item.strategy_to_fill_bps > 0 ? 'neg' :
+              (item.strategy_to_fill_bps < 0 ? 'pos' : '');
+            const fillQty = item.allocated_filled_quantity == null ? '—' :
+              Number(item.allocated_filled_quantity).toLocaleString('en-US',{maximumFractionDigits:1});
+            return `<tr><td>${esc(item.valid_date)}<br><span style="color:#617286;font-size:8px">${esc(item.filled_time||'—')}</span></td>
+              <td>${esc(item.symbol)}</td><td class="${item.direction==='BUY'?'pos':'neg'}">${esc(item.direction)}</td>
+              <td class="num">${fmt(item.strategy_reference_price,{dec:3})}</td>
+              <td class="num">${fmt(item.limit_price,{dec:3})}</td>
+              <td class="num">${fmt(item.fill_vwap,{dec:3})}</td>
+              <td class="num ${adverseClass}">${fmt(item.raw_price_difference,{dec:3,sign:true})}</td>
+              <td class="num ${adverseClass}">${fmtSignedBps(item.strategy_to_fill_bps)}</td>
+              <td class="num">${fillQty}</td>
+              <td class="num ${adverseClass}">${fmt(item.implementation_shortfall,{cur:true})}</td></tr>`;
+          }).join('')}</table>
+          <div class="live-note">STRATEGY PX = raw_signals.reference_price · ACTUAL FILL = execution_quality.fill_vwap，历史数据回退 trades.filled_price<br>
+            BUY 成交价高于策略价、SELL 成交价低于策略价均记为正 bp / 正成本（不利成交）。</div>`
+          : '<div class="empty-state">当前实例和期间没有可归因的实际成交</div>';
 
         // Orders matrix
         const dates = Object.keys(ordSummary.by_date).sort();
@@ -945,7 +1875,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
           document.getElementById('orders-matrix').innerHTML = '<p class="loading">无订单数据</p>';
           return;
         }
-        const allStatuses = ['PENDING', 'FILLED', 'PARTIAL', 'CANCELLED', 'REJECTED'];
+        const allStatuses = ['PENDING', 'FILLED', 'PARTIAL', 'CANCELLED', 'REJECTED', 'NOT_SUBMITTED', 'EXPIRED_BY_POLICY'];
         let html = '<table><tr><th>Date</th><th>Group</th><th>Dir</th>';
         allStatuses.forEach(s => html += `<th class="num">${s}</th>`);
         html += '<th class="num">Total</th></tr>';
@@ -966,6 +1896,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
         document.getElementById('orders-matrix').innerHTML = html;
       } catch (e) {
         document.getElementById('kpis-trades').innerHTML = `<div class="error">${e.message}</div>`;
+        document.getElementById('execution-price-table').innerHTML = `<div class="error">${esc(e.message)}</div>`;
       }
     }
 
@@ -1017,7 +1948,8 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       document.getElementById('meta').textContent =
         `fetching... ${new Date().toLocaleString()} | period=${getPeriod()}`;
       try {
-        if (currentTab === 'overview') await renderOverview();
+        if (currentTab === 'live') await renderLive();
+        else if (currentTab === 'overview') await renderOverview();
         else if (currentTab === 'returns') await renderReturns();
         else if (currentTab === 'risk') await renderRisk();
         else if (currentTab === 'strategy') await renderStrategy();
@@ -1031,6 +1963,8 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
     }
 
     async function initializeDashboard() {
+      if (!['000852.SH','000300.SH'].includes(liveBenchmarkSymbol)) liveBenchmarkSymbol = '000852.SH';
+      document.getElementById('trajectory-benchmark').value = liveBenchmarkSymbol;
       try {
         await loadInstanceOptions();
       } catch (e) {
@@ -1040,12 +1974,12 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       await refreshAll();
       metaPoll();
       setInterval(metaPoll, 15000);
-      setInterval(refreshAll, 120000);
+      setInterval(refreshAll, 30000);
     }
 
     function renderPortfolioOverview(data) {
       const rows = data.items.map(i => `<tr>
-        <td>${i.display_name || i.instance_id}${i.is_shadow ? ' ' + badge('shadow', 'warn') : ''}</td>
+        <td>${esc(i.display_name || i.instance_id)} ${badge(i.is_shadow ? '影子盘' : i.execution_domain === 'live' ? '实盘' : '模拟盘', i.execution_domain === 'live' ? 'info' : 'warn')}</td>
         <td class="num">${fmt(i.virtual_cash, {cur:true})}</td>
         <td class="num">${i.holdings_count}</td>
         <td class="num">${fmt(i.latest_nav, {cur:true})}</td>

@@ -11,6 +11,9 @@ class RawSignal(Base):
     __tablename__ = "raw_signals"
 
     signal_id: Mapped[str] = mapped_column(String, primary_key=True)
+    execution_domain: Mapped[str] = mapped_column(
+        String, nullable=False, default="paper", server_default="paper", index=True,
+    )
     instance_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     symbol: Mapped[str] = mapped_column(String, nullable=False)
     direction: Mapped[str] = mapped_column(String, nullable=False)

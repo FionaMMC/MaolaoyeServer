@@ -6,8 +6,19 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select
 
-from app.models import InstanceState, Order, OrderSignalMap, RawSignal, Trade
+from app.models import (
+    ExecutionQualityObservation,
+    HydraExecutionAttempt,
+    InstanceState,
+    Order,
+    OrderSignalMap,
+    RawSignal,
+    Trade,
+)
 from app.schemas.trade_result import TradeResult, TradeResultResponseData
+from app.services.ledger_transaction import begin_ledger_transaction
+from app.services.qmt_expiration import record_status_evidence, validate_policy_expiration
+from app.services.hydra_late_fills import invalidate_hydra_close_after_late_fill
 
 logger = logging.getLogger(__name__)
 
@@ -72,29 +83,60 @@ class SettlementService:
         self.min_commission = min_commission
         self.stamp_duty_sell = stamp_duty_sell
 
-    def _calc_fees(self, gross: float, direction: str) -> float:
-        """计算单边交易费用：佣金（双边）+ 印花税（仅 SELL）。"""
+    def _calc_fees(
+        self, gross: float, direction: str, *, hydra_etf: bool = False,
+    ) -> float:
+        """计算单边交易费用；Hydra ETF 卖出不计股票印花税。"""
         commission = max(self.min_commission, gross * self.commission_rate)
-        duty = gross * self.stamp_duty_sell if direction == "SELL" else 0.0
+        duty = (
+            gross * self.stamp_duty_sell
+            if direction == "SELL" and not hydra_etf
+            else 0.0
+        )
         return commission + duty
 
     def settle(
         self,
         trade_date: str,
         results: list[TradeResult],
+        execution_domain: str = "paper",
+        allowed_account_aliases: tuple[str, ...] | None = None,
     ) -> TradeResultResponseData:
         """处理一批成交回报。"""
         matched = 0
         duplicate = 0
         unmatched: list[str] = []
         unmatched_candidates: dict[str, list[str]] = {}
+        rejected_observations: dict[str, str] = {}
+        invalidated_attempt_ids: set[str] = set()
+        local_batch_review_required = False
 
         with self.session_factory() as session:
+            # Take the participating monetary-writer lock before reading cash.
+            # A batch can cover several accounts; no broker call runs here.
+            begin_ledger_transaction(session, execution_domain, None)
             for result in results:
                 order = session.get(Order, result.order_id)
-                if order is None:
+                account_allowed = (
+                    not allowed_account_aliases
+                    or (
+                        order is not None
+                        and order.qmt_account_alias in allowed_account_aliases
+                    )
+                )
+                if (
+                    order is None
+                    or order.execution_domain != execution_domain
+                    or not account_allowed
+                ):
                     unmatched.append(result.order_id)
-                    candidates = self._find_candidates(session, trade_date, result)
+                    candidates = self._find_candidates(
+                        session,
+                        trade_date,
+                        result,
+                        execution_domain,
+                        allowed_account_aliases,
+                    )
                     if candidates:
                         unmatched_candidates[result.order_id] = candidates
                         logger.error(
@@ -106,6 +148,38 @@ class SettlementService:
                         )
                     continue
 
+                policy_error = validate_policy_expiration(session, order, result, trade_date)
+                if policy_error:
+                    rejected_observations[order.order_id] = policy_error
+                    continue
+                record_status_evidence(session, order, result, _now_iso())
+                known_attempt = session.get(HydraExecutionAttempt, order.attempt_id) if order.attempt_id else None
+                known_review = ((known_attempt.risk_snapshot or {}).get("late_fill_review") or {}) if known_attempt else {}
+                if known_review.get("requires_manual_resolution"):
+                    # Surface an outstanding local-package review on replays,
+                    # too: the first HTTP acknowledgement may have been lost.
+                    local_batch_review_required = True
+                    invalidated_attempt_ids.add(order.attempt_id)
+                    invalidated_attempt_ids.update(known_review.get("affected_successor_attempt_ids", []))
+
+                if result.status == "NOT_SUBMITTED":
+                    known_execution = session.get(ExecutionQualityObservation, order.order_id)
+                    known_fill = session.execute(select(Trade.id).where(
+                        Trade.order_id == order.order_id,
+                        Trade.execution_domain == execution_domain,
+                        Trade.filled_quantity > 0,
+                    ).limit(1)).first()
+                    if (
+                        known_fill is not None
+                        or (known_execution is not None and known_execution.qmt_order_id)
+                        or order.status in {"PARTIAL", "FILLED", "CANCELLED", "EXPIRED_BY_POLICY"}
+                    ):
+                        # Absence of a broker ID in this message cannot erase
+                        # earlier evidence that a broker order already existed.
+                        rejected_observations[order.order_id] = "NOT_SUBMITTED_CONFLICTS_WITH_BROKER_EVIDENCE"
+                        logger.error("拒绝矛盾的未提交声明，保留原委托义务: order=%s", order.order_id)
+                        continue
+
                 # ── 幂等守卫（P0-1 / 5/12 重复结算事故）──────────────────────
                 # 同一笔成交回报被重复推送（客户端网络重试 / 全量重推）时绝不能
                 # 二次入账。幂等键 = order_id + filled_time + filled_quantity +
@@ -115,9 +189,13 @@ class SettlementService:
                 already = session.execute(
                     select(Trade.id).where(
                         Trade.order_id == result.order_id,
+                        Trade.execution_domain == execution_domain,
                         Trade.filled_time == result.filled_time,
                         Trade.filled_quantity == result.filled_quantity,
                         Trade.filled_price == result.filled_price,
+                        # Same cumulative fill can later become terminal (e.g.
+                        # QMT 55 -> 53). Ingest that status without booking twice.
+                        Trade.status == result.status,
                     )
                 ).first()
                 if already is not None:
@@ -147,6 +225,15 @@ class SettlementService:
                         result.order_id, result.filled_quantity, previous_qty,
                     )
                     continue
+                if (
+                    result.filled_quantity == previous_qty
+                    and order.status in {"FILLED", "CANCELLED", "REJECTED", "NOT_SUBMITTED", "EXPIRED_BY_POLICY"}
+                    and result.status == "PARTIAL"
+                ):
+                    # An out-of-order active observation cannot resurrect an
+                    # already terminal order with no additional filled units.
+                    duplicate += 1
+                    continue
                 delta_qty = int(result.filled_quantity) - previous_qty
                 previous_notional = (
                     previous_qty * float(previous.filled_price) if previous else 0.0
@@ -157,11 +244,19 @@ class SettlementService:
                     delta_notional / delta_qty if delta_qty > 0 else result.filled_price
                 )
                 previous_fees = (
-                    self._calc_fees(previous_notional, order.direction)
+                    self._calc_fees(
+                        previous_notional,
+                        order.direction,
+                        hydra_etf=order.target_id is not None,
+                    )
                     if previous_qty > 0 else 0.0
                 )
                 cumulative_fees = (
-                    self._calc_fees(cumulative_notional, order.direction)
+                    self._calc_fees(
+                        cumulative_notional,
+                        order.direction,
+                        hydra_etf=order.target_id is not None,
+                    )
                     if result.filled_quantity > 0 else 0.0
                 )
                 delta_fees = max(0.0, cumulative_fees - previous_fees)
@@ -169,21 +264,34 @@ class SettlementService:
                 # 写 trades 表
                 session.add(Trade(
                     order_id=result.order_id,
+                    execution_domain=execution_domain,
                     filled_quantity=result.filled_quantity,
                     filled_price=result.filled_price,
                     filled_time=result.filled_time,
                     status=result.status,
                     received_at=_now_iso(),
                 ))
+                self._upsert_execution_quality(
+                    session, order, result, cumulative_fees,
+                )
 
                 # 拆单 + 更新虚拟账本（仅在有成交时）
                 if delta_qty > 0:
                     self._split_and_update_state(
                         session, order, delta_qty, delta_price, delta_fees,
                     )
+                    affected_ids = invalidate_hydra_close_after_late_fill(session, order, _now_iso())
+                    invalidated_attempt_ids.update(affected_ids)
+                    for attempt_id in affected_ids:
+                        affected = session.get(HydraExecutionAttempt, attempt_id)
+                        review = (affected.risk_snapshot or {}).get("late_fill_review") or {}
+                        local_batch_review_required |= bool(review.get("requires_manual_resolution"))
 
                 # 标记订单状态
-                order.status = result.status
+                if not (order.status == "EXPIRED_BY_POLICY" and result.status == "PARTIAL"):
+                    # Late positive fills are facts, not an extension of this
+                    # day order's lifetime. Preserve the effective expiry.
+                    order.status = result.status
                 matched += 1
 
             session.commit()
@@ -196,14 +304,85 @@ class SettlementService:
 
         return TradeResultResponseData(
             trade_date=trade_date,
+            execution_domain=execution_domain,
             matched_count=matched,
             unmatched_order_ids=unmatched,
             unmatched_candidates=unmatched_candidates,
+            rejected_observations=rejected_observations,
+            invalidated_attempt_ids=sorted(invalidated_attempt_ids),
+            local_batch_review_required=local_batch_review_required,
         )
 
     # ── 内部 ────────────────────────────────────────────────────────────
     @staticmethod
-    def _find_candidates(session, trade_date: str, result: TradeResult) -> list[str]:
+    def _directional_bps(numerator_price: float, base_price: float, direction: str) -> float:
+        sign = 1.0 if direction == "BUY" else -1.0
+        return sign * (numerator_price / base_price - 1.0) * 10_000
+
+    def _upsert_execution_quality(
+        self, session, order: Order, result: TradeResult, cumulative_fees: float,
+    ) -> None:
+        row = session.get(ExecutionQualityObservation, order.order_id)
+        if row is None:
+            row = ExecutionQualityObservation(
+                order_id=order.order_id,
+                execution_domain=order.execution_domain,
+                target_id=order.target_id,
+                rebalance_id=order.rebalance_id,
+                attempt_id=order.attempt_id,
+                symbol=order.symbol,
+                direction=order.direction,
+                decision_reference_price=order.execution_reference_price,
+                submitted_price=result.submitted_price or order.limit_price,
+                filled_quantity=0,
+                estimated_fees=0.0,
+                updated_at=_now_iso(),
+            )
+            session.add(row)
+        if result.arrival_reference_price is not None:
+            row.arrival_reference_price = result.arrival_reference_price
+        if result.arrival_reference_time is not None:
+            row.arrival_reference_time = result.arrival_reference_time
+        if result.submitted_price is not None:
+            row.submitted_price = result.submitted_price
+        if result.submitted_time is not None:
+            row.submitted_time = result.submitted_time
+        if result.qmt_order_id is not None:
+            row.qmt_order_id = result.qmt_order_id
+        if result.iopv is not None:
+            row.iopv = result.iopv
+        if result.iopv_time is not None:
+            row.iopv_time = result.iopv_time
+        row.filled_quantity = result.filled_quantity
+        row.fill_vwap = result.filled_price if result.filled_quantity > 0 else None
+        row.estimated_fees = cumulative_fees
+        if (
+            row.decision_reference_price is not None
+            and row.arrival_reference_price is not None
+        ):
+            row.decision_gap_bps = self._directional_bps(
+                row.arrival_reference_price,
+                row.decision_reference_price,
+                order.direction,
+            )
+        if row.arrival_reference_price is not None and row.fill_vwap is not None:
+            row.execution_shortfall_bps = self._directional_bps(
+                row.fill_vwap, row.arrival_reference_price, order.direction,
+            )
+        if row.arrival_reference_price is not None and row.iopv is not None:
+            row.premium_bps = (
+                row.arrival_reference_price / row.iopv - 1.0
+            ) * 10_000
+        row.updated_at = _now_iso()
+
+    @staticmethod
+    def _find_candidates(
+        session,
+        trade_date: str,
+        result: TradeResult,
+        execution_domain: str,
+        allowed_account_aliases: tuple[str, ...] | None = None,
+    ) -> list[str]:
         """unmatched 回报的候选订单：当日同 symbol/direction/quantity 的未结算单。
 
         老客户端 payload 不带 symbol/direction → 退化为仅按 quantity 匹配
@@ -212,9 +391,12 @@ class SettlementService:
         stmt = (
             select(Order.order_id)
             .where(Order.valid_date == trade_date)
+            .where(Order.execution_domain == execution_domain)
             .where(Order.status == "PENDING")
             .where(Order.quantity == result.filled_quantity)
         )
+        if allowed_account_aliases:
+            stmt = stmt.where(Order.qmt_account_alias.in_(allowed_account_aliases))
         if result.symbol:
             stmt = stmt.where(Order.symbol == result.symbol)
         if result.direction:
@@ -264,6 +446,8 @@ class SettlementService:
                 )
                 inst = InstanceState(
                     instance_id=sig.instance_id,
+                    execution_domain=order.execution_domain,
+                    account_alias=order.qmt_account_alias,
                     virtual_cash=0.0,
                     virtual_positions={},
                     last_update=_now_iso(),

@@ -2,6 +2,8 @@
 Description=QMT Pipeline Server v2.3
 Documentation=https://github.com/FionaMMC/MaolaoyeServer
 After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -12,10 +14,10 @@ EnvironmentFile=/opt/qmt-server/v2.3/server/.env
 ExecStart=/opt/qmt-server/venv/bin/uvicorn app.main:app \
     --host 0.0.0.0 \
     --port 8000 \
-    --workers 2 \
+    --workers 1 \
     --log-level info
 Restart=on-failure
-RestartSec=5
+RestartSec=30
 StandardOutput=append:/var/log/qmt-server/server.log
 StandardError=append:/var/log/qmt-server/server.log
 

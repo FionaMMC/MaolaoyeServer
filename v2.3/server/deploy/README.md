@@ -183,6 +183,10 @@ journalctl -u qmt-server -f
 curl -X POST -H "Authorization: Bearer <KEY>" \
      "http://<公网IP>:8000/admin/run-pipeline?trade_date=20260430"
 
+# 首次升级日终风险快照功能后执行一次；命令幂等，可安全重跑
+cd /opt/qmt-server/v2.3/server
+/opt/qmt-server/venv/bin/python scripts/backfill_daily_risk_snapshots.py
+
 # 查看 Swagger UI 文档
 # 浏览器打开: http://<公网IP>:8000/docs
 

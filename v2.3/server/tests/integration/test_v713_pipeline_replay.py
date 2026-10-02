@@ -85,6 +85,34 @@ def test_offline_replay_records_hash_and_second_run_skips(tmp_path, monkeypatch)
     V713RelayAdapter._cfg = None
 
 
+def test_scoped_publication_preserves_other_strategy_orders(tmp_path,monkeypatch):
+    from app.models import RawSignal, OrderSignalMap, Trade
+    pipeline,sf = build(tmp_path,monkeypatch,live=True)
+    with sf() as session:
+        session.add(RawSignal(signal_id='other-signal',execution_domain='paper',instance_id='paper_v53_noop',
+            symbol='510300.SH',direction='BUY',quantity=100,reference_price=4,price_offset=0,
+            limit_price=4,valid_date='20260701',signal_time='now',precheck_status='PASS'))
+        session.add(Order(order_id='other',account_group='paper_v53',execution_domain='paper',
+            symbol='510300.SH',direction='BUY',quantity=100,limit_price=4,valid_date='20260701',
+            status='FILLED',created_at='now',fetched_at='now'))
+        session.add(OrderSignalMap(order_id='other',signal_id='other-signal',signal_quantity=100))
+        session.add(Trade(order_id='other',execution_domain='paper',filled_quantity=100,filled_price=4,status='FILLED',received_at='now'))
+        session.add(Order(order_id='other-pending',account_group='paper_v53',execution_domain='paper',
+            symbol='510300.SH',direction='BUY',quantity=100,limit_price=4,valid_date='20260701',
+            status='PENDING',created_at='now'))
+        session.commit()
+    result = pipeline.run(20260701,account_group='paper_v79')
+    assert result['orders'] == 1 and result['instances'] == 1
+    with sf() as session:
+        assert session.get(Order,'other').status == 'FILLED'
+        assert session.get(RawSignal,'other-signal') is not None
+        assert session.get(OrderSignalMap,('other','other-signal')) is not None
+        assert session.query(Order).count() == 3
+        assert session.get(Order,'other-pending').status == 'PENDING'
+    assert pipeline.run(20260701,account_group='paper_v79')['skipped'] == 'strict_rebalance_blocked'
+    V713RelayAdapter._cfg = None
+
+
 def test_offline_replay_ignores_new_artifact_for_same_month(tmp_path, monkeypatch):
     pipeline, sf = build(tmp_path, monkeypatch, live=False)
     assert pipeline.run(20260701)["orders"] == 0

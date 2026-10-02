@@ -1,0 +1,178 @@
+{
+  "status": "VERIFIED_FOR_CODE_HANDOFF_NOT_LIVE_DEPLOYMENT",
+  "verified_at": "2026-10-02T08:11:28.781908+00:00",
+  "full_suite": {
+    "tests": 1005,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 1
+  },
+  "research_and_handoff_suite": {
+    "tests": 26,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "production_base": "b688b6c989a9a4bd6d44a6a9a96df7f56f0b607b",
+  "full_suite_command": "cd v2.3/server && PYTHONPATH=.. venv/bin/python -m pytest tests plugins/v713/tests ../live_client/tests ../client/tests -q -o addopts=''",
+  "windows_native_tested": false,
+  "two_phase_live_deployed": false,
+  "private_env_committed": false,
+  "main_production_service_changed": false,
+  "continuous_audit": {
+    "status": "PASS",
+    "portfolios_checked": 80,
+    "valuation_days_checked": 83480,
+    "fills_checked": 31515,
+    "checks": [
+      "independent cash/position/dividend reconstruction",
+      "all daily NAV reconciled",
+      "no negative cash/position",
+      "total-capital return denominator",
+      "whole lots in modeled executions",
+      "no fills above original cycle amount",
+      "aggregate underweight independently recomputed"
+    ],
+    "worst_cycles": [
+      {
+        "period": "full",
+        "largest_underweight_cycles": [
+          {
+            "signal": "2019-12-05",
+            "end": "2019-12-12",
+            "reason": "WINDOW_EXPIRED",
+            "underweight": 0.4782687559681657,
+            "allocation_distance": 0.4782687559681658,
+            "uninvested_vs_full_target": 0.4782687559681657,
+            "buy_intended": 190873.30000000005,
+            "buy_filled": 104572.5,
+            "sell_intended": 0.0,
+            "sell_filled": 0.0
+          },
+          {
+            "signal": "2019-12-31",
+            "end": "2020-01-07",
+            "reason": "WINDOW_EXPIRED",
+            "underweight": 0.382592453551637,
+            "allocation_distance": 0.382592453551637,
+            "uninvested_vs_full_target": 0.382592453551637,
+            "buy_intended": 86776.0,
+            "buy_filled": 21694.0,
+            "sell_intended": 3494.0,
+            "sell_filled": 3494.0
+          },
+          {
+            "signal": "2020-01-23",
+            "end": "2020-02-06",
+            "reason": "WINDOW_EXPIRED",
+            "underweight": 0.1719159185759489,
+            "allocation_distance": 0.1719159185759488,
+            "uninvested_vs_full_target": 0.1719159185759489,
+            "buy_intended": 78007.3,
+            "buy_filled": 44678.8,
+            "sell_intended": 2828.2,
+            "sell_filled": 2428.6
+          },
+          {
+            "signal": "2020-06-30",
+            "end": "2020-07-06",
+            "reason": "WINDOW_EXPIRED",
+            "underweight": 0.0763191474952504,
+            "allocation_distance": 0.0763191474952506,
+            "uninvested_vs_full_target": 0.0763191474952504,
+            "buy_intended": 24401.8,
+            "buy_filled": 23691.2,
+            "sell_intended": 25389.700000000004,
+            "sell_filled": 25389.700000000004
+          },
+          {
+            "signal": "2020-03-31",
+            "end": "2020-04-07",
+            "reason": "WINDOW_EXPIRED",
+            "underweight": 0.0622587320872938,
+            "allocation_distance": 0.0622587320872936,
+            "uninvested_vs_full_target": 0.0622587320872938,
+            "buy_intended": 4454.0,
+            "buy_filled": 4454.0,
+            "sell_intended": 12533.7,
+            "sell_filled": 11281.500000000002
+          }
+        ],
+        "max_excluding_initial": 0.382592453551637,
+        "failures_excluding_initial": 63
+      },
+      {
+        "period": "recent",
+        "largest_underweight_cycles": [
+          {
+            "signal": "2025-04-30",
+            "end": "2025-05-09",
+            "reason": "WINDOW_EXPIRED",
+            "underweight": 0.073684645480832,
+            "allocation_distance": 0.0736846454808321,
+            "uninvested_vs_full_target": 0.073684645480832,
+            "buy_intended": 0.0,
+            "buy_filled": 0.0,
+            "sell_intended": 9116.5,
+            "sell_filled": 9116.5
+          },
+          {
+            "signal": "2026-01-30",
+            "end": "2026-02-05",
+            "reason": "WINDOW_EXPIRED",
+            "underweight": 0.0699223795261617,
+            "allocation_distance": 0.0699223795261617,
+            "uninvested_vs_full_target": 0.0699223795261617,
+            "buy_intended": 13479.3,
+            "buy_filled": 0.0,
+            "sell_intended": 7783.1,
+            "sell_filled": 1363.0
+          },
+          {
+            "signal": "2026-03-31",
+            "end": "2026-04-07",
+            "reason": "WINDOW_EXPIRED",
+            "underweight": 0.069467685133435,
+            "allocation_distance": 0.069467685133435,
+            "uninvested_vs_full_target": 0.069467685133435,
+            "buy_intended": 383.8,
+            "buy_filled": 383.8,
+            "sell_intended": 7087.900000000001,
+            "sell_filled": 2787.9
+          },
+          {
+            "signal": "2024-11-29",
+            "end": "2024-12-05",
+            "reason": "WINDOW_EXPIRED",
+            "underweight": 0.06845445666973,
+            "allocation_distance": 0.06845445666973,
+            "uninvested_vs_full_target": 0.06845445666973,
+            "buy_intended": 0.0,
+            "buy_filled": 0.0,
+            "sell_intended": 2203.0,
+            "sell_filled": 2203.0
+          },
+          {
+            "signal": "2026-06-30",
+            "end": "2026-07-06",
+            "reason": "WINDOW_EXPIRED",
+            "underweight": 0.0677829925894951,
+            "allocation_distance": 0.0677829925894951,
+            "uninvested_vs_full_target": 0.0677829925894951,
+            "buy_intended": 3176.7,
+            "buy_filled": 1544.9,
+            "sell_intended": 1942.1,
+            "sell_filled": 1505.7
+          }
+        ],
+        "max_excluding_initial": 0.073684645480832,
+        "failures_excluding_initial": 18
+      }
+    ]
+  },
+  "artifact_hashes": {
+    "full_tests.xml": "c31dfc448f92269864565d98df4ef12163bf8b10faf5e4956539d5e6daff3530",
+    "research_tools_tests.xml": "62dcc703fe40e1fc66ce6cd0d8ff94916b9bf17e7b95f973572f262e6848a4f7",
+    "offline_acceptance.json": "dd0dd34f2f89098f21a1a78a1cccf31c98aa33ca6ad2147494267b4e14847200"
+  }
+}

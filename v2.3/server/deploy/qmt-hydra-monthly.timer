@@ -1,0 +1,10 @@
+[Unit]
+Description=Recheck immutable Hydra monthly inputs after close (Asia/Shanghai)
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 15..18:00/10:00 Asia/Shanghai
+Persistent=false
+Unit=qmt-hydra-monthly.service
+
+[Install]
+WantedBy=timers.target

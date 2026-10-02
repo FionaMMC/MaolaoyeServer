@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -12,10 +13,11 @@ import yaml
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import desc, func, select
 
-from app.auth import verify_api_key
+from app.auth import AuthContext, verify_api_key
 from app.dependencies import (
     get_blacklist_service,
     get_data_upload_service,
+    get_daily_risk_service,
     get_metrics_service,
     get_reconcile_service,
     get_session_factory,
@@ -24,6 +26,7 @@ from app.dependencies import (
 from app.models import (
     InstanceState,
     Order,
+    OrderSignalMap,
     PerfSnapshot,
     RawSignal,
     ShadowInstanceState,
@@ -34,6 +37,7 @@ from app.schemas.common import APIResponse
 from app.schemas.reconcile import QmtPositionSnapshot, ReconcileResult
 from app.services.blacklist import BlacklistService
 from app.services.data_upload import DataUploadService
+from app.services.daily_risk import DailyRiskSnapshotService
 from app.services.metrics import MetricsService, date_range_for_period
 from app.services.reconcile import (
     InstanceNotFound,
@@ -66,12 +70,38 @@ def _configured_regular_instances(settings: Settings) -> dict[str, dict] | None:
     return result
 
 
+
+def _disabled_shadows(settings):
+    path = Path(settings.strategies_file)
+    if not path.is_file():
+        return set()
+    config = yaml.safe_load(path.read_text()) or {}
+    return {row["shadow_id"] for row in config.get("shadow_instances", [])
+            if row.get("enabled", True) is False}
+
+
+def _dashboard_instance(state, configured, settings):
+    """Live ledgers are registered outside the ordinary paper pipeline."""
+    live = state.execution_domain == "live"
+    if not live and configured is not None and state.instance_id not in configured:
+        return None
+    config = dict((configured or {}).get(state.instance_id, {}))
+    if live:
+        if state.instance_id == settings.hydra_monthly_instance_id:
+            config["display_name"] = "Hydra 4.8 · v48.1-RB"
+        config["orders_enabled"] = settings.live_order_generation_enabled
+    config["execution_domain"] = state.execution_domain
+    config["ledger_mode"] = state.ledger_mode
+    return config
+
+
 @router.get(
     "/shadow/summary",
     response_model=APIResponse[dict],
     dependencies=[Depends(verify_api_key)],
 )
-async def shadow_summary(sf=Depends(get_session_factory)):
+async def shadow_summary(sf=Depends(get_session_factory), settings: Settings = Depends(get_settings)):
+
     """Read-only shadow health/NAV comparison; never exposes order actions."""
     with sf() as session:
         states = session.execute(
@@ -79,6 +109,8 @@ async def shadow_summary(sf=Depends(get_session_factory)):
         ).scalars().all()
         items = []
         for state in states:
+            if state.shadow_id in _disabled_shadows(settings):
+                continue
             latest = session.execute(
                 select(ShadowNavSnapshot)
                 .where(ShadowNavSnapshot.shadow_id == state.shadow_id)
@@ -144,7 +176,7 @@ async def shadow_nav_history(
 )
 async def admin_orders(
     date: str | None = Query(None, min_length=8, max_length=8, pattern=r"^\d{8}$"),
-    status: str | None = Query(None, pattern=r"^(PENDING|FILLED|PARTIAL|CANCELLED|REJECTED)$"),
+    status: str | None = Query(None, pattern=r"^(PENDING|FILLED|PARTIAL|CANCELLED|REJECTED|NOT_SUBMITTED|EXPIRED_BY_POLICY)$"),
     account_group: str | None = None,
     direction: str | None = Query(None, pattern=r"^(BUY|SELL)$"),
     symbol: str | None = None,
@@ -205,6 +237,7 @@ async def admin_orders(
 async def orders_summary(
     date: str | None = Query(None, min_length=8, max_length=8, pattern=r"^\d{8}$"),
     days: int = Query(7, ge=1, le=365),
+    instance_id: str | None = None,
     sf=Depends(get_session_factory),
 ):
     """orders 聚合视图。
@@ -232,6 +265,14 @@ async def orders_summary(
             .group_by(Order.valid_date, Order.account_group, Order.direction, Order.status)
             .order_by(Order.valid_date, Order.account_group, Order.direction, Order.status)
         )
+        if instance_id:
+            mapped_order_ids = (
+                select(OrderSignalMap.order_id)
+                .join(RawSignal, RawSignal.signal_id == OrderSignalMap.signal_id)
+                .where(RawSignal.instance_id == instance_id)
+                .distinct()
+            )
+            stmt = stmt.where(Order.order_id.in_(mapped_order_ids))
         rows = session.execute(stmt).all()
 
     summary: dict = {}
@@ -239,7 +280,12 @@ async def orders_summary(
         summary.setdefault(vd, {}).setdefault(ag, {}).setdefault(d, {})[st] = n
     return APIResponse[dict](
         code=0, message="ok",
-        data={"cutoff": cutoff, "end_date": end_date, "by_date": summary},
+        data={
+            "instance_id": instance_id,
+            "cutoff": cutoff,
+            "end_date": end_date,
+            "by_date": summary,
+        },
     )
 
 
@@ -332,9 +378,9 @@ async def portfolio_overview(
     with sf() as session:
         items = []
         for state in session.execute(select(InstanceState)).scalars().all():
-            if configured is not None and state.instance_id not in configured:
+            instance_cfg = _dashboard_instance(state, configured, settings)
+            if instance_cfg is None:
                 continue
-            instance_cfg = (configured or {}).get(state.instance_id, {})
             latest = session.execute(
                 select(PerfSnapshot)
                 .where(PerfSnapshot.instance_id == state.instance_id)
@@ -344,6 +390,8 @@ async def portfolio_overview(
             items.append({
                 "instance_id": state.instance_id,
                 "display_name": instance_cfg.get("display_name", state.instance_id),
+                "execution_domain": state.execution_domain,
+                "ledger_mode": state.ledger_mode,
                 "virtual_cash": state.virtual_cash,
                 "holdings_count": len(state.virtual_positions or {}),
                 "latest_nav": latest.nav if latest else None,
@@ -355,6 +403,8 @@ async def portfolio_overview(
             })
 
         for state in session.execute(select(ShadowInstanceState)).scalars().all():
+            if state.shadow_id in _disabled_shadows(settings):
+                continue
             latest = session.execute(
                 select(ShadowNavSnapshot)
                 .where(ShadowNavSnapshot.shadow_id == state.shadow_id)
@@ -493,8 +543,6 @@ async def admin_health(
     upload: DataUploadService = Depends(get_data_upload_service),
 ):
     """一站式健康度：pred 新鲜度、黑名单大小、PENDING 数量、各 instance NAV。"""
-    today = datetime.now().strftime("%Y%m%d")
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
     week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d")
 
     # pred 文件新鲜度
@@ -548,9 +596,9 @@ async def admin_health(
         # 各 instance 最新 NAV
         instance_navs = []
         for st_row in session.execute(select(InstanceState)).scalars().all():
-            if configured is not None and st_row.instance_id not in configured:
+            instance_cfg = _dashboard_instance(st_row, configured, settings)
+            if instance_cfg is None:
                 continue
-            instance_cfg = (configured or {}).get(st_row.instance_id, {})
             latest_perf = session.execute(
                 select(PerfSnapshot)
                 .where(PerfSnapshot.instance_id == st_row.instance_id)
@@ -560,6 +608,8 @@ async def admin_health(
             instance_navs.append({
                 "instance_id": st_row.instance_id,
                 "display_name": instance_cfg.get("display_name", st_row.instance_id),
+                "execution_domain": st_row.execution_domain,
+                "ledger_mode": st_row.ledger_mode,
                 "virtual_cash": st_row.virtual_cash,
                 "holdings_count": len(st_row.virtual_positions or {}),
                 "last_update": st_row.last_update,
@@ -571,6 +621,8 @@ async def admin_health(
             })
 
         for st_row in session.execute(select(ShadowInstanceState)).scalars().all():
+            if st_row.shadow_id in _disabled_shadows(settings):
+                continue
             latest_perf = session.execute(
                 select(ShadowNavSnapshot)
                 .where(ShadowNavSnapshot.shadow_id == st_row.shadow_id)
@@ -621,6 +673,9 @@ async def strategy_state(
         items = [
             {
                 "instance_id": r.instance_id,
+                "execution_domain": r.execution_domain,
+                "account_alias": r.account_alias,
+                "ledger_mode": r.ledger_mode,
                 "virtual_cash": r.virtual_cash,
                 "holdings_count": len(r.virtual_positions or {}),
                 "last_update": r.last_update,
@@ -635,6 +690,29 @@ async def strategy_state(
 
 
 # ── 10. /admin/metrics/summary : 量化绩效指标 ─────────────────────────────
+@router.get(
+    "/metrics/daily-risk",
+    response_model=APIResponse[dict],
+    dependencies=[Depends(verify_api_key)],
+)
+async def metrics_daily_risk(
+    instance_id: str = "paper_v20h_v20h_v1_3",
+    period: str = Query("all", pattern=r"^(7d|30d|90d|180d|1y|ytd|all)$"),
+    benchmark_symbol: str = Query("000852.SH", pattern=r"^(000300\.SH|000852\.SH)$"),
+    daily_risk: DailyRiskSnapshotService = Depends(get_daily_risk_service),
+):
+    """每日 NAV、现金、暴露、价格覆盖率与对齐后的基准/超额收益。"""
+    return APIResponse[dict](
+        code=0,
+        message="ok",
+        data=daily_risk.query(
+            instance_id=instance_id,
+            period=period,
+            benchmark_symbol=benchmark_symbol,
+        ),
+    )
+
+
 @router.get(
     "/metrics/summary",
     response_model=APIResponse[dict],
@@ -726,6 +804,29 @@ async def metrics_trade_analytics(
     )
 
 
+@router.get(
+    "/metrics/execution-analysis",
+    response_model=APIResponse[dict],
+    dependencies=[Depends(verify_api_key)],
+)
+async def metrics_execution_analysis(
+    instance_id: str,
+    period: str = Query("30d", pattern=r"^(7d|30d|90d|180d|1y|ytd|all)$"),
+    limit: int = Query(200, ge=1, le=1000),
+    metrics: MetricsService = Depends(get_metrics_service),
+):
+    """实例级策略参考价 → 实际成交 VWAP、方向调整滑点与金额损耗。"""
+    return APIResponse[dict](
+        code=0,
+        message="ok",
+        data=metrics.execution_analysis(
+            instance_id=instance_id,
+            cutoff=date_range_for_period(period),
+            limit=limit,
+        ),
+    )
+
+
 # ── 9. /admin/bookkeeping-divergence : 真账户与虚拟账本对账分叉 ─────────
 @router.get(
     "/bookkeeping-divergence",
@@ -772,10 +873,11 @@ async def bookkeeping_divergence(
 @router.post(
     "/reconcile-positions",
     response_model=APIResponse[ReconcileResult],
-    dependencies=[Depends(verify_api_key)],
 )
 async def reconcile_positions(
     snapshot: QmtPositionSnapshot,
+    auth: AuthContext = Depends(verify_api_key),
+    settings: Settings = Depends(get_settings),
     service: ReconcileService = Depends(get_reconcile_service),
 ):
     """对账：server virtual_positions vs QMT 真实持仓。
@@ -793,6 +895,31 @@ async def reconcile_positions(
     dry_run=true: 返回 diff 详情供人眼审查
     dry_run=false: 强制把 instance_state.virtual_cash/positions 改成 QMT 状态
     """
+    # 少数纯单元测试会直接调用 endpoint 函数而绕过 FastAPI DI；生产 HTTP
+    # 始终注入 AuthContext。直接调用按 legacy paper 上下文处理以保持兼容。
+    if not isinstance(auth, AuthContext):
+        auth = AuthContext(
+            execution_domain="paper",
+            client_id="direct-call-legacy",
+            allowed_account_aliases=(),
+        )
+    if snapshot.execution_domain != auth.execution_domain:
+        raise HTTPException(status_code=403, detail="reconcile execution_domain 跨域")
+    if not auth.allows_account(snapshot.account_alias):
+        raise HTTPException(status_code=403, detail="token 无权访问该 account_alias")
+    if auth.execution_domain == "live":
+        fingerprint = hashlib.sha256(snapshot.qmt_account_id.encode()).hexdigest()
+        if (
+            not settings.live_qmt_account_sha256
+            or fingerprint != settings.live_qmt_account_sha256
+        ):
+            raise HTTPException(status_code=403, detail="QMT account fingerprint 不匹配")
+        if not snapshot.dry_run or snapshot.force:
+            raise HTTPException(
+                status_code=403,
+                detail="live token 仅允许只读对账；账本修复必须走受控恢复流程",
+            )
+
     # Portfolio total reconciliation must run before any per-instance operation.
     # This still records the authoritative total diff when a shared-account apply
     # is correctly rejected below.
@@ -801,6 +928,8 @@ async def reconcile_positions(
     try:
         service.shadow_compare(
             snapshot.qmt_positions, snapshot.qmt_cash, snapshot.snapshot_time,
+            execution_domain=snapshot.execution_domain,
+            account_alias=snapshot.account_alias,
         )
     except Exception:
         logger.exception("shadow_compare failed (non-fatal, ignored)")
@@ -828,13 +957,15 @@ async def heartbeat(
     """检查 client 端是否按时跑了每日流程。返回告警列表 + 各步骤时间戳。
 
     每天 client 应该做的事：
-      09:10  order_submit.py     → GET /orders?date=T  (T = 今天)
+      T 晚间 Hydra query         → GET /orders?date=T+1，冻结本地批次
+      T 晚间 Hydra preflight     → 在线对账（允许因 server 不可用而安全阻断）
+      T+1 09:10 Hydra submit     → 只读本地冻结批次和 QMT，不访问 server
       15:10  trade_result_push   → POST /trade-result
       15:30  data_collector      → POST /market-data
       16:00  trigger_pipeline    → POST /admin/run-pipeline?trade_date=T+1
 
     通过 server 数据库追溯每一步的实际发生时间：
-      - GET /orders 看 raw_signals 表（生成信号的时间）
+      - raw_signals 只能证明 server 已生成信号，不能证明 client 已拉取
       - trade_result 看 trades 表 received_at
       - market-data 看 stocks parquet 的最新 trade_date
       - run-pipeline 看 raw_signals 表的 signal_time (T+1 valid_date)
@@ -910,7 +1041,7 @@ async def heartbeat(
             if timeline.get("pending_signals_for_today_or_later", 0) == 0:
                 alerts.append(
                     f"⚠ {today_dt} 09:00 之后 没有任何 valid_date >= {today} 的 raw_signals，"
-                    f"是不是 partner 昨晚没 trigger / 今早 client 没启动？"
+                    f"是不是 partner 昨晚没 trigger / server 没生成信号？"
                 )
 
         # 15:30 之后应该看到当天的 OHLCV 推送

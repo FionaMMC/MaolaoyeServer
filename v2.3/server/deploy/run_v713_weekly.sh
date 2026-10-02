@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Refresh V7.13_Base and its four small-cap shadow targets on the former V79 slot.
+# Refresh V7.13_Base and its exact Base shadow. Retired experiments are not dependencies.
 set -euo pipefail
 
 cd /opt/qmt-refresh
@@ -20,11 +20,6 @@ SOURCE_COMMIT=88c2cb1050c7391ce84a9d524a9884dfefaf3ef4
 mkdir -p logs tmp
 # Must remain absolute: the workflow later changes cwd to PEER and SERVER.
 LOG="/opt/qmt-refresh/logs/v713_weekly_$(date +%Y%m%d_%H%M).log"
-exec 9>/opt/qmt-refresh/tmp/heavy_job.lock
-flock -w 18000 9 || {
-  printf "waited 5h for heavy_job.lock\n" >>"$LOG"
-  exit 1
-}
 
 notify() {
   "$PY" /opt/qmt-refresh/bin/wecom_notify.py \
@@ -39,19 +34,34 @@ fail() {
 }
 
 {
-  printf "=== V7.13 weekly start %s ===\n" "$(date)"
+  printf "=== V7.13 monthly cycle check %s ===\n" "$(date)"
   CALENDAR_TODAY="$(date +%Y%m%d)"
-  TODAY="${V713_DECISION_DATE:-$CALENDAR_TODAY}"
-  [[ "$TODAY" =~ ^[0-9]{8}$ ]] || fail "invalid V713_DECISION_DATE: $TODAY"
+  MARKET_DATE="$CALENDAR_TODAY"
+  cd "$SERVER"
+  CYCLE_JSON="$("$SERVER_PY" -m scripts.v713_cycle --today "$CALENDAR_TODAY" \
+    --current-target "$SERVER/plugins/v713/data/v713_target_latest.parquet")"
+  CYCLE_STATUS="$(CYCLE_JSON="$CYCLE_JSON" "$SERVER_PY" -c 'import json,os; print(json.loads(os.environ["CYCLE_JSON"])["status"])')"
+  printf "cycle=%s\n" "$CYCLE_JSON"
+  if [ "$CYCLE_STATUS" != "DUE" ] && [ -z "${V713_DECISION_DATE:-}" ] && [ -z "${V713_RESUME_OUT:-}" ]; then
+    if [ "$CYCLE_STATUS" = "CURRENT" ]; then
+      NEXT_SESSION="$(CYCLE_JSON="$CYCLE_JSON" "$SERVER_PY" -c 'import json,os; print(json.loads(os.environ["CYCLE_JSON"])["decision_date"])')"
+      "$SERVER_PY" -m scripts.run_v713_orders --trade-date "$NEXT_SESSION"
+    fi
+    exit 0
+  fi
+  TODAY="${V713_DECISION_DATE:-$(CYCLE_JSON="$CYCLE_JSON" "$SERVER_PY" -c 'import json,os; print(json.loads(os.environ["CYCLE_JSON"])["decision_date"])')}"
+  [[ "$TODAY" =~ ^[0-9]{8}$ ]] || fail "invalid decision date: $TODAY"
   DECISION_DATE="$(date -d "$TODAY" +%F)"
   DEADLINE="$(date -d "$(date +%F) 20:30" +%s)"
+  exec 9>/opt/qmt-refresh/tmp/heavy_job.lock
+  flock -w 900 9 || fail "heavy_job.lock busy; next timer retries"
 
   while :; do
     MAXD="$("$PY" -c "import pandas as pd; print(pd.read_parquet('$QMT_SERVER_STORE/indexes/000852.SH.parquet', columns=['trade_date'])['trade_date'].astype(str).max())")"
-    printf "store max=%s want=%s\n" "$MAXD" "$TODAY"
-    [ "$MAXD" = "$TODAY" ] && break
-    [ -n "${V713_DECISION_DATE:-}" ] && fail "manual decision date unavailable: store max=$MAXD want=$TODAY"
-    [ "$(date +%s)" -gt "$DEADLINE" ] && fail "market store stale: max=$MAXD want=$TODAY"
+    printf "store max=%s want=%s\n" "$MAXD" "$MARKET_DATE"
+    [ "$MAXD" = "$MARKET_DATE" ] && break
+    [ -n "${V713_DECISION_DATE:-}" ] && fail "manual market date unavailable: store max=$MAXD want=$MARKET_DATE"
+    [ "$(date +%s)" -gt "$DEADLINE" ] && fail "market store stale: max=$MAXD want=$MARKET_DATE"
     sleep 600
   done
 
@@ -64,10 +74,7 @@ fail() {
     esac
     for artifact in \
       v713_target_latest.json v713_target_latest.parquet \
-      Shadow_Base_latest.json Shadow_Base_latest.parquet \
-      Shadow_Aux_Hard_TOP2_latest.json Shadow_Aux_Hard_TOP2_latest.parquet \
-      Shadow_Aux_Hard_TOP2_ShortCredit_latest.json Shadow_Aux_Hard_TOP2_ShortCredit_latest.parquet \
-      Shadow_ML_TOP2_latest.json Shadow_ML_TOP2_latest.parquet
+      Shadow_Base_latest.json Shadow_Base_latest.parquet
     do
       [ -f "$OUT/$artifact" ] || fail "resume output missing artifact: $artifact"
     done
@@ -76,17 +83,7 @@ fail() {
     OUT="$(mktemp -d "/opt/qmt-refresh/tmp/v713-weekly.${TODAY}.XXXXXX")"
 
     cd "$PEER"
-    WITH_FUNDAMENTALS=()
-    if [ "$(date +%d)" -le 07 ] \
-        || [ -n "${V713_DECISION_DATE:-}" ] \
-        || [ "${V713_FORCE_FUNDAMENTALS:-0}" = "1" ]; then
-      WITH_FUNDAMENTALS=(--with-fundamentals)
-    fi
-    "$PY" v79_data_refresh.py "${WITH_FUNDAMENTALS[@]}"
-    "$PY" round4/v7.9/ml_switch_phase8_size_tail_structure.py
-    "$PY" round4/v7.9/ml_switch_phase12_size_tail_state_classifier.py
-    "$PY" round4/v7.13/refresh_shadow_inputs.py --decision-date "$DECISION_DATE"
-
+    "$PY" v79_data_refresh.py --with-fundamentals
     V713_SOURCE_COMMIT="$SOURCE_COMMIT" "$PY" round4/v7.13/execution.py \
       --decision-date "$DECISION_DATE" \
       --hydra-weights "$HYDRA_TARGET" \
@@ -94,42 +91,23 @@ fail() {
     cp "$OUT/v713_target_${TODAY}.parquet" "$OUT/v713_target_latest.parquet"
     cp "$OUT/v713_target_${TODAY}.json" "$OUT/v713_target_latest.json"
 
-    V713_SOURCE_COMMIT="$SOURCE_COMMIT" "$PY" \
-      round4/v7.13/produce_shadow_base_target.py \
-      --decision-date "$DECISION_DATE" --hydra-weights "$HYDRA_TARGET" \
-      --output-dir "$OUT"
-    V713_SOURCE_COMMIT="$SOURCE_COMMIT" "$PY" \
-      round4/v7.13/produce_shadow_aux_hard_top2_target.py \
-      --decision-date "$DECISION_DATE" --hydra-weights "$HYDRA_TARGET" \
-      --signal-csv round4/v7.13/shadow_inputs/aux_hard_logistic_signal.csv \
-      --industry-etf-map round4/v7.13/shadow/industry_etf_map.csv \
-      --shadow-id Shadow_Aux_Hard_TOP2 --top2-stop-code 511880.SH \
-      --output-dir "$OUT"
-    V713_SOURCE_COMMIT="$SOURCE_COMMIT" "$PY" \
-      round4/v7.13/produce_shadow_aux_hard_top2_target.py \
-      --decision-date "$DECISION_DATE" --hydra-weights "$HYDRA_TARGET" \
-      --signal-csv round4/v7.13/shadow_inputs/aux_hard_logistic_signal.csv \
-      --industry-etf-map round4/v7.13/shadow/industry_etf_map.csv \
-      --shadow-id Shadow_Aux_Hard_TOP2_ShortCredit --top2-stop-code 511360.SH \
-      --output-dir "$OUT"
-    V713_SOURCE_COMMIT="$SOURCE_COMMIT" "$PY" \
-      round4/v7.13/produce_shadow_ml_top2_target.py \
-      --decision-date "$DECISION_DATE" --hydra-weights "$HYDRA_TARGET" \
-      --model round4/v7.13/shadow/ml_top2/frozen/sw2021-aux-top2-logistic-20260626-r1.joblib \
-      --model-manifest round4/v7.13/shadow/ml_top2/frozen/sw2021-aux-top2-logistic-20260626-r1.json \
-      --feature-csv round4/v7.13/shadow_inputs/ml_top2_feature_panel.csv \
-      --industry-etf-map round4/v7.13/shadow/industry_etf_map.csv \
-      --output-dir "$OUT"
+    # The Base comparison consumes the exact executable basket; never rerun
+    # TOP50 with the shadow producer's different AUM default.
+    cd "$SERVER"
+    "$SERVER_PY" -m scripts.wrap_v713_shadow_base \
+      --source-dir "$OUT" --source-version "$SOURCE_COMMIT"
+
   fi
 
   cd "$SERVER"
   CANDIDATE_SUMMARY="$(V713_TARGET_DIR="$OUT" "$SERVER_PY" -c \
     "import os; from pathlib import Path; from plugins.v713_relay import V713RelayAdapter; V713RelayAdapter.data_dir=Path(os.environ['V713_TARGET_DIR']); f=V713RelayAdapter()._read_latest_basket(); print(f\"decision={f.decision_date.iloc[0]} as_of={f.as_of_date.iloc[0]} sleeve={f.sleeve.iloc[0]} rows={len(f)} hash={f.basket_sha256.iloc[0][:12]}\")")"
   printf "candidate %s\n" "$CANDIDATE_SUMMARY"
+  EXPECTED_AS_OF="$(CYCLE_JSON="$CYCLE_JSON" "$SERVER_PY" -c 'import json,os; print(json.loads(os.environ["CYCLE_JSON"]).get("as_of_date", ""))')"
+  CANDIDATE_AS_OF="$(CANDIDATE_TARGET="$OUT/v713_target_latest.parquet" "$SERVER_PY" -c 'import os,pandas as pd; print(pd.read_parquet(os.environ["CANDIDATE_TARGET"]).as_of_date.iloc[0])')"
+  [ "$CANDIDATE_AS_OF" = "$EXPECTED_AS_OF" ] || fail "candidate month $CANDIDATE_AS_OF != expected $EXPECTED_AS_OF"
 
-  # V7.13 is monthly even though this refresh job runs weekly.  Never replace
-  # the executable main target with another artifact for the same completed
-  # month.  Shadow targets may still refresh below.
+  # Never replace a consumed monthly executable allocation on a retry.
   CURRENT_TARGET="$SERVER/plugins/v713/data/v713_target_latest.parquet"
   MAIN_PUBLISH="installed_first_target"
   if [ -f "$CURRENT_TARGET" ]; then
@@ -165,17 +143,19 @@ fail() {
   fi
   printf "main_publish=%s\n" "$MAIN_PUBLISH"
 
-  for SHADOW_ID in \
-    Shadow_Base \
-    Shadow_Aux_Hard_TOP2 \
-    Shadow_Aux_Hard_TOP2_ShortCredit \
-    Shadow_ML_TOP2
+  if [ -z "${V713_DECISION_DATE:-}" ]; then
+    "$SERVER_PY" -m scripts.run_v713_orders --trade-date "$TODAY"
+  fi
+
+  if [ -n "${V713_DECISION_DATE:-}" ]; then
+  for SHADOW_ID in Shadow_Base
   do
     "$SERVER_PY" -m scripts.stage_shadow_target \
       --source "$OUT/${SHADOW_ID}_latest.parquet" \
       --sidecar "$OUT/${SHADOW_ID}_latest.json" \
       --shadow-id "$SHADOW_ID" --trade-date "$TODAY" --install
   done
+  fi
 
   INSTALLED_SUMMARY="$("$SERVER_PY" -c "import pandas as pd; f=pd.read_parquet('$SERVER/plugins/v713/data/v713_target_latest.parquet'); print(f\"decision={f.decision_date.iloc[0]} as_of={f.as_of_date.iloc[0]} sleeve={f.sleeve.iloc[0]} rows={len(f)} hash={f.basket_sha256.iloc[0][:12]}\")")"
   SUMMARY="main_publish=$MAIN_PUBLISH candidate=[$CANDIDATE_SUMMARY] installed=[$INSTALLED_SUMMARY]"

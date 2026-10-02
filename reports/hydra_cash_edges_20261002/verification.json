@@ -1,0 +1,26 @@
+{
+  "status": "LOCAL_VERIFIED_NOT_DEPLOYED",
+  "verified_at": "2026-10-02T06:17:04.300383+00:00",
+  "tests": {
+    "tests": 329,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "production_access": false,
+  "real_orders_submitted": false,
+  "regression_red": "Legacy alphabetical ordering fails the explicit-priority submission test",
+  "source_sha256": {
+    "v2.3/server/app/services/hydra_cash_allocation.py": "2a923b418359a7edda4a638674ae1dfb04808c99a5f2c0036f403f7f5cc53c6b",
+    "v2.3/server/app/services/hydra_relay.py": "b7edbcd493a77c56ebfdf18238d8d6862cf99f42b47e3e0fe637be4fad9bbbe6",
+    "v2.3/server/app/schemas/hydra_relay.py": "e29383af56cbe8624f9c706c74038f2aedeefdb23acc46802dd319bc3c052a11",
+    "v2.3/live_client/execution_queue.py": "ced04c8160f6ee6fe5039ea89aafa8a3a18298b8770f76ae67713b87453ec121",
+    "v2.3/live_client/core.py": "a57e3861f53737566d52605ea74f7112ad6b44200673148cab090f66da3b6bc5",
+    "v2.3/live_client/cli.py": "a7405d3fc474e0ec303114e78042fb544b5c261ec566a610429afa6d176e0f98",
+    "v2.3/server/tests/unit/test_hydra_cash_allocation.py": "241bcca2f2badee18c193f2107d5e6cd0385f3f0089abb946b60614c01906101",
+    "v2.3/server/tests/unit/test_etf_retry_policy.py": "34610a7b76b4576fe4cf7e4588f865c50668b713ad8cb3802555994633c9e182",
+    "v2.3/live_client/tests/test_partial_cash_plan.py": "b3f0eed1bfc25121a3def6f999e5aac8d652ebb1f25b76b8db5e91994c1af2ae",
+    "v2.3/live_client/tests/test_execution_queue.py": "50490c68e16313b4ed84952777dc2b2eda4fa0877ddfff80b31af787b19c1a4d"
+  },
+  "tests_xml_sha256": "530a040cfed0cc557c39c030cfba5b04f5edc31bae3efbf357891372e415d1bd"
+}

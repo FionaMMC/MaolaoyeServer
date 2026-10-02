@@ -1,0 +1,237 @@
+"""Hydra target → rebalance → attempt contract。"""
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from app.execution import ExecutionDomain
+
+
+class HydraWeight(BaseModel):
+    code: str = Field(pattern=r"^\d{6}\.(SH|SZ)$")
+    weight: float = Field(gt=0, le=1)
+
+    @field_validator("weight")
+    @classmethod
+    def finite_weight(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("weight 必须是有限数")
+        return value
+
+
+class HydraTargetRequest(BaseModel):
+    execution_domain: ExecutionDomain = "paper"
+    account_alias: str = Field(min_length=1, max_length=100)
+    instance_id: str = Field(min_length=1, max_length=200)
+    strategy_version: str = Field(min_length=1, max_length=200)
+    publisher_source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    decision_date: str = Field(pattern=r"^\d{8}$")
+    as_of_date: str = Field(pattern=r"^\d{8}$")
+    execution_date: str = Field(pattern=r"^\d{8}$")
+    research_input_hashes: dict[str, str]
+    input_hashes: dict[str, str]
+    weights: list[HydraWeight] = Field(min_length=1)
+    cash_buffer_weight: float = Field(ge=0, lt=1)
+    basket_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    buy_price_offset_bps: float = Field(default=50.0, ge=0, le=50)
+    sell_price_offset_bps: float = Field(default=50.0, ge=0, le=50)
+    # Lower rank first; unlisted symbols share the last tier. Part of target hash.
+    buy_priorities: dict[str, int] = Field(default_factory=dict)
+    # Separate research inputs from refreshed, immutable execution evidence.
+    execution_raw_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    execution_calendar_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("buy_priorities", mode="before")
+    @classmethod
+    def valid_priorities(cls, value):
+        if not isinstance(value, dict) or any(type(rank) is not int or rank < 0 for rank in value.values()):
+            raise ValueError("buy_priorities 必须是非负整数优先级")
+        return value
+
+    @model_validator(mode="after")
+    def validate_contract(self) -> "HydraTargetRequest":
+        codes = [item.code for item in self.weights]
+        if set(self.buy_priorities) - set(codes):
+            raise ValueError("buy_priorities 只能引用目标篮子标的")
+        if len(codes) != len(set(codes)):
+            raise ValueError("Hydra target code 重复")
+        if abs(sum(item.weight for item in self.weights) - 1.0) > 1e-8:
+            raise ValueError("Hydra target weight 必须合计为 1")
+        required_hashes = {
+            "model_hfq", "execution_raw", "corporate_actions", "trading_calendar",
+        }
+        if set(self.input_hashes) != required_hashes:
+            raise ValueError(f"input_hashes 必须恰好包含 {sorted(required_hashes)}")
+        if not all(
+            len(value) == 64 and all(char in "0123456789abcdef" for char in value)
+            for value in self.input_hashes.values()
+        ):
+            raise ValueError("input_hashes 必须是 lowercase SHA-256")
+        if not self.research_input_hashes or not all(
+            key
+            and len(value) == 64
+            and all(char in "0123456789abcdef" for char in value)
+            for key, value in self.research_input_hashes.items()
+        ):
+            raise ValueError("research_input_hashes 必须是非空的 lowercase SHA-256 映射")
+        if self.as_of_date > self.decision_date:
+            raise ValueError("as_of_date 不能晚于 decision_date")
+        if self.execution_date <= self.decision_date:
+            raise ValueError("execution_date 必须晚于 decision_date")
+        if hydra_basket_hash(self) != self.basket_sha256:
+            raise ValueError("basket_sha256 与 target 内容不一致")
+        return self
+
+
+def hydra_basket_hash(target: HydraTargetRequest | dict) -> str:
+    payload = target if isinstance(target, dict) else target.model_dump()
+    canonical = {
+        "strategy_version": payload["strategy_version"],
+        "publisher_source_commit": payload["publisher_source_commit"],
+        "decision_date": payload["decision_date"],
+        "as_of_date": payload["as_of_date"],
+        "execution_date": payload["execution_date"],
+        "research_input_hashes": dict(sorted(payload["research_input_hashes"].items())),
+        "input_hashes": dict(sorted(payload["input_hashes"].items())),
+        "weights": sorted(
+            [
+                {
+                    "code": item["code"] if isinstance(item, dict) else item.code,
+                    "weight": float(
+                        item["weight"] if isinstance(item, dict) else item.weight
+                    ),
+                }
+                for item in payload["weights"]
+            ],
+            key=lambda item: item["code"],
+        ),
+        "cash_buffer_weight": float(payload["cash_buffer_weight"]),
+    }
+    for field in ("execution_raw_sha256", "execution_calendar_sha256"):
+        if payload.get(field) is not None:
+            canonical[field] = payload[field]
+    if payload.get("buy_priorities"):
+        canonical["buy_priorities"] = dict(sorted(payload["buy_priorities"].items()))
+    body = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(body).hexdigest()
+
+
+class HydraRetryRequest(BaseModel):
+    execution_domain: ExecutionDomain = "paper"
+    account_alias: str = Field(min_length=1, max_length=100)
+    rebalance_id: str
+    trade_date: str = Field(pattern=r"^\d{8}$")
+    execution_raw_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    execution_calendar_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    actual_cash: float = Field(ge=0)
+    actual_positions: dict[str, int]
+    reconciliation_evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class HydraAttemptCloseRequest(BaseModel):
+    execution_domain: ExecutionDomain = "paper"
+    account_alias: str = Field(min_length=1, max_length=100)
+    attempt_id: str
+    actual_cash: float | None = Field(default=None, ge=0)
+    actual_positions: dict[str, int] | None = None
+    reconciliation_evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    # Legacy callers retain final-reconciliation semantics. New callers can end
+    # the operational window without asserting a broker cancellation.
+    close_mode: Literal["broker_final", "execution_deadline"] = "broker_final"
+    execution_deadline_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_close_mode(self) -> "HydraAttemptCloseRequest":
+        if self.actual_cash is not None and not math.isfinite(self.actual_cash):
+            raise ValueError("actual_cash 必须是有限数")
+        if self.close_mode == "execution_deadline":
+            deadline = self.execution_deadline_at
+            if deadline is None or deadline.utcoffset() is None:
+                raise ValueError("到期 Close 必须提供带时区的 execution_deadline_at")
+        elif self.execution_deadline_at is not None:
+            raise ValueError("broker_final 不接受 execution_deadline_at")
+        elif self.actual_cash is None or self.actual_positions is None:
+            raise ValueError("broker_final 必须提供实际现金与持仓；到期收尾不要求 QMT 在线")
+        return self
+
+
+class HydraAttemptCloseResponseData(BaseModel):
+    target_id: str
+    rebalance_id: str
+    attempt_id: str
+    execution_domain: ExecutionDomain
+    status: Literal[
+        "COMPLETE", "RESIDUAL", "CLOSED_PENDING_BROKER",
+        "CLOSED_PENDING_RECONCILIATION",
+    ]
+    residual_after: dict[str, int]
+    workflow_closed: bool = True
+    broker_finalized: bool = True
+    effective_finalized: bool = True
+    retry_ready: bool = False
+    unresolved_order_ids: list[str] = Field(default_factory=list)
+    provisional_residual: dict[str, int] = Field(default_factory=dict)
+    closure_receipt_id: str | None = None
+
+
+class HydraRelayResponseData(BaseModel):
+    target_id: str
+    rebalance_id: str
+    attempt_id: str
+    batch_id: str
+    batch_sha256: str
+    execution_domain: ExecutionDomain
+    trade_date: str
+    order_count: int
+    idempotent_replay: bool = False
+
+
+class HydraExecutionWaitResponseData(BaseModel):
+    status: Literal["WAITING_EXECUTION_DATE", "WAITING_EXECUTION_DATA", "WAITING_RECONCILIATION"]
+    execution_domain: ExecutionDomain
+    plan_id: str | None = None
+    rebalance_id: str | None = None
+    retry_outcome: str | None = None
+    next_reference_date: str | None = None
+    next_execution_date: str | None = None
+    reason: str
+    allocation_audit: dict | None = None
+    order_count: Literal[0] = 0
+
+
+class HydraAdvanceRequest(BaseModel):
+    execution_domain: ExecutionDomain = "live"
+    account_alias: str
+    instance_id: str
+    reference_date: str = Field(pattern=r"^\d{8}$")
+    actual_cash: float = Field(ge=0, allow_inf_nan=False)
+    actual_positions: dict[str, int]
+    reconciliation_evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("reference_date")
+    @classmethod
+    def valid_reference_date(cls, value):
+        datetime.strptime(value, "%Y%m%d")
+        return value
+
+
+class HydraExecutionPublishRequest(BaseModel):
+    execution_domain: Literal["live"] = "live"
+    account_alias: str
+    reference_date: str = Field(pattern=r"^\d{8}$")
+    producer_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    bars: list[dict] = Field(min_length=1, max_length=1000)
+    calendar_dates: list[str] = Field(min_length=2, max_length=3000)
+
+    @model_validator(mode="after")
+    def valid_dates(self):
+        for date in [self.reference_date, *self.calendar_dates]:
+            if len(date) != 8 or not date.isdigit():
+                raise ValueError("执行日历必须使用 YYYYMMDD")
+            datetime.strptime(date, "%Y%m%d")
+        return self

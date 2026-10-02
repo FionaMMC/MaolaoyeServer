@@ -4,15 +4,20 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Iterable
 
-from sqlalchemy import case, select
+from sqlalchemy import case, select, text
 
-from app.models import Order, OrderSignalMap
+from app.models import HydraExecutionAttempt, InstanceState, Order, OrderSignalMap
 from app.schemas.orders import OrderItem
 from app.services.aggregate import AggregatedOrder, OrderSignalMapping
+from app.services.ledger_transaction import begin_ledger_transaction
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+class StrategyStateChanged(RuntimeError):
+    """A fill/capital change arrived while computing; retry from the new ledger."""
 
 
 class OrdersQueueService:
@@ -25,15 +30,35 @@ class OrdersQueueService:
         self,
         orders: list[AggregatedOrder],
         mappings: Iterable[OrderSignalMapping],
+        strategy_states: dict | None = None,
+        expected_states: dict | None = None,
     ) -> int:
-        if not orders:
+        if not orders and not strategy_states:
             return 0
 
         now = _now_iso()
         with self.session_factory() as session:
+            if expected_states is not None:
+                session.execute(text("BEGIN IMMEDIATE"))
+                for instance_id, expected in expected_states.items():
+                    row = session.get(InstanceState, instance_id)
+                    if row is None or (float(row.virtual_cash) != expected["cash"]
+                                       or (row.virtual_positions or {}) != expected["positions"]
+                                       or (row.strategy_state or {}) != (expected["strategy_state"] or {})):
+                        raise StrategyStateChanged(instance_id)
+            # Publish state and orders together. A crash must not advance the
+            # strategy's monthly cursor without publishing its orders.
+            for instance_id, state in (strategy_states or {}).items():
+                if state is not None:
+                    row = session.get(InstanceState, instance_id)
+                    if row is not None:
+                        row.strategy_state = state
+                        row.last_update = now
             for o in orders:
                 session.add(Order(
                     order_id=o.order_id,
+                    execution_domain=o.execution_domain,
+                    qmt_account_alias=o.qmt_account_alias,
                     account_group=o.account_group,
                     symbol=o.symbol,
                     direction=o.direction,
@@ -52,18 +77,40 @@ class OrdersQueueService:
             session.commit()
         return len(orders)
 
-    def list_pending(self, valid_date: str) -> list[OrderItem]:
+    def list_pending(
+        self,
+        valid_date: str,
+        execution_domain: str = "paper",
+        allowed_account_aliases: tuple[str, ...] | None = None,
+    ) -> list[OrderItem]:
         with self.session_factory() as session:
+            if execution_domain == "live":
+                # Serialize selection + delivery stamp against late-fill
+                # invalidation. There is no HTTP/QMT call inside this lock.
+                begin_ledger_transaction(session, execution_domain, None)
             stmt = (
                 select(Order)
                 .where(Order.valid_date == valid_date)
+                .where(Order.execution_domain == execution_domain)
                 .where(Order.status == "PENDING")
+                .where(
+                    Order.attempt_id.is_(None)
+                    | Order.attempt_id.not_in(
+                        select(HydraExecutionAttempt.attempt_id).where(
+                            HydraExecutionAttempt.status.in_((
+                                "CLOSED_PENDING_BROKER", "CLOSED_PENDING_RECONCILIATION",
+                            )),
+                        ),
+                    ),
+                )
                 .order_by(
                     case((Order.direction == "SELL", 0), else_=1),
                     Order.created_at,
                     Order.order_id,
                 )
             )
+            if allowed_account_aliases:
+                stmt = stmt.where(Order.qmt_account_alias.in_(allowed_account_aliases))
             rows = session.execute(stmt).scalars().all()
             # 拉取即盖章（只记首次）：fetched_at 非空的日期不允许默认重算，
             # 否则 order_id 换新 → 客户端次日成交回报全量 unmatched（2026-07-02 事故）。
@@ -78,6 +125,20 @@ class OrdersQueueService:
             return [
                 OrderItem(
                     order_id=r.order_id,
+                    execution_domain=r.execution_domain,
+                    qmt_account_alias=r.qmt_account_alias,
+                    target_id=r.target_id,
+                    rebalance_id=r.rebalance_id,
+                    attempt_id=r.attempt_id,
+                    attempt_number=r.attempt_number,
+                    batch_id=r.batch_id,
+                    batch_sha256=r.batch_sha256,
+                    target_hash=r.target_hash,
+                    execution_reference_price=r.execution_reference_price,
+                    execution_policy=(
+                        (session.get(HydraExecutionAttempt, r.attempt_id).risk_snapshot or {}).get("execution_policy")
+                        if r.attempt_id and session.get(HydraExecutionAttempt, r.attempt_id) else None
+                    ),
                     account_group=r.account_group,
                     symbol=r.symbol,
                     direction=r.direction,

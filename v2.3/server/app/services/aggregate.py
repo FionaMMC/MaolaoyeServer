@@ -13,6 +13,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
+from app.execution import ExecutionDomain
 from app.strategy.base import RawSignal
 
 
@@ -22,6 +23,8 @@ class TaggedSignal:
     signal_id: str
     account_group: str
     raw: RawSignal
+    execution_domain: ExecutionDomain = "paper"
+    qmt_account_alias: str | None = None
 
 
 @dataclass(frozen=True)
@@ -34,6 +37,8 @@ class AggregatedOrder:
     quantity: int
     limit_price: float
     valid_date: str
+    execution_domain: ExecutionDomain = "paper"
+    qmt_account_alias: str | None = None
 
 
 class OrderSignalMapping(NamedTuple):
@@ -63,13 +68,23 @@ class AggregateService:
         if not signals:
             return AggregateResult()
 
-        groups: dict[tuple[str, str, str], list[TaggedSignal]] = defaultdict(list)
+        groups: dict[
+            tuple[ExecutionDomain, str | None, str, str, str], list[TaggedSignal]
+        ] = defaultdict(list)
         for ts in signals:
-            key = (ts.account_group, ts.raw.symbol, ts.raw.direction)
+            key = (
+                ts.execution_domain,
+                ts.qmt_account_alias,
+                ts.account_group,
+                ts.raw.symbol,
+                ts.raw.direction,
+            )
             groups[key].append(ts)
 
         result = AggregateResult()
-        for (account_group, symbol, direction), members in groups.items():
+        for (
+            execution_domain, qmt_account_alias, account_group, symbol, direction,
+        ), members in groups.items():
             order_id = uuid.uuid4().hex
 
             total_qty = sum(m.raw.quantity for m in members)
@@ -87,6 +102,8 @@ class AggregateService:
                 quantity=total_qty,
                 limit_price=round(limit, 4),
                 valid_date=valid_date,
+                execution_domain=execution_domain,
+                qmt_account_alias=qmt_account_alias,
             ))
             for m in members:
                 result.mappings.append(OrderSignalMapping(

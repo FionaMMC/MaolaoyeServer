@@ -1,0 +1,27 @@
+{
+  "mode": "mock_qmt_only",
+  "real_qmt_contacted": false,
+  "scenarios": {
+    "ambiguous_response_no_replay": {
+      "broker_submit_calls": 1,
+      "status": "PASS"
+    },
+    "crash_after_broker_acceptance": {
+      "broker_submit_calls": 2,
+      "recovered_by_remark": 1,
+      "status": "PASS"
+    },
+    "missing_preflight_blocks_before_qmt": {
+      "qmt_opened": false,
+      "status": "PASS"
+    },
+    "server_down_and_repeat_submit": {
+      "first_qmt_calls": 2,
+      "replay_qmt_calls": 0,
+      "server_contacted": false,
+      "status": "PASS"
+    }
+  },
+  "server_contacted": false,
+  "status": "PASS"
+}

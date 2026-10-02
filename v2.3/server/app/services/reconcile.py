@@ -25,6 +25,18 @@ from app.schemas.reconcile import (
     QmtPositionSnapshot,
     ReconcileResult,
 )
+from app.services.ownership import (
+    OwnershipOverlap,
+    validate_no_owned_symbol_overlap,
+)
+
+__all__ = [
+    "InstanceNotFound",
+    "OwnershipOverlap",
+    "ReconcileGuardTripped",
+    "ReconcileSanityCheckFailed",
+    "ReconcileService",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -44,10 +56,6 @@ class ReconcileSanityCheckFailed(Exception):
     但 cash 偏离检查已移除（见 reconcile_cash_total）。
     """
     pass
-
-
-class OwnershipOverlap(Exception):
-    """两个 instance 的 owned_symbols 列表有重叠（启动校验失败）。"""
 
 
 class ReconcileGuardTripped(ReconcileSanityCheckFailed):
@@ -148,10 +156,65 @@ class ReconcileService:
                 raise InstanceNotFound(
                     f"instance_id={snapshot.instance_id} 不存在于 instance_state 表"
                 )
+            if inst.execution_domain != snapshot.execution_domain:
+                raise ReconcileGuardTripped(
+                    "snapshot execution_domain 与 instance_state 不一致"
+                )
+            if snapshot.account_alias is not None and inst.account_alias not in (
+                None, snapshot.account_alias,
+            ):
+                raise ReconcileGuardTripped(
+                    "snapshot account_alias 与 instance_state 不一致"
+                )
 
             _, account_has_shared_ledger = self._configured_account_policy(
                 snapshot.instance_id, snapshot.qmt_account_id,
             )
+
+            if inst.ledger_mode == "attributed":
+                if not snapshot.dry_run:
+                    raise ReconcileGuardTripped(
+                        "attributed 子账本禁止用整账户 QMT 快照覆盖；"
+                        "只能由已归属成交、费用、股息和显式资本划拨维护"
+                    )
+                portfolio = self.reconcile_total(
+                    qmt_positions=snapshot.qmt_positions,
+                    qmt_cash=snapshot.qmt_cash,
+                    snapshot_time=snapshot.snapshot_time,
+                    execution_domain=snapshot.execution_domain,
+                    account_alias=snapshot.account_alias or inst.account_alias,
+                    cash_tolerance=0.0,
+                )
+                managed_positions = {
+                    symbol: int(quantity)
+                    for symbol, quantity in (inst.virtual_positions or {}).items()
+                    if int(quantity) > 0
+                }
+                return ReconcileResult(
+                    instance_id=snapshot.instance_id,
+                    snapshot_time=snapshot.snapshot_time,
+                    dry_run=True,
+                    applied=False,
+                    reconciliation_scope="portfolio_attributed",
+                    managed_cash=float(inst.virtual_cash),
+                    managed_positions=managed_positions,
+                    portfolio=portfolio,
+                    server_cash=float(inst.virtual_cash),
+                    qmt_cash=float(snapshot.qmt_cash),
+                    cash_diff=float(snapshot.qmt_cash) - float(inst.virtual_cash),
+                    n_server_positions=len(managed_positions),
+                    n_qmt_positions=len({
+                        symbol: quantity
+                        for symbol, quantity in snapshot.qmt_positions.items()
+                        if int(quantity) > 0
+                    }),
+                    n_matched=portfolio.n_matched,
+                    n_mismatched=portfolio.n_mismatched,
+                    n_server_only=0,
+                    n_qmt_only=0,
+                    diffs=[],
+                )
+
             if not snapshot.dry_run and account_has_shared_ledger:
                 raise ReconcileGuardTripped(
                     "该 QMT 物理账户包含 shared_ledger 策略，任何实例都禁止用整账户"
@@ -168,6 +231,8 @@ class ReconcileService:
             if my_owned is None:
                 for other in session.execute(select(InstanceState)).scalars().all():
                     if other.instance_id == snapshot.instance_id:
+                        continue
+                    if other.execution_domain != snapshot.execution_domain:
                         continue
                     if other.owned_symbols:
                         others_owned.update(other.owned_symbols)
@@ -238,6 +303,8 @@ class ReconcileService:
                 snapshot_time=snapshot.snapshot_time,
                 dry_run=snapshot.dry_run,
                 applied=False,
+                managed_cash=server_cash,
+                managed_positions=server_positions,
                 server_cash=server_cash,
                 qmt_cash=float(snapshot.qmt_cash),
                 cash_diff=cash_diff,
@@ -323,25 +390,21 @@ class ReconcileService:
             return result
 
     def validate_no_overlap(self) -> None:
-        """启动校验：所有 instance 的 owned_symbols 列表两两不重叠。
+        """校验同一账户范围内的 owned symbols 不重叠。
 
-        legacy instance（owned_symbols=None）不参与校验（它消费"剩下的"）。
-        如果 raise OwnershipOverlap 应该让 app startup 失败。
+        paper 与 live 是隔离账本；具有不同显式 account_alias 的账户也可
+        持有相同标的。legacy instance（owned_symbols=None）不参与校验。
         """
-        all_owned: dict[str, str] = {}  # symbol → first_owner_instance_id
         with self.session_factory() as session:
-            for inst in session.execute(select(InstanceState)).scalars().all():
-                if not inst.owned_symbols:
-                    continue
-                for s in inst.owned_symbols:
-                    if s in all_owned and all_owned[s] != inst.instance_id:
-                        raise OwnershipOverlap(
-                            f"symbol {s} owned by both "
-                            f"{all_owned[s]} and {inst.instance_id}"
-                        )
-                    all_owned[s] = inst.instance_id
+            validate_no_owned_symbol_overlap(session)
 
-    def reconcile_cash_total(self, qmt_total_cash: float, tolerance: float = 0.05) -> bool:
+    def reconcile_cash_total(
+        self,
+        qmt_total_cash: float,
+        tolerance: float = 0.05,
+        execution_domain: str = "paper",
+        account_alias: str | None = None,
+    ) -> bool:
         """检查 Σ(virtual_cash) ≈ QMT total cash。仅报警，不修改 state。
 
         返回 True = OK，False = 偏差超阈值（已记 warning，调用方决定是否触发 alert）。
@@ -349,7 +412,12 @@ class ReconcileService:
         Task 23 deploy 会把此方法接入 scheduler 定时检查。
         """
         with self.session_factory() as session:
-            instances = session.execute(select(InstanceState)).scalars().all()
+            query = select(InstanceState).where(
+                InstanceState.execution_domain == execution_domain
+            )
+            if account_alias is not None:
+                query = query.where(InstanceState.account_alias == account_alias)
+            instances = session.execute(query).scalars().all()
             total_virtual = sum(float(inst.virtual_cash) for inst in instances)
             if total_virtual <= 0:
                 return True
@@ -362,14 +430,26 @@ class ReconcileService:
                 return False
             return True
 
-    def reconcile_total(self, qmt_positions: dict[str, int], qmt_cash: float,
-                        snapshot_time: str, cash_tolerance: float = 0.05):
+    def reconcile_total(
+        self,
+        qmt_positions: dict[str, int],
+        qmt_cash: float,
+        snapshot_time: str,
+        cash_tolerance: float = 0.05,
+        execution_domain: str = "paper",
+        account_alias: str | None = None,
+    ):
         """Portfolio 级总量对账：对每个 symbol 断言 Σ_i virtual_positions[X] == QMT[X]。
         只报警、绝不改账（归属由 settlement 血缘维护）。多个 instance 可共同持有同一
         symbol（如 v53 + v79 都持 511260.SH），本方法只校验其和。"""
         from app.schemas.reconcile import TotalReconcileResult
         with self.session_factory() as session:
-            instances = session.execute(select(InstanceState)).scalars().all()
+            query = select(InstanceState).where(
+                InstanceState.execution_domain == execution_domain
+            )
+            if account_alias is not None:
+                query = query.where(InstanceState.account_alias == account_alias)
+            instances = session.execute(query).scalars().all()
             ledger_sum: dict[str, int] = {}
             per_instance: dict[str, dict[str, int]] = {}
             cash_total = 0.0
@@ -382,7 +462,33 @@ class ReconcileService:
                     ledger_sum[s] = ledger_sum.get(s, 0) + qi
                     per_instance.setdefault(s, {})[inst.instance_id] = qi
         qmt = {s: int(q) for s, q in qmt_positions.items()
-               if int(q) > 0 and int(q) <= MAX_REASONABLE_QTY_PER_STOCK}
+                if int(q) > 0 and int(q) <= MAX_REASONABLE_QTY_PER_STOCK}
+        # When every instance in an explicit account scope declares ownership,
+        # positions outside their union are audited external holdings, not a
+        # server-ledger mismatch.  A legacy row (owned_symbols=None) deliberately
+        # keeps the old "all remaining symbols" semantics.
+        explicit_ownership = bool(instances) and all(
+            inst.owned_symbols is not None for inst in instances
+        )
+        external_positions: dict[str, int] = {}
+        if explicit_ownership:
+            managed_symbols = {
+                symbol
+                for inst in instances
+                for symbol in (inst.owned_symbols or ())
+            }
+            external_positions = {
+                symbol: qmt[symbol] for symbol in sorted(set(qmt) - managed_symbols)
+            }
+            if external_positions:
+                logger.info(
+                    "reconcile_total audited %d external positions for %s/%s: %s",
+                    len(external_positions), execution_domain,
+                    account_alias or "<default>",
+                    dict(list(external_positions.items())[:20]),
+                )
+            qmt = {symbol: qty for symbol, qty in qmt.items()
+                   if symbol in managed_symbols}
         all_syms = set(ledger_sum) | set(qmt)
         matched = 0
         mismatches: list[dict] = []
@@ -400,10 +506,14 @@ class ReconcileService:
         cash_ok = True
         if cash_total > 0:
             shortfall = cash_total - qmt_cash
-            cash_ok = shortfall <= cash_total * cash_tolerance
+            cash_ok = shortfall <= max(1.0, cash_total * cash_tolerance)
         result = TotalReconcileResult(snapshot_time=snapshot_time, n_symbols=len(all_syms),
-            n_matched=matched, n_mismatched=len(mismatches), mismatches=mismatches,
-            cash_ok=cash_ok, ledger_cash_total=cash_total, qmt_cash=float(qmt_cash))
+            n_matched=matched, n_mismatched=len(mismatches),
+            n_external_positions=len(external_positions),
+            external_positions=external_positions,
+            mismatches=mismatches,
+            cash_ok=cash_ok, ledger_cash_total=cash_total, qmt_cash=float(qmt_cash),
+            unallocated_cash=float(qmt_cash) - cash_total)
         if mismatches or not cash_ok:
             logger.error("reconcile_total MISMATCH: %d/%d symbols off, cash_ok=%s "
                          "(ledger_cash=%.0f qmt_cash=%.0f). mismatches=%s",
@@ -414,12 +524,24 @@ class ReconcileService:
                         "(ledger_cash=%.0f <= qmt_cash=%.0f)", len(all_syms), cash_total, qmt_cash)
         return result
 
-    def shadow_compare(self, qmt_positions: dict[str, int], qmt_cash: float,
-                       snapshot_time: str) -> dict:
+    def shadow_compare(
+        self,
+        qmt_positions: dict[str, int],
+        qmt_cash: float,
+        snapshot_time: str,
+        execution_domain: str = "paper",
+        account_alias: str | None = None,
+    ) -> dict:
         """影子对比：跑 reconcile_total，返回 {consistent: bool, total: TotalReconcileResult}。
         consistent = 台账之和逐 symbol == QMT 且 cash 在容差内。切权前每日 log，
         连续 N 天 True 才允许把 total 变权威。"""
-        total = self.reconcile_total(qmt_positions, qmt_cash, snapshot_time)
+        total = self.reconcile_total(
+            qmt_positions,
+            qmt_cash,
+            snapshot_time,
+            execution_domain=execution_domain,
+            account_alias=account_alias,
+        )
         consistent = (total.n_mismatched == 0 and total.cash_ok)
         logger.info("shadow_compare: consistent=%s (mismatched=%d cash_ok=%s)",
                     consistent, total.n_mismatched, total.cash_ok)

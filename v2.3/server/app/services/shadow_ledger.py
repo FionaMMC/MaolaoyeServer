@@ -8,12 +8,13 @@ import math
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 import pandas as pd
 import yaml
 from sqlalchemy import delete, select
 
-from app.models import ShadowInstanceState, ShadowNavSnapshot, ShadowTarget
+from app.models import ShadowFill, ShadowInstanceState, ShadowNavSnapshot, ShadowTarget
 from app.storage.parquet import ParquetStore
 
 logger = logging.getLogger(__name__)
@@ -101,16 +102,24 @@ class ShadowBoundaryError(ValueError):
     """A configuration or target attempted to cross the no-order boundary."""
 
 
+class StaleShadowTarget(ValueError):
+    """Expired research cannot rebalance, but accepted holdings still have value."""
+
+
 class ShadowLedgerService:
     """Consume versioned targets and maintain theoretical cash/positions/NAV.
 
     This module intentionally imports no order, trade, signal, or settlement model.
     """
 
-    def __init__(self, session_factory, parquet_store: ParquetStore, config_path: Path):
+    def __init__(
+        self, session_factory, parquet_store: ParquetStore, config_path: Path,
+        daily_risk=None,
+    ):
         self.session_factory = session_factory
         self.store = parquet_store
         self.config_path = Path(config_path)
+        self.daily_risk = daily_risk
 
     def load_instances(self) -> list[dict]:
         if not self.config_path.exists():
@@ -201,6 +210,9 @@ class ShadowLedgerService:
                         f"{shadow_id} publisher commits must be unique full Git SHAs"
                     )
             max_target_age_days = int(item.get("max_target_age_days", 45))
+            rebalance_cadence = item.get("rebalance_cadence", "allocation_change")
+            if rebalance_cadence not in {"monthly", "allocation_change"}:
+                raise ShadowBoundaryError(f"{shadow_id} invalid rebalance_cadence")
             if max_target_age_days < 0:
                 raise ShadowBoundaryError(
                     f"{shadow_id} max_target_age_days must be non-negative"
@@ -215,6 +227,7 @@ class ShadowLedgerService:
                 "lot_size": int(item.get("lot_size", 100)),
                 "max_price_staleness_days": int(item.get("max_price_staleness_days", 7)),
                 "max_target_age_days": max_target_age_days,
+                "rebalance_cadence": rebalance_cadence,
                 "allowed_symbols": allowed_symbols,
                 "allowed_symbol_fallback_state_reasons": fallback_reasons,
                 "required_symbols": required_symbols,
@@ -269,7 +282,7 @@ class ShadowLedgerService:
         max_target_age_days = constraints.get("max_target_age_days")
         if (max_target_age_days is not None
                 and (run_date - as_of).days > int(max_target_age_days)):
-            raise ValueError(
+            raise StaleShadowTarget(
                 f"shadow target is stale: as_of_date={as_of:%Y%m%d} "
                 f"max_age_days={int(max_target_age_days)}"
             )
@@ -313,16 +326,30 @@ class ShadowLedgerService:
                 summaries.append({
                     "shadow_id": cfg["shadow_id"], "status": "blocked", "reason": str(exc)
                 })
-        return {"trade_date": trade_date, "instances": summaries}
+        result = {"trade_date": trade_date, "instances": summaries}
+        if self.daily_risk is not None:
+            try:
+                risk = self.daily_risk.upsert_for_date(
+                    trade_date, execution_domain="paper",
+                )
+                result["daily_risk_snapshots"] = risk["written"]
+            except Exception:
+                # A derived monitoring artifact cannot invalidate a completed
+                # shadow ledger mark or cross its no-order safety boundary.
+                logger.exception("daily risk snapshot failed date=%s", trade_date)
+        return result
 
     def _run_one(self, cfg: dict, trade_date: int) -> dict:
         path = cfg["target_file"]
         if not path.exists():
             raise FileNotFoundError(f"target missing: {path}")
         frame = pd.read_parquet(path) if path.suffix.lower() == ".parquet" else pd.read_csv(path)
-        target, target_hash = self.validate_target(
-            frame, cfg["shadow_id"], trade_date, constraints=cfg
-        )
+        try:
+            target, target_hash = self.validate_target(
+                frame, cfg["shadow_id"], trade_date, constraints=cfg
+            )
+        except StaleShadowTarget as exc:
+            return self._mark_accepted_holdings(cfg, trade_date, str(exc))
         if cfg["require_sidecar"]:
             sidecar_path = path.with_suffix(".json")
             if not sidecar_path.is_file():
@@ -330,12 +357,53 @@ class ShadowLedgerService:
                     f"required producer sidecar missing: {sidecar_path}"
                 )
             validate_shadow_sidecar(sidecar_path, target, cfg)
+        held_reason = None
+        # A monthly control must follow the accepted monthly allocation even
+        # when the weekly publisher changes weights, not just metadata. Keep
+        # valuing the accepted holdings without installing the rejected target.
+        if cfg.get("rebalance_cadence") == "monthly":
+            with self.session_factory() as session:
+                prior = session.get(ShadowInstanceState, cfg["shadow_id"])
+                if prior is not None and prior.target_hash and prior.as_of_date:
+                    new_cycle = str(target["as_of_date"].iloc[0])[:6]
+                    old_cycle = str(prior.as_of_date)[:6]
+                    if new_cycle <= old_cycle and target_hash != prior.target_hash:
+                        accepted = session.scalars(select(ShadowTarget).where(
+                            ShadowTarget.shadow_id == cfg["shadow_id"],
+                            ShadowTarget.target_hash == prior.target_hash,
+                        )).all()
+                        old_weights = {row.code: float(row.weight) for row in accepted}
+                        new_weights = dict(zip(target["code"], target["weight"]))
+                        same_weights = (
+                            old_weights.keys() == new_weights.keys()
+                            and all(abs(old_weights[code] - float(weight)) <= 1e-12
+                                    for code, weight in new_weights.items())
+                        )
+                        if new_cycle < old_cycle or not same_weights:
+                            if not accepted:
+                                raise ValueError("accepted monthly shadow allocation is missing")
+                            held_reason = (
+                                "monthly_cycle_rollback_rejected" if new_cycle < old_cycle
+                                else "monthly_cycle_already_consumed"
+                            )
+                            logger.warning("shadow %s: %s; holding accepted target",
+                                           cfg["shadow_id"], held_reason)
+                            target = pd.DataFrame([
+                                {column: getattr(row, column) for column in TARGET_COLUMNS}
+                                for row in accepted
+                            ])
+                            target_hash = prior.target_hash
         prices = self._prices(
             set(target["code"].tolist()), trade_date, cfg["max_price_staleness_days"]
         )
 
         with self.session_factory() as session:
             state = session.get(ShadowInstanceState, cfg["shadow_id"])
+            latest = session.scalar(select(ShadowNavSnapshot.date).where(
+                ShadowNavSnapshot.shadow_id == cfg["shadow_id"],
+            ).order_by(ShadowNavSnapshot.date.desc()).limit(1))
+            if latest and str(trade_date) < latest:
+                raise ValueError("cannot replay historical dates from a later shadow book")
             if state is None:
                 state = ShadowInstanceState(
                     shadow_id=cfg["shadow_id"], initial_cash=cfg["initial_cash"],
@@ -355,7 +423,44 @@ class ShadowLedgerService:
             transaction_cost = 0.0
             turnover = 0.0
             if state.target_hash != target_hash:
-                transaction_cost, turnover = self._rebalance(state, target, prices, cfg)
+                # Publication/input hashes are provenance, not trading intent.
+                # Keep monthly holdings through metadata refreshes; a new month
+                # still rebalances even when the desired weights are unchanged.
+                previous = session.scalars(select(ShadowTarget).where(
+                    ShadowTarget.shadow_id == cfg["shadow_id"],
+                    ShadowTarget.target_hash == state.target_hash,
+                )).all() if state.target_hash else []
+                old_weights = {row.code: float(row.weight) for row in previous}
+                new_weights = dict(zip(target["code"], target["weight"]))
+                same_allocation = (
+                    (state.as_of_date == target["as_of_date"].iloc[0]
+                     or (cfg.get("rebalance_cadence") == "monthly"
+                         and str(state.as_of_date)[:6]
+                         == str(target["as_of_date"].iloc[0])[:6]))
+                    and old_weights.keys() == new_weights.keys()
+                    and all(abs(old_weights[code] - float(weight)) <= 1e-12
+                            for code, weight in new_weights.items())
+                )
+                if not same_allocation:
+                    # Stale marks may value an unchanged book, but cannot be
+                    # used as today's theoretical execution price.
+                    prices = self._prices(
+                        existing_codes | set(target["code"]), trade_date, 0,
+                        for_execution=True,
+                    )
+                    fills = []
+                    transaction_cost, turnover = self._rebalance(
+                        state, target, prices, cfg, fills=fills,
+                    )
+                    for fill in fills:
+                        # A fresh id permits a legitimate A -> B -> A rotation;
+                        # the persisted target hash prevents scheduler retries.
+                        session.add(ShadowFill(
+                            fill_id=uuid4().hex, shadow_id=cfg["shadow_id"],
+                            trade_date=str(trade_date), target_hash=target_hash,
+                            price_basis="OFFICIAL_DAILY_CLOSE", created_at=_now_iso(),
+                            **fill,
+                        ))
                 session.execute(
                     delete(ShadowTarget).where(
                         ShadowTarget.shadow_id == cfg["shadow_id"],
@@ -386,10 +491,41 @@ class ShadowLedgerService:
             "shadow_id": cfg["shadow_id"], "status": "active", "nav": nav,
             "turnover": turnover, "transaction_cost": transaction_cost,
             "target_hash": target_hash,
+            "held_reason": held_reason,
         }
 
+    def _mark_accepted_holdings(self, cfg: dict, trade_date: int, reason: str) -> dict:
+        """Value only the persisted book; never accept or trade an expired file."""
+        with self.session_factory() as session:
+            state = session.get(ShadowInstanceState, cfg["shadow_id"])
+            if state is None or not state.target_hash:
+                raise StaleShadowTarget(reason + "; no accepted holdings to value")
+            accepted = list(session.scalars(select(ShadowTarget).where(
+                ShadowTarget.shadow_id == cfg["shadow_id"],
+                ShadowTarget.target_hash == state.target_hash,
+            )))
+            if not accepted:
+                raise ValueError("accepted shadow allocation is missing")
+            latest = session.scalar(select(ShadowNavSnapshot.date).where(
+                ShadowNavSnapshot.shadow_id == cfg["shadow_id"],
+            ).order_by(ShadowNavSnapshot.date.desc()).limit(1))
+            if latest and str(trade_date) < latest:
+                raise ValueError("cannot value historical dates from a later shadow book")
+            positions = dict(state.virtual_positions or {})
+            prices = self._prices(set(positions), trade_date, cfg["max_price_staleness_days"])
+            nav = self._nav(state.virtual_cash, positions, prices)
+            state.status = "stale_target"
+            state.state_reason = reason + "; valuation_only: holding accepted allocation"
+            state.last_turnover = 0
+            state.last_update = _now_iso()
+            self._upsert_snapshot(session, state, trade_date, nav, 0, 0)
+            session.commit()
+        return {"shadow_id": cfg["shadow_id"], "status": "stale_target", "nav": nav,
+                "valuation_only": True, "reason": reason, "transaction_cost": 0, "turnover": 0}
+
     def _prices(
-        self, symbols: set[str], trade_date: int, max_staleness_days: int
+        self, symbols: set[str], trade_date: int, max_staleness_days: int,
+        *, for_execution: bool = False,
     ) -> dict[str, float]:
         run_date = pd.to_datetime(str(trade_date), format="%Y%m%d")
         prices = {}
@@ -405,6 +541,13 @@ class ShadowLedgerService:
             price_date = pd.to_datetime(str(int(found["trade_date"])), format="%Y%m%d")
             if (run_date - price_date).days > max_staleness_days:
                 raise ValueError(f"stale price for {symbol}: {int(found['trade_date'])}")
+            if for_execution and (
+                int(found["trade_date"]) != trade_date
+                or bool(found.get("suspendFlag", 0))
+                or not math.isfinite(float(found.get("volume", 0)))
+                or float(found.get("volume", 0)) <= 0
+            ):
+                raise ValueError(f"no tradable same-day close for {symbol}: {trade_date}")
             price = float(found["close"])
             if not math.isfinite(price) or price <= 0:
                 raise ValueError(f"invalid close for {symbol}")
@@ -419,7 +562,7 @@ class ShadowLedgerService:
 
     def _rebalance(
         self, state: ShadowInstanceState, target: pd.DataFrame,
-        prices: dict[str, float], cfg: dict,
+        prices: dict[str, float], cfg: dict, *, fills: list | None = None,
     ) -> tuple[float, float]:
         old = {code: int(qty) for code, qty in (state.virtual_positions or {}).items()}
         nav_before = self._nav(state.virtual_cash, old, prices)
@@ -440,6 +583,9 @@ class ShadowLedgerService:
                 gross = qty * prices[code]
                 fee = self._fees(gross, "SELL", cfg)
                 cash += gross - fee
+                if fills is not None:
+                    fills.append(dict(code=code, direction="SELL", quantity=qty,
+                                      price=prices[code], fee=fee, cash_after=round(cash, 6)))
                 cost += fee
                 traded_value += gross
                 positions[code] = old.get(code, 0) - qty
@@ -458,6 +604,9 @@ class ShadowLedgerService:
                 gross = qty * prices[code]
                 fee = self._fees(gross, "BUY", cfg)
                 cash -= gross + fee
+                if fills is not None:
+                    fills.append(dict(code=code, direction="BUY", quantity=qty,
+                                      price=prices[code], fee=fee, cash_after=round(cash, 6)))
                 cost += fee
                 traded_value += gross
                 positions[code] = positions.get(code, 0) + qty

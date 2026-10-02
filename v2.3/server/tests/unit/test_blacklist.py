@@ -29,10 +29,13 @@ def sf(tmp_path: Path):
     return make_session_factory(engine)
 
 
-def _add_order(sf, *, symbol, status, valid_date, order_id):
+def _add_order(
+    sf, *, symbol, status, valid_date, order_id, execution_domain="paper",
+):
     with sf() as s:
         s.add(Order(
-            order_id=order_id, account_group="real_A",
+            order_id=order_id, execution_domain=execution_domain,
+            account_group="real_A",
             symbol=symbol, direction="BUY", quantity=100, limit_price=10.0,
             valid_date=valid_date, status=status, created_at=_now(),
         ))
@@ -61,6 +64,22 @@ def test_blacklist_collects_rejected_symbols(sf):
 
     svc = BlacklistService(sf)
     assert svc.compute() == {"600001.SH", "600002.SH"}
+
+
+def test_automatic_blacklist_rejections_are_execution_domain_scoped(sf):
+    _add_order(
+        sf, symbol="510300.SH", status="REJECTED",
+        valid_date=_recent_date(), order_id="paper-reject",
+        execution_domain="paper",
+    )
+    _add_order(
+        sf, symbol="159915.SZ", status="REJECTED",
+        valid_date=_recent_date(), order_id="live-reject",
+        execution_domain="live",
+    )
+    svc = BlacklistService(sf)
+    assert svc.compute(execution_domain="paper") == {"510300.SH"}
+    assert svc.compute(execution_domain="live") == {"159915.SZ"}
 
 
 def test_blacklist_dedup_same_symbol(sf):

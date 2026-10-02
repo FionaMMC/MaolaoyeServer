@@ -28,3 +28,16 @@ v2.3/server/plugins/v53/data/*.parquet
 
 # git worktrees
 .worktrees/
+
+# Private runtime exports, research inputs and local deployment working copies
+.env
+.env.*
+*.private.env
+**/.env
+**/.env.*
+!**/.env.example
+*.db-*
+*.sqlite
+*.sqlite3
+*.parquet
+work/

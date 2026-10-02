@@ -9,6 +9,10 @@ from typing import ClassVar
 from app.strategy.context import Context
 
 
+class StrategyInputNotReady(RuntimeError):
+    """Recoverable input absence; not a completed rebalance or service failure."""
+
+
 @dataclass(frozen=True)
 class RawSignal:
     """策略输出。归集前的原始信号。"""

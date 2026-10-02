@@ -1,0 +1,233 @@
+# Hydra independent live client
+
+This package is intentionally separate from `v2.3/client`. It never imports the
+paper client configuration and must use its own QMT userdata, session id, SQLite,
+logs, API key and Windows Task Scheduler names.
+
+## Safety defaults
+
+- `HYDRA_LIVE_EXECUTION_DOMAIN` must be exactly `live`.
+- The configured QMT account must match a private SHA-256 fingerprint and must not
+  appear in the private paper-account denylist.
+- When paper and live clients share a Windows device (the safe default), real
+  mode requires non-empty paper account/session/path/task-prefix denylists and
+  rejects overlap. For separate Windows devices, set
+  `HYDRA_LIVE_PAPER_CLIENT_COLOCATED=false`; server-side paper/live domain and
+  account-alias isolation remain mandatory.
+- Real mode requires an explicit transport decision. HTTPS remains the generic
+  default; the current owner-approved deployment may use
+  `http://120.26.138.82:8000` only when its private Windows configuration sets
+  `HYDRA_LIVE_ALLOW_INSECURE_HTTP=true`. This is an acknowledgement switch, not
+  encryption, and it does not relax Bearer authentication or any trading gate.
+- `HYDRA_LIVE_TRADING_ENABLED=false` blocks submit, including mock submit.
+- `HYDRA_LIVE_LEDGER_MODE=attributed` makes QMT the physical container only.
+  Hydra capacity comes from its server-side `virtual_cash` and attributed
+  positions; unallocated QMT cash and other strategies' positions are unusable.
+- `HYDRA_LIVE_RISK_MODE=disabled` independently blocks every live batch. `auto`
+  computes limits from Hydra's attributed equity, available cash and sellable
+  holdings; its snapshot is written once per batch before the first submission.
+- Every server batch is independently re-hashed and frozen by `query`. The
+  required online `preflight` compares QMT with the server ledger and persists a
+  hashed PASS receipt for that exact batch.
+- `submit` never constructs an HTTP client. It re-hashes only the frozen local
+  batch, requires its PASS receipt, verifies the live QMT account and current
+  capacity, then submits SELL before BUY even if the server is unavailable.
+- Each order intent is committed locally before the QMT call. A deterministic QMT
+  remark recovers a broker-accepted order after a client crash; an ambiguous call
+  with no observable broker order is never retried automatically.
+- Settlement refuses to infer `CANCELLED` from an active, missing or unknown QMT
+  order status.
+- The code imports `xtquant` only after `HYDRA_LIVE_MODE=live` connects. Tests and
+  `mock_qmt` cannot enter the real QMT adapter.
+
+Copy `.env.example` into a private secret-management mechanism. The package does
+not auto-load `.env`; Windows tasks must inject environment variables explicitly.
+
+## Command sequence
+
+From the `v2.3` directory with `PYTHONPATH` pointing to that directory:
+
+```powershell
+python -m live_client.cli initialize-account --evidence-sha256 <sha256>
+python -m live_client.cli doctor
+python -m live_client.cli ledger
+python -m live_client.cli query --date YYYYMMDD
+python -m live_client.cli preflight --date YYYYMMDD
+python -m live_client.cli submit --date YYYYMMDD
+python -m live_client.cli cancel-open --date YYYYMMDD
+python -m live_client.cli settle-close --date YYYYMMDD
+python -m live_client.cli retry --date YYYYMMDD --next-date YYYYMMDD
+python -m live_client.cli cash-flow --date YYYYMMDD --type DIVIDEND `
+  --amount 123.45 --source <verified-source> --source-event-id <stable-id> `
+  --evidence-sha256 <sha256>
+python -m live_client.cli cash-flow --date YYYYMMDD `
+  --type CAPITAL_DEALLOCATION --amount -123.45 --source owner-allocation `
+  --source-event-id <stable-id> --evidence-sha256 <sha256> `
+  --transition-to-attributed
+python -m live_client.cli reconcile-close --attempt-id <attempt_id> --evidence-sha256 <sha256>
+```
+
+`doctor` validates the private configuration and performs only the compatible
+SQLite schema migration. It reports `server_contacted=false` and
+`qmt_contacted=false`; it is safe to use during a client code deployment.
+
+## Versioned Windows deployment
+
+The supported Windows entrypoint is versioned and leaves the private env,
+SQLite and logs outside the release directory:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\live_client\windows\Install-HydraLiveClient.ps1 `
+  -SourceRoot C:\src\MaolaoyeServer\v2.3 `
+  -InstallRoot C:\hydra-live `
+  -PythonExe C:\path\to\python.exe
+```
+
+The installer refuses a dirty `live_client` source, copies it to
+`C:\hydra-live\releases\<full-git-sha>`, runs Python syntax validation and the
+synthetic offline-submit acceptance, then atomically switches
+`config\active-release.txt`. It never overwrites `config\hydra-live.env`, the
+state database or logs. A local-only `doctor` is the final activation check; if
+that fails, the active pointer is rolled back. Existing Task Scheduler entries
+are deliberately not modified.
+
+Use the stable runner in Task Scheduler and always supply the already-approved
+exchange trade date explicitly:
+
+```powershell
+C:\hydra-live\bin\Run-HydraLive.ps1 -Command query -Date YYYYMMDD
+C:\hydra-live\bin\Run-HydraLive.ps1 -Command preflight -Date YYYYMMDD
+C:\hydra-live\bin\Run-HydraLive.ps1 -Command submit -Date YYYYMMDD
+C:\hydra-live\bin\Run-HydraLive.ps1 -Command cancel-open -Date YYYYMMDD
+C:\hydra-live\bin\Run-HydraLive.ps1 -Command settle-close -Date YYYYMMDD
+C:\hydra-live\bin\Run-HydraLive.ps1 -Command retry -Date YYYYMMDD -NextDate YYYYMMDD
+```
+
+Do not derive `YYYYMMDD` by adding one calendar day: month boundaries, weekends
+and exchange holidays must come from the frozen trading calendar. See
+[`WINDOWS_DEPLOYMENT_RUNBOOK.md`](WINDOWS_DEPLOYMENT_RUNBOOK.md) for upgrade,
+acceptance, task cutover and rollback.
+
+For the combined Server/client deployment, existing-instance capital correction,
+attributed-ledger migration and residual-task cutover, follow
+[`HYDRA_LIVE_UNIFIED_DEPLOYMENT_HANDOFF_20260904.md`](HYDRA_LIVE_UNIFIED_DEPLOYMENT_HANDOFF_20260904.md)
+as the authoritative sequence.
+
+The broker-confirmed 14:55 cancel / 16:05 final-settlement cutover is summarized
+in [`HYDRA_LIVE_EOD_CANCEL_HANDOFF_20260904.md`](HYDRA_LIVE_EOD_CANCEL_HANDOFF_20260904.md).
+
+The portable no-network acceptance can also be run directly:
+
+```powershell
+python -m live_client.offline_acceptance
+```
+
+It proves three properties with synthetic orders and `mock_qmt`: a dead server
+cannot block local submit, repeating submit creates no second broker call, and
+crash/ambiguous-response recovery never blindly replays an order.
+
+## Partial cash and next-session fallback (2026-10-02)
+
+New guarded Hydra batches freeze `execution_policy.cash_allocation` with policy
+`PROPORTIONAL_RESIDUAL_V1`. The server and Windows client must both support this
+policy before it is used. Existing frozen batches keep their previous policy;
+do not edit their quantities, prices, priority metadata or hashes in place.
+
+- `submit-queue` submits sells first. Buys use the target's optional
+  `buy_priorities` (smaller nonnegative integer first), then remaining order
+  notional descending, then symbol. Unlisted symbols share the final priority
+  tier. An unaffordable whole order waits while later affordable orders may run.
+  Priority is a preference, not an all-or-nothing basket constraint.
+- Six confirmed sell fills can fund six of nine buys. The other sells need not
+  all fill first. Each buy still requires both strategy-owned cash and fresh
+  physical QMT cash, including fee reserves. The client never splits a frozen
+  order, spends projected proceeds, or blindly repeats an ambiguous submission.
+- After final broker reconciliation, the server rebuilds residuals using actual
+  strategy cash/holdings and fresh execution marks. Unsold holdings count toward
+  NAV but not spendable cash. The original cash buffer is retained. Within each
+  priority tier, remaining buys are scaled proportionally, rounded to whole
+  lots, and receive at most one extra lot by largest remainder where affordable.
+  Fees use 10 bp with a CNY 5 minimum per nonzero order. Client fee/cash checks
+  remain authoritative at submission.
+- Fresh target weights can reduce the remaining quantity; original approved
+  share targets remain the ceiling. Already completed legs are not reversed and
+  a retry cannot expand an original residual. Small lot-rounding remainders may
+  remain as cash.
+- An adverse fresh mark outside the original 50 bp envelope, suspension or zero
+  volume pauses the affected symbol. Other eligible symbols can proceed. Limits
+  stay anchored to the initial execution reference; the three-session retry
+  window does not restart. Invalidated targets cannot produce new retry orders.
+  No eligible orders means a reasoned deferred receipt, not an empty attempt.
+- `risk_snapshot.cash_allocation` (or a deferred response's `allocation_audit`)
+  records the cash budget, fee-inclusive reservation, fresh target caps and
+  per-symbol reasons. The original target/residual remains auditable; a scaled
+  fill must not be reported as completion of the full target.
+
+This change does not activate Windows trading tasks or implement the separate
+close-sell / next-open-buy scheduler. The existing cash queue still waits 30
+seconds between passes; it is not a real-time fill monitor. Replanning occurs
+only after the previous attempt is finalized, not by replacing live orders.
+
+## Research data freeze (read-only)
+
+The data freezer is deliberately separate from the trading configuration: it
+accepts only a QMT `userdata` path and never reads an account id, API key,
+session id or live-client `.env`.  It writes four date-consistent bundles plus
+one write-once ZIP and an external SHA-256 receipt.  The model HFQ bundle has
+the nine executable ETFs and research-only `511010.SH`; the raw execution
+bundle has only the nine executable ETFs.
+
+```powershell
+python -m live_client.data_snapshot --as-of YYYYMMDD `
+  --producer-commit <full-40-char-hydra-sha> `
+  --userdata-dir C:\private\qmt\userdata `
+  --output C:\private\hydra\HYDRA_QMT_SNAPSHOT_YYYYMMDD
+```
+
+By default it queries QMT dividend factors for the nine executable ETFs and
+freezes them into the corporate-actions bundle. `--corporate-actions <parquet>`
+is an optional, separately audited import override.
+
+It refuses to overwrite a pre-existing output directory, ZIP, or receipt. Run
+it only after the QMT daily bars are complete; it is a market-data operation,
+not an account query or an order operation.
+
+For mock runs, append `--mock-state C:\private\hydra-live\mock-state.json` to
+commands that access QMT. Query still calls the domain-scoped server API.
+
+Supported Windows task names:
+
+- `Hydra-Live-QueryPreflight-1800` — T evening query followed by online preflight; after `READY_FOR_OFFLINE_SUBMIT`, it idempotently creates the next item.
+- `Hydra-Live-Submit-YYYYMMDD-0910` — one-time T+1 09:10 task using only the local frozen batch and MiniQMT.
+- `Hydra-Live-CancelOpen-1455` — request cancellation only for exact active orders from the locally frozen Hydra batch; it never marks a request as a completed cancellation.
+- `Hydra-Live-MarketBackup-1530` — isolated live-QMT market backup with explicit receipt.
+- `Hydra-Live-SettleClose-1605` — after the broker's 16:00 final cancellation report, push terminal QMT state, reconcile and close the attempt; one process retry is allowed at 16:10.
+- `Hydra-Live-Retry-1620` — Hydra retry only after a server-confirmed residual.
+- `HydraLive-CashFlowJournal` — daily after verified dividend/fund-flow evidence.
+- `HydraLive-DataFreeze` — month-end after QMT daily data is complete.
+
+These tasks connect directly to MiniQMT through `xtquant`; there is no large-QMT
+transition adapter in this release.
+
+Do not create these tasks until the mock and dedicated-paper acceptance gates in
+the server runbook have passed.
+
+`Hydra-Live-SettleClose-1605` alone is configured for one automatic restart
+after five minutes. No order-submit task has an automatic restart. Residual
+retry requires one approved and internally consistent triple:
+`HYDRA_LIVE_RETRY_EXECUTION_RAW_SHA256`, `HYDRA_LIVE_RETRY_TARGET_ID` and
+`HYDRA_LIVE_RETRY_REBALANCE_ID`.
+
+## One-lot real MiniQMT canary
+
+`python -m live_client.canary` is a deliberately separate broker-path test.  It
+does not fetch, slice or settle a Hydra server batch because doing so would leave
+a false partial batch in the production ledger.  It is restricted to one BUY of
+100 units of `510300.SH` or `159915.SZ`, a CNY 2,000 hard notional ceiling, a
+fresh limit-price plan, and independent plan-hash and kill-switch confirmation.
+
+The canary can create a real-money order.  Follow
+[`MINIQMT_LIVE_CANARY_RUNBOOK.md`](MINIQMT_LIVE_CANARY_RUNBOOK.md) exactly.  Any
+fill changes the real account and must be captured by a new account
+initialization/reconciliation before the formal Hydra target is staged.

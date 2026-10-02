@@ -1,0 +1,74 @@
+{
+  "status": "MATCH",
+  "research_commit": "aa6b60deef44b244764385e7b6bd681429b9b362",
+  "input_byte_hashes_verified": [
+    "corporate_actions",
+    "execution_raw",
+    "model_hfq",
+    "trading_calendar"
+  ],
+  "model_row_count": 28395,
+  "model_symbols": [
+    "159915.SZ",
+    "159930.SZ",
+    "159981.SZ",
+    "159985.SZ",
+    "510300.SH",
+    "511010.SH",
+    "511260.SH",
+    "513100.SH",
+    "513500.SH",
+    "518880.SH"
+  ],
+  "schedule_rows": 83,
+  "weights": {
+    "510300.SH": 0.05833822121861818,
+    "159915.SZ": 0.007606751832863405,
+    "511260.SH": 0.7984488066031851,
+    "518880.SH": 0.037364131906319334,
+    "159981.SZ": 0.02132132540927256,
+    "159985.SZ": 0.03486033814545468,
+    "159930.SZ": 0.015327662937818695,
+    "513500.SH": 0.015385260091120396,
+    "513100.SH": 0.011347501855347684
+  },
+  "expected_weights": {
+    "159915.SZ": 0.007606751832863405,
+    "159930.SZ": 0.015327662937818695,
+    "159981.SZ": 0.02132132540927256,
+    "159985.SZ": 0.03486033814545468,
+    "510300.SH": 0.05833822121861818,
+    "511260.SH": 0.7984488066031851,
+    "513100.SH": 0.011347501855347684,
+    "513500.SH": 0.015385260091120396,
+    "518880.SH": 0.037364131906319334
+  },
+  "differences": {
+    "159915.SZ": 0.0,
+    "159930.SZ": 0.0,
+    "159981.SZ": 0.0,
+    "159985.SZ": 0.0,
+    "510300.SH": 0.0,
+    "511260.SH": 0.0,
+    "513100.SH": 0.0,
+    "513500.SH": 0.0,
+    "518880.SH": 0.0
+  },
+  "max_abs_weight_difference": 0.0,
+  "budget_row": {
+    "trend_z": -0.12759206577088614,
+    "duration_score": -1.0,
+    "signal_date": "2026-06-30 00:00:00",
+    "training_label_end": "2026-06-30 00:00:00",
+    "target_bond_abs_risk_budget": 0.17446057503460224,
+    "achieved_bond_abs_risk_share": 0.17370336218230675
+  },
+  "target_request_sha256": "aedd196d875535000ed853c148a94907f7b06d8da4ed586cd1879b379d993890",
+  "input_hashes": {
+    "corporate_actions": "c3bc1fec0a690b3584d301c58073093035d8b43a08b719a0c5040eea8fbdcbb4",
+    "execution_raw": "e3913610f8bd2b8f0a12008ec0d6235dcf23d1962d5e6df1bcb0f1fa86d96b08",
+    "model_hfq": "b378db0c3742d4ad92ed6bff7f9d8a4385383eb68854d63c0710bfa8c04dd1ae",
+    "trading_calendar": "62f0a7bb842a690c57a6d265f91a1805f3977f4b4b0888da0837c6decfe41c91"
+  },
+  "preparation": "Split authenticated HFQ rows by symbol into isolated etf_back files; no other market source available."
+}

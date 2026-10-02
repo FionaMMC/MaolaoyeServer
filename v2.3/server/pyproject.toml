@@ -43,6 +43,9 @@ pythonpath = ["."]
 where = ["."]
 include = ["app*"]
 
+[tool.setuptools.package-data]
+app = ["web/blueprint/*.html", "web/blueprint/*.css", "web/blueprint/*.js", "web/blueprint/*.json"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
