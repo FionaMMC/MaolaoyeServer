@@ -28,9 +28,14 @@ CANCEL_DEADLINE = time(14, 57, 0)
 OPEN_STATUSES = (48, 49, 50, 55)
 OUR_REMARK = re.compile(r"^H\d{9}$")
 LOT = 100
-BUY_COST_FACTOR = 1.001        # matches the planner's size factor (fees and rounding)
 MIN_FEE = 5.0
 _SIDES = {QMT_STOCK_BUY: "BUY", QMT_STOCK_SELL: "SELL"}
+
+
+def _buy_cost(quantity: int, limit: float) -> float:
+    """Same reservation as app.oms.planner.allocate_buys, so the agent never trims a lot the plan funded."""
+    notional = quantity * limit
+    return notional + max(MIN_FEE, notional / 1000)
 
 
 class OmsAgent:
@@ -161,7 +166,7 @@ class OmsAgent:
                 held = int(account.positions.get(symbol, 0))
                 room = max(0, int(plan["frozen_target"].get(symbol, 0)) - held)
                 quantity = min(quantity, room) // LOT * LOT
-                while quantity > 0 and quantity * limit * BUY_COST_FACTOR + MIN_FEE > cash:
+                while quantity > 0 and _buy_cost(quantity, limit) > cash:
                     quantity -= LOT
             else:
                 quantity = min(quantity, int(account.sellable_positions.get(symbol, 0)))
@@ -177,7 +182,7 @@ class OmsAgent:
             if outcome.status == "SUBMITTED":
                 self.journal.mark(coid, "ACKED", outcome.local_order_id, None)
                 if side == "BUY":
-                    cash -= quantity * limit * BUY_COST_FACTOR + MIN_FEE
+                    cash -= _buy_cost(quantity, limit)
             elif outcome.status == "REJECTED":
                 self.journal.mark(coid, "REJECTED", None, outcome.detail)
             else:

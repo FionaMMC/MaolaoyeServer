@@ -15,7 +15,7 @@ import logging
 from sqlalchemy import func, select
 
 from app.models import InstanceState
-from app.oms.ledger import OrderLedger
+from app.oms.ledger import OPEN_QMT_STATUSES as OPEN_BROKER_STATUSES, OrderLedger
 from app.oms.models import (OmsBrokerSnapshot, OmsCycle, OmsOrder, OmsReconciliation, OmsSession,
                             OmsTargetVersion)
 from app.oms.planner import Policy, Session, lot_target, plan_buy_session, plan_sell_session, session_schedule
@@ -163,11 +163,14 @@ class CycleService:
             found += [{"type": "FINALIZE_ANOMALY", **a} for a in finalized["anomalies"]]
         for order_id, reason in (projection.get("rejected_observations") or {}).items():
             found.append({"type": "PROJECTION_REFUSED", "client_order_id": order_id, "reason": reason})
-        recon = self.reconcile.reconcile_total(snap.positions, snap.available_cash, snap.taken_at.isoformat(),
+        # Available cash excludes what open buy orders freeze; add it back before comparing to the ledger.
+        frozen = sum((o.quantity - o.traded_volume) * o.price for o in snap.orders
+                     if o.side == "BUY" and o.status in OPEN_BROKER_STATUSES)
+        comparable_cash = float(snap.available_cash) + frozen * 1.001 + (5.0 if frozen else 0.)
+        recon = self.reconcile.reconcile_total(snap.positions, comparable_cash, snap.taken_at.isoformat(),
                                                cash_tolerance=0.0, execution_domain="live",
                                                account_alias=snap.account_alias)
         found += [{"type": "POSITION_MISMATCH", **m} for m in recon.mismatches]
-        # Intraday available cash excludes funds frozen by open buy orders; only gate on PRE/EOD.
         if not recon.cash_ok and snap.kind in ("PRE", "EOD"):
             found.append({"type": "CASH_SHORTFALL", "ledger_cash": recon.ledger_cash_total,
                           "broker_cash": recon.qmt_cash})
@@ -180,6 +183,9 @@ class CycleService:
             today.status, today.closed_at = "CLOSED", now
         schedule = [Session(**x) for x in cycle.schedule]
         first_sell = schedule[0].trade_date
+        if snap.trade_date < first_sell:
+            # Before the first sell day nothing is scheduled; its plan was made at publish time.
+            return []
         if cycle.buy_anchor is None:
             if snap.trade_date != first_sell:
                 cycle.status = "HELD"
