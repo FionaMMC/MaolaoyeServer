@@ -127,6 +127,48 @@ It proves three properties with synthetic orders and `mock_qmt`: a dead server
 cannot block local submit, repeating submit creates no second broker call, and
 crash/ambiguous-response recovery never blindly replays an order.
 
+## Partial cash and next-session fallback (2026-10-02)
+
+New guarded Hydra batches freeze `execution_policy.cash_allocation` with policy
+`PROPORTIONAL_RESIDUAL_V1`. The server and Windows client must both support this
+policy before it is used. Existing frozen batches keep their previous policy;
+do not edit their quantities, prices, priority metadata or hashes in place.
+
+- `submit-queue` submits sells first. Buys use the target's optional
+  `buy_priorities` (smaller nonnegative integer first), then remaining order
+  notional descending, then symbol. Unlisted symbols share the final priority
+  tier. An unaffordable whole order waits while later affordable orders may run.
+  Priority is a preference, not an all-or-nothing basket constraint.
+- Six confirmed sell fills can fund six of nine buys. The other sells need not
+  all fill first. Each buy still requires both strategy-owned cash and fresh
+  physical QMT cash, including fee reserves. The client never splits a frozen
+  order, spends projected proceeds, or blindly repeats an ambiguous submission.
+- After final broker reconciliation, the server rebuilds residuals using actual
+  strategy cash/holdings and fresh execution marks. Unsold holdings count toward
+  NAV but not spendable cash. The original cash buffer is retained. Within each
+  priority tier, remaining buys are scaled proportionally, rounded to whole
+  lots, and receive at most one extra lot by largest remainder where affordable.
+  Fees use 10 bp with a CNY 5 minimum per nonzero order. Client fee/cash checks
+  remain authoritative at submission.
+- Fresh target weights can reduce the remaining quantity; original approved
+  share targets remain the ceiling. Already completed legs are not reversed and
+  a retry cannot expand an original residual. Small lot-rounding remainders may
+  remain as cash.
+- An adverse fresh mark outside the original 50 bp envelope, suspension or zero
+  volume pauses the affected symbol. Other eligible symbols can proceed. Limits
+  stay anchored to the initial execution reference; the three-session retry
+  window does not restart. Invalidated targets cannot produce new retry orders.
+  No eligible orders means a reasoned deferred receipt, not an empty attempt.
+- `risk_snapshot.cash_allocation` (or a deferred response's `allocation_audit`)
+  records the cash budget, fee-inclusive reservation, fresh target caps and
+  per-symbol reasons. The original target/residual remains auditable; a scaled
+  fill must not be reported as completion of the full target.
+
+This change does not activate Windows trading tasks or implement the separate
+close-sell / next-open-buy scheduler. The existing cash queue still waits 30
+seconds between passes; it is not a real-time fill monitor. Replanning occurs
+only after the previous attempt is finalized, not by replacing live orders.
+
 ## Research data freeze (read-only)
 
 The data freezer is deliberately separate from the trading configuration: it

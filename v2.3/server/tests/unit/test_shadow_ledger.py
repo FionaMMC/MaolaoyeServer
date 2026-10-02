@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 from app.db import init_db, make_engine, make_session_factory
 from app.models import (
-    Order, RawSignal, ShadowInstanceState, ShadowNavSnapshot, ShadowTarget, Trade,
+    Order, RawSignal, ShadowFill, ShadowInstanceState, ShadowNavSnapshot, ShadowTarget, Trade,
 )
 from app.services.shadow_ledger import ShadowBoundaryError, ShadowLedgerService
 from app.storage.parquet import ParquetStore
@@ -87,6 +87,106 @@ def add_prices(store: ParquetStore, trade_date: int, stock=10.0, etf=100.0):
     }))
 
 
+def test_new_target_cannot_trade_at_previous_close(tmp_path):
+    target = tmp_path / "shadow.parquet"
+    target_frame().to_parquet(target, index=False)
+    service, sf, store = make_service(tmp_path, config_for(target))
+    add_prices(store, 20260630)
+    result = service.run_all(20260701)["instances"][0]
+    assert result["status"] == "blocked"
+    with sf() as session:
+        state = session.get(ShadowInstanceState, "Shadow_Base")
+        assert state.virtual_cash == 1_000_000
+        assert state.virtual_positions == {}
+        assert session.query(ShadowTarget).count() == 0
+
+
+def test_active_book_cannot_rewind_into_history(tmp_path):
+    target = tmp_path / "shadow.parquet"
+    target_frame().to_parquet(target, index=False)
+    service, sf, store = make_service(tmp_path, config_for(target))
+    add_prices(store, 20260701)
+    add_prices(store, 20260702, stock=11)
+    service.run_all(20260702)
+    result = service.run_all(20260701)["instances"][0]
+    assert result["status"] == "blocked"
+    with sf() as session:
+        assert session.get(ShadowNavSnapshot, ("Shadow_Base", "20260701")) is None
+
+
+def test_close_fills_are_auditable_idempotent_and_sell_funds_buy(tmp_path):
+    target = tmp_path / "shadow.parquet"
+    frame = target_frame()
+    frame["weight"] = [0.9, 0.1]
+    frame.to_parquet(target, index=False)
+    service, sf, store = make_service(tmp_path, config_for(target))
+    for date in (20260701, 20260702):
+        for category, code, opening, closing in (
+            ("stocks", "000001.SZ", 7.0, 10.0),
+            ("etfs", "511260.SH", 80.0, 100.0),
+        ):
+            store.append(category, code, pd.DataFrame({
+                "trade_date": [date], "open": [opening], "close": [closing],
+                "volume": [1_000_000], "suspendFlag": [0],
+            }))
+    service.run_all(20260701)
+    with sf() as session:
+        before = session.get(ShadowInstanceState, "Shadow_Base").virtual_cash
+    frame["weight"] = [0.1, 0.9]
+    frame["decision_date"] = "20260702"
+    frame["input_hash"] = "b" * 64
+    frame.to_parquet(target, index=False)
+    result = service.run_all(20260702)["instances"][0]
+    assert result["status"] == "active"
+    service.run_all(20260702)
+    with sf() as session:
+        fills = session.query(ShadowFill).filter_by(trade_date="20260702").all()
+        assert len(fills) == 2
+        sell = next(f for f in fills if f.direction == "SELL")
+        buy = next(f for f in fills if f.direction == "BUY")
+        assert sell.price == 10.0 and buy.price == 100.0
+        assert sell.price_basis == buy.price_basis == "OFFICIAL_DAILY_CLOSE"
+        assert buy.quantity * buy.price + buy.fee > before
+        assert sell.cash_after == pytest.approx(before + sell.quantity * sell.price - sell.fee)
+        assert buy.cash_after == pytest.approx(sell.cash_after - buy.quantity * buy.price - buy.fee)
+        state = session.get(ShadowInstanceState, "Shadow_Base")
+        assert state.virtual_cash == pytest.approx(buy.cash_after)
+        assert state.virtual_cash >= 0
+        assert result["transaction_cost"] == pytest.approx(sum(f.fee for f in fills))
+        assert session.query(Order).count() == session.query(Trade).count() == 0
+
+
+@pytest.mark.parametrize("volume,suspended", [(0, 0), (1000, 1)])
+def test_nontrading_close_cannot_create_shadow_fills(tmp_path, volume, suspended):
+    target = tmp_path / "shadow.parquet"
+    target_frame().to_parquet(target, index=False)
+    service, sf, store = make_service(tmp_path, config_for(target))
+    store.append("stocks", "000001.SZ", pd.DataFrame({
+        "trade_date": [20260701], "close": [10],
+        "volume": [volume], "suspendFlag": [suspended],
+    }))
+    store.append("etfs", "511260.SH", pd.DataFrame({
+        "trade_date": [20260701], "close": [100], "volume": [1000],
+    }))
+    assert service.run_all(20260701)["instances"][0]["status"] == "blocked"
+    with sf() as session:
+        assert session.query(ShadowFill).count() == 0
+        assert session.get(ShadowInstanceState, "Shadow_Base").virtual_positions == {}
+
+
+def test_unchanged_holdings_can_still_use_stale_close_for_valuation(tmp_path):
+    target = tmp_path / "shadow.parquet"
+    target_frame().to_parquet(target, index=False)
+    service, sf, store = make_service(tmp_path, config_for(target))
+    add_prices(store, 20260701)
+    first = service.run_all(20260701)["instances"][0]
+    later = service.run_all(20260702)["instances"][0]
+    assert later["nav"] == first["nav"]
+    assert later["transaction_cost"] == 0
+    with sf() as session:
+        assert session.query(ShadowFill).count() == 2
+
+
 def test_shadow_rebalance_and_daily_nav_never_touch_order_tables(tmp_path):
     target = tmp_path / "shadow.parquet"
     target_frame().to_parquet(target, index=False)
@@ -133,6 +233,33 @@ def test_shadow_target_schema_and_hash_fail_closed(tmp_path):
     with sf() as session:
         assert session.query(ShadowTarget).count() == 0
         assert session.query(Order).count() == 0
+
+
+def test_expired_target_keeps_valuing_accepted_book_without_trading(tmp_path):
+    target = tmp_path / "shadow.parquet"
+    target_frame().to_parquet(target, index=False)
+    service, sf, store = make_service(tmp_path, config_for(target))
+    add_prices(store, 20260701)
+    service.run_all(20260701)
+    with sf() as session:
+        state = session.get(ShadowInstanceState, "Shadow_Base")
+        frozen = (state.virtual_cash, dict(state.virtual_positions), state.target_hash, state.cumulative_cost)
+    # A stale file with changed weights must not replace the accepted book.
+    stale = target_frame()
+    stale["weight"] = [0.1, 0.9]
+    stale.to_parquet(target, index=False)
+    add_prices(store, 20260903, stock=12)
+    result = service.run_all(20260903)["instances"][0]
+    assert result["status"] == "stale_target" and result["valuation_only"]
+    assert result["transaction_cost"] == result["turnover"] == 0
+    with sf() as session:
+        state = session.get(ShadowInstanceState, "Shadow_Base")
+        assert frozen == (state.virtual_cash, state.virtual_positions, state.target_hash, state.cumulative_cost)
+        snapshot = session.get(ShadowNavSnapshot, ("Shadow_Base", "20260903"))
+        assert snapshot and "valuation_only" in snapshot.state_reason
+        assert session.query(Order).count() == session.query(Trade).count() == 0
+    assert service.run_all(20260920)["instances"][0]["status"] == "blocked"  # stale prices
+    assert service.run_all(20260902)["instances"][0]["status"] == "blocked"  # backward book
 
 
 def test_direct_ledger_requires_and_validates_producer_sidecar(tmp_path):
@@ -391,3 +518,56 @@ def test_metadata_republication_does_not_reset_drifted_holdings(tmp_path):
     frame.to_parquet(target,index=False)
     add_prices(store,20260803,stock=12.0,etf=98.0)
     assert service.run_all(20260803)["instances"][0]["transaction_cost"] > 0
+
+
+def test_monthly_control_holds_revised_weights_but_keeps_valuing(tmp_path):
+    target = tmp_path / "target.parquet"
+    frame = target_frame()
+    frame.to_parquet(target, index=False)
+    service, sf, store = make_service(
+        tmp_path, config_for(target) + "    rebalance_cadence: monthly\n"
+    )
+    add_prices(store, 20260701)
+    first = service.run_all(20260701)["instances"][0]
+    with sf() as session:
+        old = session.get(ShadowInstanceState, "Shadow_Base")
+        positions, cash, cost = dict(old.virtual_positions), old.virtual_cash, old.cumulative_cost
+    frame["decision_date"] = "20260708"
+    frame["weight"] = [0.2, 0.8]
+    frame.to_parquet(target, index=False)
+    add_prices(store, 20260708, stock=12.0, etf=98.0)
+    result = service.run_all(20260708)["instances"][0]
+    assert result["held_reason"] == "monthly_cycle_already_consumed"
+    assert result["turnover"] == result["transaction_cost"] == 0
+    assert result["nav"] != first["nav"]
+    with sf() as session:
+        new = session.get(ShadowInstanceState, "Shadow_Base")
+        assert (new.virtual_positions, new.virtual_cash, new.cumulative_cost) == (positions, cash, cost)
+        assert new.target_hash == first["target_hash"]
+        assert session.query(ShadowTarget).count() == 2
+        assert session.get(ShadowNavSnapshot, ("Shadow_Base", "20260708")) is not None
+        assert session.query(Order).count() == session.query(Trade).count() == 0
+    # The next cycle can trade the revised weights, then refuses rollback.
+    frame["decision_date"] = "20260803"
+    frame["as_of_date"] = "20260731"
+    frame.to_parquet(target, index=False)
+    add_prices(store, 20260803, stock=12.0, etf=98.0)
+    second = service.run_all(20260803)["instances"][0]
+    assert second["transaction_cost"] > 0
+    assert second["held_reason"] is None
+    frame["decision_date"] = "20260804"
+    frame["as_of_date"] = "20260630"
+    frame.to_parquet(target, index=False)
+    add_prices(store, 20260804, stock=12.2, etf=98.0)
+    rollback = service.run_all(20260804)["instances"][0]
+    assert rollback["held_reason"] == "monthly_cycle_rollback_rejected"
+    assert rollback["turnover"] == 0
+    assert rollback["target_hash"] == second["target_hash"]
+
+
+def test_monthly_cadence_rejects_unknown_configuration(tmp_path):
+    service, _, _ = make_service(
+        tmp_path, config_for(tmp_path / "target.parquet") + "    rebalance_cadence: weekly_typo\n"
+    )
+    with pytest.raises(ShadowBoundaryError, match="rebalance_cadence"):
+        service.load_instances()

@@ -105,6 +105,35 @@ def test_next_eligible_pair(start, expected):
     assert not eligible(calendar, "20260731", "20260803")
 
 
+@pytest.mark.parametrize("start,days,expected", [
+    ("20260924", ["20260924", "20260928", "20260929", "20260930"],
+     ("20260928", "20260929")),
+    ("20260930", ["20260930", "20261008", "20261009", "20261012", "20261013"],
+     ("20261008", "20261009")),
+    ("20261009", ["20261009", "20261012", "20261013"],
+     ("20261012", "20261013")),
+    ("20260801", ["20260803", "20260804"], ("20260803", "20260804")),
+    ("20260930", ["20260930", "20261008"], (None, None)),
+])
+def test_weekends_and_2026_exchange_holidays(start, days, expected):
+    # SSE 2026 calendar: Sep 25-27 and Oct 1-7 closed; Oct 10 is
+    # a civil make-up workday but remains an exchange weekend closure.
+    calendar = pd.DataFrame({"trade_date": list(reversed(days)) + days[:1]})
+    assert next_pair(calendar, start) == expected
+
+
+def test_national_holiday_wait_cannot_create_orders(live):
+    service, sf, req = live
+    service.stage_initial(req)
+    publication(service, "20260930")
+    result = advance(service, "20260930")
+    assert result["status"] == "WAITING_EXECUTION_DATE"
+    assert result["next_reference_date"] == "20261008"
+    assert result["next_execution_date"] == "20261009"
+    with sf() as session:
+        assert session.scalars(select(Order)).all() == []
+
+
 def test_wait_is_durable_idempotent_and_never_creates_orders(live):
     service, sf, req = live
     first = service.stage_initial(req)
@@ -263,7 +292,7 @@ def test_concurrent_execution_publication_is_idempotent(live):
         assert len(session.scalars(select(HydraExecutionPublication)).all()) == 1
 
 
-def test_server_residual_uses_new_prices_but_keeps_target_shares(live):
+def test_server_residual_uses_fresh_valuation_but_keeps_price_anchor_and_target(live):
     service, sf, req = live
     service.stage_initial(req)
     publication(service, "20260803")
@@ -302,7 +331,10 @@ def test_server_residual_uses_new_prices_but_keeps_target_shares(live):
     assert direct.idempotent_replay and direct.attempt_id == retry["attempt_id"]
     orders = OrdersQueueService(sf).list_pending("20260805", "live", ("hydra-live",))
     assert {row.symbol: row.quantity for row in orders} == target_shares
-    assert {round(row.execution_reference_price, 2) for row in orders} == {1.9, 3.8}
+    assert {round(row.execution_reference_price, 2) for row in orders} == {2.0, 4.0}
+    assert {row.limit_price for row in orders} == {2.01, 4.02}
+    assert all(row.execution_policy["execution_raw_sha256"] == pub["execution_raw_sha256"] for row in orders)
+    assert all(row.execution_policy["retry_guard"]["first_trade_date"] == "20260804" for row in orders)
 
 
 def test_publication_scoped_and_idempotent(live):

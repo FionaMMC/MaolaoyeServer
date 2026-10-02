@@ -10,14 +10,14 @@ import pytest
 
 from live_client import cli
 from live_client.core import validate_order_batch
-from live_client.execution_queue import account_submission_lock, cash_readiness
+from live_client.execution_queue import account_submission_lock, cash_readiness, submission_order
 from live_client.gateway import AccountSnapshot, SubmissionResult, XtQMTGateway, live_order_remark
 from live_client.state import LiveStateStore
 from test_live_client import _cfg, _orders, _qmt_order
 
 
-def _freeze(cfg, *, rotate=True, cash=0):
-    orders = _orders()
+def _freeze(cfg, *, rotate=True, cash=0, orders=None):
+    orders = _orders() if orders is None else orders
     if rotate:
         orders[1]["direction"] = "SELL"
     canonical = [{
@@ -25,10 +25,13 @@ def _freeze(cfg, *, rotate=True, cash=0):
         "quantity": row["quantity"], "reference_price": row["execution_reference_price"],
         "limit_price": row["limit_price"],
     } for row in orders]
-    digest = hashlib.sha256(json.dumps({
+    payload = {
         "rebalance_id": "hr_test", "attempt_number": 1,
-        "trade_date": "20260803", "orders": canonical,
-    }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        "trade_date": "20260803", "orders": sorted(canonical, key=lambda o: o['symbol']),
+    }
+    if orders[0].get('execution_policy') is not None:
+        payload['execution_policy'] = orders[0]['execution_policy']
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     for row in orders:
         row.update(batch_sha256=digest, batch_id=f"hb_{digest}")
     batch = validate_order_batch(orders, "20260803", cfg)
@@ -42,8 +45,9 @@ def _freeze(cfg, *, rotate=True, cash=0):
             "reconciliation_scope": "portfolio_attributed", "managed_cash": cash,
         },
         "risk": {
-            "managed_sellable_positions": {"510300.SH": 100} if rotate else {},
-            "qmt_total_asset": cash + (402 if rotate else 0),
+            "managed_sellable_positions": {o['symbol']: o['quantity'] for o in orders if o['direction']=='SELL'},
+            "qmt_total_asset": cash + sum(o['quantity'] * o['execution_reference_price']
+                                         for o in orders if o['direction']=='SELL'),
         },
     })
     return batch, state

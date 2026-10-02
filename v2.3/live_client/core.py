@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from live_client.config import LiveClientConfig
-from live_client.execution_queue import buy_reservation_cents, fee_reserve
+from live_client.execution_queue import buy_reservation_cents, fee_reserve, validate_cash_allocation
 
 
 @dataclass(frozen=True)
@@ -122,6 +122,7 @@ def validate_order_batch(
     if any(order.get("execution_policy") != policy for order in orders):
         raise ValueError("批次 execution_policy 混合")
     if policy is not None:
+        validate_cash_allocation(policy)
         if policy.get("policy_id") != "HYDRA_ADJACENT_DAY_50BP_V1":
             raise ValueError("未知 execution_policy")
         reference = datetime.strptime(policy["reference_date"], "%Y%m%d")

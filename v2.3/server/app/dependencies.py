@@ -139,6 +139,7 @@ def get_hydra_relay_service(
             auto_buffer_bps=settings.live_auto_buffer_bps,
         ),
         blacklist_service=blacklist,
+        etf_execution_policy=settings.hydra_etf_execution_policy,
     )
 
 

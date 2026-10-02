@@ -157,8 +157,10 @@ def collect_prices(
             [_normalize_market_frame(symbol, payload[symbol]) for symbol in symbols],
             ignore_index=True,
         )
-        if frames[stream]["trade_date"].max() != as_of_date:
-            raise RuntimeError(f"QMT {stream} 最大日期不是 as_of_date")
+        latest = frames[stream].groupby("symbol")["trade_date"].max().to_dict()
+        stale = sorted(symbol for symbol in symbols if latest.get(symbol) != as_of_date)
+        if stale:
+            raise RuntimeError(f"QMT {stream} 标的未更新至 as_of_date: {stale}")
     calendar = xtdata.get_trading_calendar(
         "SH", start_time=f"{as_of_date[:4]}0101", end_time=f"{int(as_of_date[:4]) + 1}1231",
     )
@@ -265,7 +267,7 @@ def main() -> None:
         actions = (
             pd.read_parquet(args.corporate_actions)
             if args.corporate_actions is not None
-            else collect_corporate_actions(cfg, args.as_of)
+            else collect_corporate_actions(cfg, args.as_of, require_response=True)
         )
         manifests = {
             "model_hfq": _write_bundle(

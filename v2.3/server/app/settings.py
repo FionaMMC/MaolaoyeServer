@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -67,6 +68,7 @@ class Settings(BaseSettings):
     hydra_monthly_start_date: str = "20260918"
     hydra_monthly_research_dir: Path = Path("/opt/qmt-refresh/releases/hydra-aa6b60d")
     hydra_live_risk_mode: str = "disabled"
+    hydra_etf_execution_policy: Literal["guarded_3d", "legacy"] = "guarded_3d"
     live_max_daily_orders: int = 0
     live_max_single_order_notional: float = 0.0
     live_max_daily_buy_notional: float = 0.0

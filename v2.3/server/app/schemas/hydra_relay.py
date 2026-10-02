@@ -40,13 +40,24 @@ class HydraTargetRequest(BaseModel):
     basket_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     buy_price_offset_bps: float = Field(default=50.0, ge=0, le=50)
     sell_price_offset_bps: float = Field(default=50.0, ge=0, le=50)
+    # Lower rank first; unlisted symbols share the last tier. Part of target hash.
+    buy_priorities: dict[str, int] = Field(default_factory=dict)
     # Separate research inputs from refreshed, immutable execution evidence.
     execution_raw_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     execution_calendar_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
+    @field_validator("buy_priorities", mode="before")
+    @classmethod
+    def valid_priorities(cls, value):
+        if not isinstance(value, dict) or any(type(rank) is not int or rank < 0 for rank in value.values()):
+            raise ValueError("buy_priorities 必须是非负整数优先级")
+        return value
+
     @model_validator(mode="after")
     def validate_contract(self) -> "HydraTargetRequest":
         codes = [item.code for item in self.weights]
+        if set(self.buy_priorities) - set(codes):
+            raise ValueError("buy_priorities 只能引用目标篮子标的")
         if len(codes) != len(set(codes)):
             raise ValueError("Hydra target code 重复")
         if abs(sum(item.weight for item in self.weights) - 1.0) > 1e-8:
@@ -104,6 +115,8 @@ def hydra_basket_hash(target: HydraTargetRequest | dict) -> str:
     for field in ("execution_raw_sha256", "execution_calendar_sha256"):
         if payload.get(field) is not None:
             canonical[field] = payload[field]
+    if payload.get("buy_priorities"):
+        canonical["buy_priorities"] = dict(sorted(payload["buy_priorities"].items()))
     body = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(body).hexdigest()
 
@@ -183,9 +196,11 @@ class HydraExecutionWaitResponseData(BaseModel):
     execution_domain: ExecutionDomain
     plan_id: str | None = None
     rebalance_id: str | None = None
+    retry_outcome: str | None = None
     next_reference_date: str | None = None
     next_execution_date: str | None = None
     reason: str
+    allocation_audit: dict | None = None
     order_count: Literal[0] = 0
 
 

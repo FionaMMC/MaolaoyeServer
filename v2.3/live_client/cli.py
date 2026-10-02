@@ -18,7 +18,7 @@ from live_client.core import (
     validate_order_batch,
 )
 from live_client.gateway import MockQMTGateway, XtQMTGateway, live_order_remark
-from live_client.execution_queue import account_submission_lock, cash_readiness
+from live_client.execution_queue import account_submission_lock, cash_readiness, submission_order
 from live_client.http_client import LiveServerClient
 from live_client.state import LiveStateStore
 from live_client.qmt_day_order_policy import CHINA_TIMEZONE, EXPIRATION_POLICY_ID
@@ -325,10 +325,7 @@ def _submit_locked(cfg: LiveClientConfig, trade_date: str, mock_state: Path | No
         deferred = []
         physical_queue_cash = None
         observed_sell_proceeds = 0.0
-        for order in sorted(
-            frozen_batch.orders,
-            key=lambda item: (item["direction"] != "SELL", item["symbol"]),
-        ):
+        for order in submission_order(frozen_batch.orders):
             remark = live_order_remark(order)
             local = state.prepare_submission(
                 order["order_id"], frozen_batch.batch_sha256, remark,

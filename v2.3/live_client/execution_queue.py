@@ -13,6 +13,48 @@ from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from pathlib import Path
 
 
+def validate_cash_allocation(policy):
+    allocation = (policy or {}).get("cash_allocation")
+    if allocation is None:
+        return None  # Previously frozen batches retain their original ordering.
+    if (not isinstance(allocation, dict)
+            or allocation.get("policy_id") != "PROPORTIONAL_RESIDUAL_V1"
+            or allocation.get("queue_order") != "PRIORITY_THEN_REMAINING_NOTIONAL"
+            or allocation.get("budget_source") != "SETTLED_STRATEGY_CASH"
+            or allocation.get("fee_reserve_bps") != 10
+            or allocation.get("min_commission") != 5):
+        raise ValueError("未知或不完整的 cash_allocation 政策")
+    priorities = allocation.get("buy_priorities")
+    if (not isinstance(priorities, dict)
+            or any(not isinstance(code, str) or type(rank) is not int or rank < 0
+                   for code, rank in priorities.items())):
+        raise ValueError("非法 buy_priorities")
+    return allocation
+
+
+def submission_order(orders):
+    """Frozen policy chooses priority, then largest remaining buy notional.
+
+    This never edits an order. Unaffordable whole orders may be skipped by the
+    caller; lower-priority orders can use cash the preceding order cannot use.
+    """
+    if not orders:
+        return []
+    allocation = validate_cash_allocation(orders[0].get("execution_policy"))
+    if allocation is None:
+        return sorted(orders, key=lambda o: (o["direction"] != "SELL", o["symbol"]))
+    priorities = allocation["buy_priorities"]
+    default = max(priorities.values(), default=0) + 1
+
+    def key(order):
+        if order["direction"] == "SELL":
+            return (0, 0, Decimal(0), order["symbol"])
+        return (1, priorities.get(order["symbol"], default),
+                -Decimal(str(order["limit_price"])) * order["quantity"], order["symbol"])
+
+    return sorted(orders, key=key)
+
+
 def _money(value: float) -> Decimal:
     if not math.isfinite(float(value)) or float(value) < 0:
         raise ValueError("执行队列资金/成交价必须为非负有限数")

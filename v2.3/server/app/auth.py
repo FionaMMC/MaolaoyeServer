@@ -89,6 +89,8 @@ async def verify_api_key(
         # 新增路由默认拒绝，必须在完成隔离审计后显式加入。
         path = request.url.path
         live_exact_paths = {
+            "/hydra/emergency/stage",
+            "/hydra/emergency/resume",
             "/orders",
             "/trade-result",
             "/cash-flows",

@@ -504,7 +504,7 @@ class OpsMonitorService:
                     ShadowInstanceState.shadow_id,
                     ShadowInstanceState.state_reason,
                     ShadowInstanceState.last_update,
-                ).where(ShadowInstanceState.status == "blocked")
+                ).where(ShadowInstanceState.status.in_(("blocked", "stale_target")))
             ).all()
         return [{"shadow_id": shadow_id, "reason": reason, "last_update": last_update}
                 for shadow_id, reason, last_update in rows]

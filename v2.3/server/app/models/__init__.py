@@ -8,6 +8,7 @@ class Base(DeclarativeBase):
 
 # 触发 model 注册到 Base.metadata
 from app.models.instance_state import InstanceState  # noqa: E402, F401
+from app.models.emergency_execution import EmergencyExecution  # noqa: E402, F401
 from app.models.raw_signal import RawSignal  # noqa: E402, F401
 from app.models.order import Order  # noqa: E402, F401
 from app.models.order_signal_map import OrderSignalMap  # noqa: E402, F401
@@ -33,6 +34,7 @@ from app.models.income_allocation_receipt import IncomeAllocationReceipt  # noqa
 from app.models.hydra_monthly import HydraMonthlyCycle  # noqa: E402, F401
 from app.models.risk_blacklist import RiskBlacklistEntry  # noqa: E402, F401
 from app.models.shadow import (  # noqa: E402, F401
+    ShadowFill,
     ShadowInstanceState,
     ShadowNavSnapshot,
     ShadowTarget,
@@ -45,6 +47,7 @@ from app.models.architecture_review import (  # noqa: E402, F401
 __all__ = [
     "Base",
     "InstanceState",
+    "EmergencyExecution",
     "RawSignal",
     "Order",
     "OrderSignalMap",
@@ -68,6 +71,7 @@ __all__ = [
     "IncomeAllocationReceipt",
     "RiskBlacklistEntry",
     "ShadowInstanceState",
+    "ShadowFill",
     "ShadowNavSnapshot",
     "ShadowTarget",
     "ArchitectureReviewComment",

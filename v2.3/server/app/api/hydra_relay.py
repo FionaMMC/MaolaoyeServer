@@ -24,7 +24,26 @@ from app.schemas.hydra_monthly import HydraMonthlySnapshotRequest
 from app.services.hydra_monthly import receive_snapshot
 from app.settings import get_settings, Settings
 
+from app.schemas.emergency_execution import EmergencyStageRequest, EmergencyResumeRequest
+from app.services.emergency_execution import stage_emergency, resume_after_emergency
+
 router = APIRouter(prefix="/hydra")
+
+
+@router.post("/emergency/stage", response_model=APIResponse[dict])
+def emergency_stage(req: EmergencyStageRequest,
+                    auth: AuthContext = Depends(verify_api_key),
+                    service: HydraRelayService = Depends(get_hydra_relay_service)):
+    _authorize(auth, "live", req.account_alias)
+    return APIResponse(code=0, message="ok", data=stage_emergency(service, req, auth.client_id))
+
+
+@router.post("/emergency/resume", response_model=APIResponse[dict])
+def emergency_resume(req: EmergencyResumeRequest,
+                     auth: AuthContext = Depends(verify_api_key),
+                     service: HydraRelayService = Depends(get_hydra_relay_service)):
+    _authorize(auth, "live", req.account_alias)
+    return APIResponse(code=0, message="ok", data=resume_after_emergency(service, req, auth.client_id))
 
 
 @router.post("/research/snapshots", response_model=APIResponse[dict])

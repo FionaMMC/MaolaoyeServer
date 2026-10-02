@@ -86,3 +86,28 @@ def test_main_writes_zip_and_receipt_without_live_config(monkeypatch, tmp_path: 
     assert (output.parent / "HYDRA_QMT_SNAPSHOT_20260821.zip").is_file()
     assert len(body["zip_sha256"]) == 64
     assert body["snapshot_manifest"]["manifests"]["model_hfq"]["research_only_symbols"] == ["511010.SH"]
+
+
+def test_freeze_rejects_one_stale_symbol_even_if_other_symbols_are_current(monkeypatch, tmp_path):
+    import sys
+    from types import SimpleNamespace
+    import pytest
+    stale = sorted(data_snapshot.EXECUTABLE_SYMBOLS)[0]
+    def payload(_fields, symbols, *_args, **_kwargs):
+        return {s: pd.DataFrame({'open':[1.], 'high':[1.1], 'low':[.9], 'close':[1.],
+                                'volume':[100], 'amount':[100.], 'suspendFlag':[0]},
+                                index=['20260929' if s == stale else '20260930']) for s in symbols}
+    xtdata=SimpleNamespace(download_history_data2=lambda *a:None,get_market_data_ex=payload)
+    monkeypatch.setitem(sys.modules,'xtquant',SimpleNamespace(xtdata=xtdata))
+    with pytest.raises(RuntimeError,match='未更新至 as_of_date'):
+        data_snapshot.collect_prices(data_snapshot.ResearchDataConfig(tmp_path),'20260930')
+
+
+def test_missing_corporate_action_response_is_not_proof_of_no_dividend(monkeypatch,tmp_path):
+    import sys
+    from types import SimpleNamespace
+    import pytest
+    xtdata=SimpleNamespace(get_divid_factors=lambda s:None)
+    monkeypatch.setitem(sys.modules,'xtquant',SimpleNamespace(xtdata=xtdata))
+    with pytest.raises(RuntimeError,match='查询无响应'):
+        data_snapshot.collect_corporate_actions(data_snapshot.ResearchDataConfig(tmp_path),'20260930',require_response=True)

@@ -157,6 +157,8 @@ def publish_monthly_plan(relay, cycle_id, computed):
         account = cycle.account_alias
     with relay.session_factory() as session:
         begin_ledger_transaction(session, "live", account)
+        from app.services.emergency_guard import assert_no_emergency
+        assert_no_emergency(session, "live", account)
         cycle = session.get(HydraMonthlyCycle, cycle_id)
         if cycle.status == "PLANNED":
             return cycle.result
@@ -195,7 +197,7 @@ def publish_monthly_plan(relay, cycle_id, computed):
                 HydraExecutionPlan.execution_domain == "live",
                 HydraExecutionPlan.account_alias == account,
                 HydraExecutionPlan.instance_id == cycle.instance_id,
-                HydraExecutionPlan.status != "STAGED",
+                HydraExecutionPlan.status.not_in(("STAGED", "SUPERSEDED_EMERGENCY")),
             )
         )
         if pending:

@@ -17,10 +17,11 @@ from app.services.strategy_capital import BROKER_TERMINAL, StrategyCapitalServic
 from tests.unit.test_hydra_relay import _setup, _target, _install, _price_frame
 
 
-def _live(tmp_path):
+def _live(tmp_path, etf_policy="guarded_3d"):
     service, sf, store, model, raw, actions, calendar = _setup(
         tmp_path, live_enabled=True, state_domain="live",
     )
+    service.etf_execution_policy = etf_policy
     first = service.stage_initial(_target(
         model, raw, actions, calendar, execution_domain="live",
         account_alias="hydra-live", instance_id="live_hydra",
@@ -67,8 +68,9 @@ def _retry(service, sf, store, first):
     ))
 
 
-def test_expired_partial_fact_close_and_server_residual_end_to_end(tmp_path):
-    service, sf, store, first, orders = _live(tmp_path)
+def test_legacy_expired_partial_fact_close_and_server_residual_end_to_end(tmp_path):
+    # Existing batches without the new allocation policy retain exact residuals.
+    service, sf, store, first, orders = _live(tmp_path, etf_policy="legacy")
     results = [_expired(row, row.quantity - 100) for row in orders]
     settlement = SettlementService(sf)
     reply = settlement.settle("20260804", results, "live", ("hydra-live",))
@@ -208,3 +210,20 @@ def test_late_active_partial_keeps_expiry_but_books_real_fill(tmp_path):
         assert session.get(HydraExecutionAttempt, first.attempt_id).status == "CLOSED_PENDING_RECONCILIATION"
     revised = _close(service, sf, first, "c" * 64)
     assert revised.residual_after[order.symbol] == original.residual_after[order.symbol] - 100
+
+
+def test_expired_residual_can_wait_when_actual_fill_cost_exceeds_fresh_weight_cap(tmp_path):
+    service, sf, store, first, orders = _live(tmp_path)
+    SettlementService(sf).settle("20260804", [
+        _expired(row, row.quantity - 100) for row in orders
+    ], "live", ("hydra-live",))
+    closed = _close(service, sf, first)
+    assert closed.retry_ready is True
+    assert closed.residual_after == {row.symbol: 100 for row in orders}
+    retry = _retry(service, sf, store, first)
+    assert retry.status == "WAITING_EXECUTION_DATE"
+    assert retry.order_count == 0
+    assert set(retry.allocation_audit["deferred_symbols"].values()) == {"WEIGHT_CAP"}
+    with sf() as session:
+        attempts = list(session.scalars(select(HydraExecutionAttempt)))
+        assert len(attempts) == 1
