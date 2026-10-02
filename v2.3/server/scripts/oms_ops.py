@@ -66,6 +66,8 @@ def main(argv=None, *, session_factory=None, settings=None) -> int:
     for name in ("--instance", "--account", "--signal-date", "--weights", "--closes", "--calendar", "--source-sha256"):
         p.add_argument(name, required=True)
     p.add_argument("--apply", action="store_true")
+    p.add_argument("--now", default=None, help="rehearsal/replay only: publish as if at this zoned ISO time; "
+                                               "a past schedule is never executed (the agent refuses other dates)")
     a = sub.add_parser("approve")
     a.add_argument("--cycle-id", required=True)
     a.add_argument("--approver", required=True)
@@ -103,7 +105,8 @@ def main(argv=None, *, session_factory=None, settings=None) -> int:
             return 0
         out = service.publish_target(instance_id=args.instance, account_alias=args.account,
                                      signal_date=args.signal_date, weights=weights, signal_closes=closes,
-                                     calendar=calendar, source_sha256=args.source_sha256, now=_now())
+                                     calendar=calendar, source_sha256=args.source_sha256,
+                                     now=args.now or _now())
         print(json.dumps({k: out[k] for k in ("cycle_id", "status", "target_version_id", "lot_gap")}, indent=2))
         return 0
 

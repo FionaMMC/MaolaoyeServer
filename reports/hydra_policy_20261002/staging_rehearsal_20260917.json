@@ -1,0 +1,644 @@
+{
+  "verdict": "PASS",
+  "checks": {
+    "cycle_status": "CLOSED",
+    "ledger_equals_broker_positions": true,
+    "cash_abs_diff": 0.0,
+    "one_broker_order_per_remark": true,
+    "legacy_orders_refused_409": true,
+    "server_restarted_mid_cycle": true,
+    "fills": 6
+  },
+  "schedule": [
+    {
+      "seq": 1,
+      "trade_date": "20260921",
+      "phase": "SELL",
+      "sell_attempt": 0
+    },
+    {
+      "seq": 2,
+      "trade_date": "20260922",
+      "phase": "BUY",
+      "sell_attempt": null
+    },
+    {
+      "seq": 3,
+      "trade_date": "20260922",
+      "phase": "SELL",
+      "sell_attempt": 1
+    },
+    {
+      "seq": 4,
+      "trade_date": "20260923",
+      "phase": "BUY",
+      "sell_attempt": null
+    },
+    {
+      "seq": 5,
+      "trade_date": "20260923",
+      "phase": "SELL",
+      "sell_attempt": 2
+    },
+    {
+      "seq": 6,
+      "trade_date": "20260924",
+      "phase": "BUY",
+      "sell_attempt": null
+    }
+  ],
+  "status": {
+    "cycle": {
+      "cycle_id": "C00001",
+      "status": "CLOSED",
+      "frozen_target": {
+        "159915.SZ": 500,
+        "159930.SZ": 1900,
+        "159981.SZ": 2600,
+        "159985.SZ": 3100,
+        "510300.SH": 2700,
+        "511260.SH": 1200,
+        "513100.SH": 1100,
+        "513500.SH": 1200,
+        "518880.SH": 900
+      },
+      "lot_gap": 0.030863712785775932,
+      "schedule": [
+        {
+          "seq": 1,
+          "trade_date": "20260921",
+          "phase": "SELL",
+          "sell_attempt": 0
+        },
+        {
+          "seq": 2,
+          "trade_date": "20260922",
+          "phase": "BUY",
+          "sell_attempt": null
+        },
+        {
+          "seq": 3,
+          "trade_date": "20260922",
+          "phase": "SELL",
+          "sell_attempt": 1
+        },
+        {
+          "seq": 4,
+          "trade_date": "20260923",
+          "phase": "BUY",
+          "sell_attempt": null
+        },
+        {
+          "seq": 5,
+          "trade_date": "20260923",
+          "phase": "SELL",
+          "sell_attempt": 2
+        },
+        {
+          "seq": 6,
+          "trade_date": "20260924",
+          "phase": "BUY",
+          "sell_attempt": null
+        }
+      ]
+    },
+    "sessions": [
+      {
+        "session_id": "C00001:1",
+        "trade_date": "20260921",
+        "phase": "SELL",
+        "status": "CLOSED",
+        "deferrals": []
+      },
+      {
+        "session_id": "C00001:2",
+        "trade_date": "20260922",
+        "phase": "BUY",
+        "status": "CLOSED",
+        "deferrals": []
+      },
+      {
+        "session_id": "C00001:3",
+        "trade_date": "20260922",
+        "phase": "SELL",
+        "status": "CLOSED",
+        "deferrals": []
+      },
+      {
+        "session_id": "C00001:4",
+        "trade_date": "20260923",
+        "phase": "BUY",
+        "status": "CLOSED",
+        "deferrals": []
+      },
+      {
+        "session_id": "C00001:5",
+        "trade_date": "20260923",
+        "phase": "SELL",
+        "status": "CLOSED",
+        "deferrals": []
+      },
+      {
+        "session_id": "C00001:6",
+        "trade_date": "20260924",
+        "phase": "BUY",
+        "status": "CLOSED",
+        "deferrals": []
+      }
+    ],
+    "orders": [
+      {
+        "client_order_id": "H000010201",
+        "symbol": "159915.SZ",
+        "side": "BUY",
+        "quantity": 100,
+        "limit_price": 3.435,
+        "state": "FILLED",
+        "filled_qty": 100,
+        "avg_price": 3.435
+      },
+      {
+        "client_order_id": "H000010202",
+        "symbol": "159930.SZ",
+        "side": "BUY",
+        "quantity": 100,
+        "limit_price": 1.722,
+        "state": "FILLED",
+        "filled_qty": 100,
+        "avg_price": 1.705
+      },
+      {
+        "client_order_id": "H000010203",
+        "symbol": "159985.SZ",
+        "side": "BUY",
+        "quantity": 100,
+        "limit_price": 2.305,
+        "state": "FILLED",
+        "filled_qty": 100,
+        "avg_price": 2.305
+      },
+      {
+        "client_order_id": "H000010204",
+        "symbol": "510300.SH",
+        "side": "BUY",
+        "quantity": 100,
+        "limit_price": 4.631,
+        "state": "FILLED",
+        "filled_qty": 100,
+        "avg_price": 4.631
+      },
+      {
+        "client_order_id": "H000010205",
+        "symbol": "513100.SH",
+        "side": "BUY",
+        "quantity": 100,
+        "limit_price": 2.317,
+        "state": "FILLED",
+        "filled_qty": 100,
+        "avg_price": 2.317
+      },
+      {
+        "client_order_id": "H000010206",
+        "symbol": "518880.SH",
+        "side": "BUY",
+        "quantity": 100,
+        "limit_price": 9.019,
+        "state": "FILLED",
+        "filled_qty": 100,
+        "avg_price": 8.942
+      }
+    ],
+    "last_reconciliation": {
+      "passed": true,
+      "discrepancies": [],
+      "created_at": "2026-10-02T22:59:31+08:00"
+    }
+  },
+  "trades": [
+    {
+      "traded_id": "T00000001",
+      "order_id": 2,
+      "order_sysid": "S00000002",
+      "stock_code": "159930.SZ",
+      "order_type": 23,
+      "traded_volume": 100,
+      "traded_price": 1.705,
+      "traded_amount": 170.5,
+      "traded_time": 1790040300,
+      "commission": 5.0,
+      "strategy_name": "hydra_oms",
+      "order_remark": "H000010202",
+      "date": "20260922"
+    },
+    {
+      "traded_id": "T00000002",
+      "order_id": 6,
+      "order_sysid": "S00000006",
+      "stock_code": "518880.SH",
+      "order_type": 23,
+      "traded_volume": 100,
+      "traded_price": 8.942,
+      "traded_amount": 894.2,
+      "traded_time": 1790040300,
+      "commission": 5.0,
+      "strategy_name": "hydra_oms",
+      "order_remark": "H000010206",
+      "date": "20260922"
+    },
+    {
+      "traded_id": "T00000003",
+      "order_id": 1,
+      "order_sysid": "S00000001",
+      "stock_code": "159915.SZ",
+      "order_type": 23,
+      "traded_volume": 100,
+      "traded_price": 3.435,
+      "traded_amount": 343.5,
+      "traded_time": 1790060100,
+      "commission": 5.0,
+      "strategy_name": "hydra_oms",
+      "order_remark": "H000010201",
+      "date": "20260922"
+    },
+    {
+      "traded_id": "T00000004",
+      "order_id": 3,
+      "order_sysid": "S00000003",
+      "stock_code": "159985.SZ",
+      "order_type": 23,
+      "traded_volume": 100,
+      "traded_price": 2.305,
+      "traded_amount": 230.50000000000003,
+      "traded_time": 1790060100,
+      "commission": 5.0,
+      "strategy_name": "hydra_oms",
+      "order_remark": "H000010203",
+      "date": "20260922"
+    },
+    {
+      "traded_id": "T00000005",
+      "order_id": 4,
+      "order_sysid": "S00000004",
+      "stock_code": "510300.SH",
+      "order_type": 23,
+      "traded_volume": 100,
+      "traded_price": 4.631,
+      "traded_amount": 463.1,
+      "traded_time": 1790060100,
+      "commission": 5.0,
+      "strategy_name": "hydra_oms",
+      "order_remark": "H000010204",
+      "date": "20260922"
+    },
+    {
+      "traded_id": "T00000006",
+      "order_id": 5,
+      "order_sysid": "S00000005",
+      "stock_code": "513100.SH",
+      "order_type": 23,
+      "traded_volume": 100,
+      "traded_price": 2.317,
+      "traded_amount": 231.70000000000002,
+      "traded_time": 1790060100,
+      "commission": 5.0,
+      "strategy_name": "hydra_oms",
+      "order_remark": "H000010205",
+      "date": "20260922"
+    }
+  ],
+  "log": [
+    {
+      "20260918": {
+        "pre": {
+          "passed": true,
+          "discrepancies": []
+        }
+      }
+    },
+    {
+      "20260918": {
+        "buy": {
+          "status": "NO_PLAN"
+        }
+      }
+    },
+    {
+      "20260918": {
+        "cancel": {
+          "status": "REQUESTED",
+          "requested": []
+        }
+      }
+    },
+    {
+      "20260918": {
+        "sell": {
+          "status": "NO_PLAN"
+        }
+      }
+    },
+    {
+      "20260918": {
+        "eod": {
+          "snapshot_id": "403b732695220c9cee135f0b54d3ad267a61adbd1c6ee9ea38653744ddd35048",
+          "reconciliation": {
+            "passed": true,
+            "discrepancies": []
+          },
+          "planned_sessions": [],
+          "cycle_status": "ACTIVE"
+        }
+      }
+    },
+    {
+      "20260921": {
+        "pre": {
+          "passed": true,
+          "discrepancies": []
+        }
+      }
+    },
+    {
+      "20260921": {
+        "buy": {
+          "status": "NO_PLAN"
+        }
+      }
+    },
+    {
+      "20260921": {
+        "cancel": {
+          "status": "REQUESTED",
+          "requested": []
+        }
+      }
+    },
+    {
+      "20260921": {
+        "sell": {
+          "status": "EXECUTED",
+          "orders": []
+        }
+      }
+    },
+    {
+      "20260921": {
+        "eod": {
+          "snapshot_id": "354c30fa85f1f7ca1e69cb216efa5afcac155b54abc4dba6b217847b5cbf4f04",
+          "reconciliation": {
+            "passed": true,
+            "discrepancies": []
+          },
+          "planned_sessions": [
+            {
+              "session_id": "C00001:2",
+              "trade_date": "20260922",
+              "phase": "BUY",
+              "orders": [
+                {
+                  "symbol": "159915.SZ",
+                  "side": "BUY",
+                  "quantity": 100,
+                  "limit_price": 3.435,
+                  "reference_price": 3.418
+                },
+                {
+                  "symbol": "159930.SZ",
+                  "side": "BUY",
+                  "quantity": 100,
+                  "limit_price": 1.722,
+                  "reference_price": 1.714
+                },
+                {
+                  "symbol": "159985.SZ",
+                  "side": "BUY",
+                  "quantity": 100,
+                  "limit_price": 2.305,
+                  "reference_price": 2.294
+                },
+                {
+                  "symbol": "510300.SH",
+                  "side": "BUY",
+                  "quantity": 100,
+                  "limit_price": 4.631,
+                  "reference_price": 4.6080000000000005
+                },
+                {
+                  "symbol": "513100.SH",
+                  "side": "BUY",
+                  "quantity": 100,
+                  "limit_price": 2.317,
+                  "reference_price": 2.283
+                },
+                {
+                  "symbol": "518880.SH",
+                  "side": "BUY",
+                  "quantity": 100,
+                  "limit_price": 9.019,
+                  "reference_price": 8.93
+                }
+              ],
+              "deferrals": []
+            },
+            {
+              "session_id": "C00001:3",
+              "trade_date": "20260922",
+              "phase": "SELL",
+              "orders": [],
+              "deferrals": []
+            }
+          ],
+          "cycle_status": "ACTIVE"
+        }
+      }
+    },
+    {
+      "20260922": {
+        "pre": {
+          "passed": true,
+          "discrepancies": []
+        }
+      }
+    },
+    {
+      "20260922": {
+        "buy": {
+          "status": "EXECUTED",
+          "orders": [
+            {
+              "client_order_id": "H000010201",
+              "status": "SUBMITTED",
+              "quantity": 100
+            },
+            {
+              "client_order_id": "H000010202",
+              "status": "SUBMITTED",
+              "quantity": 100
+            },
+            {
+              "client_order_id": "H000010203",
+              "status": "SUBMITTED",
+              "quantity": 100
+            },
+            {
+              "client_order_id": "H000010204",
+              "status": "SUBMITTED",
+              "quantity": 100
+            },
+            {
+              "client_order_id": "H000010205",
+              "status": "SUBMITTED",
+              "quantity": 100
+            },
+            {
+              "client_order_id": "H000010206",
+              "status": "SUBMITTED",
+              "quantity": 100
+            }
+          ]
+        }
+      }
+    },
+    {
+      "20260922": {
+        "cancel": {
+          "status": "REQUESTED",
+          "requested": []
+        }
+      }
+    },
+    {
+      "20260922": {
+        "sell": {
+          "status": "EXECUTED",
+          "orders": []
+        }
+      }
+    },
+    {
+      "20260922": {
+        "eod": {
+          "snapshot_id": "fd8b47a01517164c77c167aa96b8ae5e3394a8c87680fb23d4766f3d53da8e82",
+          "reconciliation": {
+            "passed": true,
+            "discrepancies": []
+          },
+          "planned_sessions": [
+            {
+              "session_id": "C00001:4",
+              "trade_date": "20260923",
+              "phase": "BUY",
+              "orders": [],
+              "deferrals": []
+            },
+            {
+              "session_id": "C00001:5",
+              "trade_date": "20260923",
+              "phase": "SELL",
+              "orders": [],
+              "deferrals": []
+            }
+          ],
+          "cycle_status": "ACTIVE"
+        }
+      }
+    },
+    {
+      "20260923": {
+        "pre": {
+          "passed": true,
+          "discrepancies": []
+        }
+      }
+    },
+    {
+      "20260923": {
+        "buy": {
+          "status": "EXECUTED",
+          "orders": []
+        }
+      }
+    },
+    {
+      "20260923": {
+        "cancel": {
+          "status": "REQUESTED",
+          "requested": []
+        }
+      }
+    },
+    {
+      "20260923": {
+        "sell": {
+          "status": "EXECUTED",
+          "orders": []
+        }
+      }
+    },
+    {
+      "20260923": {
+        "eod": {
+          "snapshot_id": "887f3875323b2fcbd2d69dc3bc4b2103960ba21d4bf30ef0564479dfa08f164d",
+          "reconciliation": {
+            "passed": true,
+            "discrepancies": []
+          },
+          "planned_sessions": [
+            {
+              "session_id": "C00001:6",
+              "trade_date": "20260924",
+              "phase": "BUY",
+              "orders": [],
+              "deferrals": []
+            }
+          ],
+          "cycle_status": "ACTIVE"
+        }
+      }
+    },
+    {
+      "20260924": {
+        "pre": {
+          "passed": true,
+          "discrepancies": []
+        }
+      }
+    },
+    {
+      "20260924": {
+        "buy": {
+          "status": "EXECUTED",
+          "orders": []
+        }
+      }
+    },
+    {
+      "20260924": {
+        "cancel": {
+          "status": "REQUESTED",
+          "requested": []
+        }
+      }
+    },
+    {
+      "20260924": {
+        "sell": {
+          "status": "NO_PLAN"
+        }
+      }
+    },
+    {
+      "20260924": {
+        "eod": {
+          "snapshot_id": "50d558461f138bb9619c1385b751852b9ec1693889a9edd2aa4e7f9b30106d5d",
+          "reconciliation": {
+            "passed": true,
+            "discrepancies": []
+          },
+          "planned_sessions": [],
+          "cycle_status": "CLOSED"
+        }
+      }
+    }
+  ]
+}

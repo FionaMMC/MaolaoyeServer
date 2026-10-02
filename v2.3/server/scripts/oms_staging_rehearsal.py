@@ -59,6 +59,8 @@ class HttpServer:
                 return response.status
         except urllib.error.HTTPError as exc:
             return exc.code
+        except (urllib.error.URLError, ConnectionError):
+            return 0                                  # not listening yet (e.g. during a restart)
 
     def post_oms_snapshot(self, payload):
         return self._call("POST", "/oms/live/snapshot", payload)
@@ -146,7 +148,8 @@ def main() -> int:
         files[name].write_text(json.dumps(value))
     publish = ["publish", "--instance", args.instance, "--account", args.account, "--signal-date", args.signal_date,
                "--weights", str(files["weights"]), "--closes", str(files["closes"]),
-               "--calendar", str(files["calendar"]), "--source-sha256", "staging-rehearsal".ljust(64, "0")]
+               "--calendar", str(files["calendar"]), "--source-sha256", "staging-rehearsal".ljust(64, "0"),
+               "--now", f"{args.signal_date[:4]}-{args.signal_date[4:6]}-{args.signal_date[6:]}T20:00:00+08:00"]
     oms_ops.main(publish)                                    # dry run prints the share list
     oms_ops.main(publish + ["--apply"])
     with sf() as s:
