@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import logging
+import math
 
 from sqlalchemy import func, select
 
@@ -58,8 +59,11 @@ class CycleService:
             if inst is None or inst.execution_domain != "live" or inst.account_alias != account_alias:
                 raise ValueError(f"unknown live instance {instance_id} for {account_alias}")
             positions = {s: int(q) for s, q in (inst.virtual_positions or {}).items() if int(q)}
-            missing = sorted({s for s, w in weights.items() if w > 0} | set(positions))
-            missing = [s for s in missing if s not in signal_closes]
+            # Not-yet-listed or suspended symbols carry no close; they may only appear with zero weight.
+            signal_closes = {s: float(p) for s, p in signal_closes.items()
+                             if p is not None and math.isfinite(float(p)) and float(p) > 0}
+            needed = {s for s, w in weights.items() if w > 0} | set(positions)
+            missing = sorted(s for s in needed if s not in signal_closes)
             if missing:
                 raise ValueError(f"signal closes missing for {missing}")
             cash = float(inst.virtual_cash)
@@ -68,7 +72,7 @@ class CycleService:
             schedule = session_schedule(calendar, signal_date, self.policy.window)
             if _date(now) > schedule[0].trade_date:
                 raise ValueError("execution schedule already started")
-            lot_gap = sum(max(0., (1 - self.policy.reserve) * w - frozen[s] * float(signal_closes[s]) / nav)
+            lot_gap = sum(max(0., (1 - self.policy.reserve) * w - frozen[s] * signal_closes.get(s, 0.) / nav)
                           for s, w in weights.items())
             version_id = "tv_" + _sha({"instance": instance_id, "signal": signal_date, "weights": weights,
                                        "source": source_sha256})[:24]
@@ -83,7 +87,8 @@ class CycleService:
             cycle = OmsCycle(cycle_id=f"C{cycle_no:05d}", cycle_no=cycle_no, target_version_id=version_id,
                              account_alias=account_alias, instance_id=instance_id, policy=asdict(self.policy),
                              nav_at_signal=nav, frozen_target=frozen,
-                             sell_anchor={s: float(signal_closes[s]) for s in frozen}, buy_anchor=None,
+                             sell_anchor={s: signal_closes[s] for s in frozen if s in signal_closes},
+                             buy_anchor=None,
                              lot_gap=lot_gap, schedule=[asdict(x) for x in schedule], status="PENDING_APPROVAL",
                              created_at=now)
             session.add(cycle)
@@ -91,7 +96,7 @@ class CycleService:
             first = self._plan_session(session, cycle, schedule[0], positions=positions, sellable=positions,
                                        cash=cash, tradable=set(), basis=None, now=now)
             session.commit()
-            shares = [{"symbol": s, "weight": float(weights.get(s, 0.)), "close": float(signal_closes[s]),
+            shares = [{"symbol": s, "weight": float(weights.get(s, 0.)), "close": signal_closes.get(s),
                        "target": frozen.get(s, 0), "held": positions.get(s, 0),
                        "delta": frozen.get(s, 0) - positions.get(s, 0)} for s in sorted(set(frozen) | set(positions))]
             return {"cycle_id": cycle.cycle_id, "target_version_id": version_id, "status": cycle.status,
@@ -164,9 +169,11 @@ class CycleService:
         for order_id, reason in (projection.get("rejected_observations") or {}).items():
             found.append({"type": "PROJECTION_REFUSED", "client_order_id": order_id, "reason": reason})
         # Available cash excludes what open buy orders freeze; add it back before comparing to the ledger.
-        frozen = sum((o.quantity - o.traded_volume) * o.price for o in snap.orders
-                     if o.side == "BUY" and o.status in OPEN_BROKER_STATUSES)
-        comparable_cash = float(snap.available_cash) + frozen * 1.001 + (5.0 if frozen else 0.)
+        # The broker freezes notional plus a commission reserve per order, so add back per order.
+        frozen = sum(rest * 1.001 + 5.0 for rest in ((o.quantity - o.traded_volume) * o.price for o in snap.orders
+                                                      if o.side == "BUY" and o.status in OPEN_BROKER_STATUSES)
+                     if rest > 0)
+        comparable_cash = float(snap.available_cash) + frozen
         recon = self.reconcile.reconcile_total(snap.positions, comparable_cash, snap.taken_at.isoformat(),
                                                cash_tolerance=0.0, execution_domain="live",
                                                account_alias=snap.account_alias)
@@ -191,12 +198,13 @@ class CycleService:
                 cycle.status = "HELD"
                 logger.error("oms cycle %s HELD: buy anchor needs the %s close", cycle.cycle_id, first_sell)
                 return []
-            missing = [s for s in cycle.frozen_target if s not in snap.quotes]
+            wanted = [s for s, q in cycle.frozen_target.items() if int(q) > 0]
+            missing = [s for s in wanted if s not in snap.quotes]
             if missing:
                 cycle.status = "HELD"
                 logger.error("oms cycle %s HELD: closing quotes missing for %s", cycle.cycle_id, missing)
                 return []
-            cycle.buy_anchor = {s: float(snap.quotes[s].last_price) for s in cycle.frozen_target}
+            cycle.buy_anchor = {s: float(snap.quotes[s].last_price) for s in wanted}
         remaining = [x for x in schedule if x.trade_date > snap.trade_date]
         if not remaining:
             self._close(session, cycle, "WINDOW_COMPLETE", snap, now)
@@ -243,7 +251,11 @@ class CycleService:
     def _close(self, session, cycle: OmsCycle, reason: str, snap: SnapshotIn, now: str) -> None:
         cycle.status, cycle.close_reason, cycle.closed_at = "CLOSED", reason, now
         session.flush()
-        cycle.report = self._build_report(session, cycle, {s: float(q.last_price) for s, q in snap.quotes.items()})
+        try:
+            cycle.report = self._build_report(session, cycle, {s: float(q.last_price) for s, q in snap.quotes.items()})
+        except Exception:  # a report bug must never keep a finished cycle open
+            logger.exception("oms cycle %s report failed", cycle.cycle_id)
+            cycle.report = {"cycle_id": cycle.cycle_id, "close_reason": reason, "error": "REPORT_FAILED"}
 
     # ── read side ─────────────────────────────────────────────────────────
     def plan_for(self, account_alias: str, trade_date: str, phase: str, *, executable_flag: bool) -> PlanOut:
@@ -281,8 +293,8 @@ class CycleService:
     def _build_report(self, session, cycle: OmsCycle, marks: dict) -> dict:
         inst = session.get(InstanceState, cycle.instance_id)
         positions = {s: int(q) for s, q in (inst.virtual_positions or {}).items()}
-        prices = {s: float(marks.get(s) or (cycle.buy_anchor or {}).get(s) or cycle.sell_anchor[s])
-                  for s in cycle.frozen_target}
+        prices = {s: float(marks.get(s) or (cycle.buy_anchor or {}).get(s) or cycle.sell_anchor.get(s) or 0.)
+                  for s in set(cycle.frozen_target) | set(positions)}
         nav = float(inst.virtual_cash) + sum(q * prices.get(s, 0.) for s, q in positions.items())
         orders = session.execute(select(OmsOrder).where(OmsOrder.cycle_id == cycle.cycle_id)
                                  .order_by(OmsOrder.client_order_id)).scalars().all()

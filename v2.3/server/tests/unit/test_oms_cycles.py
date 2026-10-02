@@ -159,3 +159,27 @@ def test_second_publish_while_cycle_open_is_refused(tmp_path):
         svc.publish_target(instance_id=INSTANCE, account_alias=ALIAS, signal_date="20261030", weights=WEIGHTS,
                            signal_closes=CLOSES, calendar=CAL + ["20261030", "20261102", "20261103", "20261104"],
                            source_sha256="t" * 64, now="2026-10-30T20:00:00+08:00")
+
+
+def test_unlisted_zero_weight_symbol_needs_no_close_or_anchor(tmp_path):
+    sf, svc = _service(tmp_path)
+    weights = dict(WEIGHTS, **{"159981.SZ": 0.0})
+    closes = dict(CLOSES, **{"159981.SZ": float("nan")})
+    svc.publish_target(instance_id=INSTANCE, account_alias=ALIAS, signal_date="20260930", weights=weights,
+                       signal_closes=closes, calendar=CAL, source_sha256="u" * 64, now="2026-10-07T20:00:00+08:00")
+    svc.approve("C00001", "tester", "n")
+    sell = _orders(sf, "C00001:1")[0]
+    proceeds = sell.quantity * 4.58 - 5.0
+    out = svc.ingest_snapshot(_snap("20261008", "1505", "EOD", {"510300.SH": 3000 - sell.quantity},
+                                    100000.0 + proceeds, orders=[_fill(sell, sell.quantity, 4.58)]), "n")
+    assert out["cycle_status"] == "ACTIVE"
+    with sf() as s:
+        assert set(s.get(OmsCycle, "C00001").buy_anchor) == {"510300.SH", "513100.SH"}
+
+
+def test_positive_weight_without_close_is_refused(tmp_path):
+    _, svc = _service(tmp_path)
+    with pytest.raises(ValueError):
+        svc.publish_target(instance_id=INSTANCE, account_alias=ALIAS, signal_date="20260930",
+                           weights=dict(WEIGHTS, **{"159981.SZ": 0.1}), signal_closes=CLOSES, calendar=CAL,
+                           source_sha256="v" * 64, now="2026-10-07T20:00:00+08:00")

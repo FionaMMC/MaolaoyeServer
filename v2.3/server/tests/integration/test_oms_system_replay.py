@@ -9,14 +9,18 @@ let the ledger drift from the broker.
 from __future__ import annotations
 
 from collections import Counter
+import json
 from datetime import datetime, timedelta, timezone
 import math
 import sys
 from pathlib import Path
 
 import pandas as pd
-import pytest
-from fastapi.testclient import TestClient
+
+try:
+    import pytest
+except ImportError:  # scripts/oms_system_replay.py reuses this harness on the server without pytest
+    pytest = None
 
 from app.db import make_session_factory
 from app.dependencies import _engine_for_url, get_oms_cycle_service, get_settings
@@ -31,7 +35,7 @@ from live_client.sim_exchange import SimExchange, SimQMTGateway
 
 ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT / "reports" / "hydra_policy_20261002"))
-policy_replay = pytest.importorskip("policy_replay")
+policy_replay = pytest.importorskip("policy_replay") if pytest else __import__("policy_replay")
 
 CN = timezone(timedelta(hours=8))
 ALIAS, INSTANCE = "hydra-live", "live_hydra_v481_rb"
@@ -129,25 +133,55 @@ class ServerAdapter:
         return body["data"]
 
 
+class DirectServer:
+    """Same surface, no HTTP: payloads still pass the wire schemas (used where httpx is absent)."""
+
+    def __init__(self, service):
+        self.service, self.down = service, False
+
+    def _check(self):
+        if self.down:
+            raise ConnectionError("server down")
+
+    def post_oms_snapshot(self, payload):
+        self._check()
+        from app.oms.schemas import SnapshotIn
+        return self.service.ingest_snapshot(SnapshotIn.model_validate(json.loads(json.dumps(payload))), "n")
+
+    def get_oms_plan(self, alias, trade_date, phase):
+        self._check()
+        return self.service.plan_for(alias, trade_date, phase, executable_flag=True).model_dump(mode="json")
+
+    def post_oms_events(self, alias, events):
+        self._check()
+        from app.oms.schemas import EventIn
+        return self.service.ledger.apply_events(alias, [EventIn.model_validate(e) for e in events], "n")
+
+
 class System:
-    def __init__(self, tmp_path, bars):
+    def __init__(self, tmp_path, bars, *, symbols=SYMBOLS, capital=CAPITAL, transport="http"):
         get_settings.cache_clear()
         _engine_for_url.cache_clear()
+        self.symbols, self.capital = list(symbols), float(capital)
         self.settings = Settings(
             live_api_key="LIVE_KEY", live_client_id="hydra-live-client", live_account_aliases_csv=ALIAS,
             oms_live_enabled=True, stock_commission_rate=0.0001, stock_min_commission=5.0,
             stock_stamp_duty_sell=0.0, db_url=f"sqlite:///{tmp_path}/system.db", parquet_root=tmp_path / "data",
             plugins_dir=tmp_path / "plugins", strategies_file=tmp_path / "strategies.yaml", log_level="WARNING")
-        self.client = TestClient(create_app(settings_override=self.settings))
         self.sf = make_session_factory(_engine_for_url(self.settings.db_url))
         with self.sf() as s:
             s.add(InstanceState(instance_id=INSTANCE, execution_domain="live", account_alias=ALIAS,
-                                ledger_mode="attributed", virtual_cash=CAPITAL, virtual_positions={},
-                                owned_symbols=SYMBOLS, last_update="x"))
+                                ledger_mode="attributed", virtual_cash=self.capital, virtual_positions={},
+                                owned_symbols=self.symbols, last_update="x"))
             s.commit()
         self.service = get_oms_cycle_service(self.sf, self.settings)
-        self.exchange = SimExchange(bars, cash=CAPITAL, positions={})
-        self.server = ServerAdapter(self.client)
+        self.exchange = SimExchange(bars, cash=self.capital, positions={})
+        if transport == "http":
+            from fastapi.testclient import TestClient
+            self.client = TestClient(create_app(settings_override=self.settings))
+            self.server = ServerAdapter(self.client)
+        else:
+            self.server = DirectServer(self.service)
         self.journal_path = tmp_path / "agent" / "oms-agent.db"
         self.journal_path.parent.mkdir()
         self.agent = self.new_agent()
@@ -164,7 +198,7 @@ class System:
 
         return OmsAgent(account_alias=ALIAS, gateway=gateway, server=self.server,
                         journal=OmsJournal(self.journal_path, clock=self.exchange.now), clock=self.exchange.now,
-                        symbols=SYMBOLS, sleep=sleep, spool_dir=self.journal_path.parent / "spool")
+                        symbols=self.symbols, sleep=sleep, spool_dir=self.journal_path.parent / "spool")
 
     def clock(self, day, hhmmss):
         self.exchange.set_clock(day, hhmmss)
