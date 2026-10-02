@@ -95,6 +95,13 @@ class StrategyPipeline:
         execution_domain: ExecutionDomain = "paper", account_group: str | None = None,
         recovery: bool = False,
     ) -> dict:
+        if execution_domain == "live":
+            # Live order state belongs to the execution core (app.oms); this path once
+            # expired live orders without broker evidence and deleted unfetched ones.
+            logger.error("pipeline refused: live domain is owned by the execution core")
+            return {"trade_date": trade_date, "valid_date": str(trade_date),
+                    "instances": 0, "signals": 0, "passed": 0, "orders": 0,
+                    "skipped": "live_domain_owned_by_oms"}
         try:
             with pipeline_mutex(self.session_factory):
                 return self._run(trade_date, force, execution_domain, account_group, recovery)

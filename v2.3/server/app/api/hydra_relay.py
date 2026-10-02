@@ -23,6 +23,7 @@ from app.services.hydra_execution_publish import publish_execution
 from app.schemas.hydra_monthly import HydraMonthlySnapshotRequest
 from app.services.hydra_monthly import receive_snapshot
 from app.settings import get_settings, Settings
+from app.oms.guards import legacy_live_write_guard
 
 from app.schemas.emergency_execution import EmergencyStageRequest, EmergencyResumeRequest
 from app.services.emergency_execution import stage_emergency, resume_after_emergency
@@ -30,7 +31,7 @@ from app.services.emergency_execution import stage_emergency, resume_after_emerg
 router = APIRouter(prefix="/hydra")
 
 
-@router.post("/emergency/stage", response_model=APIResponse[dict])
+@router.post("/emergency/stage", response_model=APIResponse[dict], dependencies=[Depends(legacy_live_write_guard)])
 def emergency_stage(req: EmergencyStageRequest,
                     auth: AuthContext = Depends(verify_api_key),
                     service: HydraRelayService = Depends(get_hydra_relay_service)):
@@ -38,7 +39,7 @@ def emergency_stage(req: EmergencyStageRequest,
     return APIResponse(code=0, message="ok", data=stage_emergency(service, req, auth.client_id))
 
 
-@router.post("/emergency/resume", response_model=APIResponse[dict])
+@router.post("/emergency/resume", response_model=APIResponse[dict], dependencies=[Depends(legacy_live_write_guard)])
 def emergency_resume(req: EmergencyResumeRequest,
                      auth: AuthContext = Depends(verify_api_key),
                      service: HydraRelayService = Depends(get_hydra_relay_service)):
@@ -79,6 +80,7 @@ def _authorize(auth: AuthContext, execution_domain: str, account_alias: str) -> 
 @router.post(
     "/targets/stage",
     response_model=APIResponse[HydraRelayResponseData | HydraExecutionWaitResponseData],
+    dependencies=[Depends(legacy_live_write_guard)],
 )
 def stage_hydra_target(
     req: HydraTargetRequest,
@@ -93,6 +95,7 @@ def stage_hydra_target(
 @router.post(
     "/rebalances/retry",
     response_model=APIResponse[HydraRelayResponseData | HydraExecutionWaitResponseData],
+    dependencies=[Depends(legacy_live_write_guard)],
 )
 def stage_hydra_retry(
     req: HydraRetryRequest,
@@ -104,7 +107,7 @@ def stage_hydra_retry(
     return APIResponse(code=0, message="ok", data=data)
 
 
-@router.post("/execution/advance", response_model=APIResponse[dict])
+@router.post("/execution/advance", response_model=APIResponse[dict], dependencies=[Depends(legacy_live_write_guard)])
 def advance_hydra_execution(
     req: HydraAdvanceRequest,
     auth: AuthContext = Depends(verify_api_key),
@@ -131,6 +134,7 @@ def publish_hydra_execution(
 @router.post(
     "/attempts/close",
     response_model=APIResponse[HydraAttemptCloseResponseData],
+    dependencies=[Depends(legacy_live_write_guard)],
 )
 def close_hydra_attempt(
     req: HydraAttemptCloseRequest,

@@ -9,6 +9,7 @@ from app.exceptions import APIError, ErrorCode
 from app.schemas.common import APIResponse
 from app.schemas.trade_result import TradeResultRequest, TradeResultResponseData
 from app.services.settlement import SettlementService
+from app.oms.guards import legacy_live_write_guard
 
 router = APIRouter()
 
@@ -16,6 +17,7 @@ router = APIRouter()
 @router.post(
     "/trade-result",
     response_model=APIResponse[TradeResultResponseData],
+    dependencies=[Depends(legacy_live_write_guard)],
 )
 def push_trade_result(
     req: TradeResultRequest,

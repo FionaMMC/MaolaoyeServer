@@ -10,6 +10,7 @@ from app.schemas.common import APIResponse
 from app.schemas.orders import OrdersResponseData
 from app.services.orders_queue import OrdersQueueService
 from app.settings import Settings, get_settings
+from app.oms.guards import legacy_live_write_guard
 
 router = APIRouter()
 
@@ -17,6 +18,7 @@ router = APIRouter()
 @router.get(
     "/orders",
     response_model=APIResponse[OrdersResponseData],
+    dependencies=[Depends(legacy_live_write_guard)],
 )
 async def get_orders(
     date: str = Query(min_length=8, max_length=8, pattern=r"^\d{8}$"),

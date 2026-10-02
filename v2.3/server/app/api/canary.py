@@ -13,11 +13,12 @@ from app.models import Order
 from app.schemas.canary import CanaryStageRequest
 from app.schemas.common import APIResponse
 from app.settings import Settings, get_settings
+from app.oms.guards import legacy_live_write_guard
 
 router = APIRouter(prefix="/hydra/canary")
 
 
-@router.post("/stage")
+@router.post("/stage", dependencies=[Depends(legacy_live_write_guard)])
 def stage(req: CanaryStageRequest, auth: AuthContext = Depends(verify_api_key),
           settings: Settings = Depends(get_settings), sf=Depends(get_session_factory)):
     if not settings.live_canary_staging_enabled:

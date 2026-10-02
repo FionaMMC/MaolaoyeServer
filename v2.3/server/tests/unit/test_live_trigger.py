@@ -1,4 +1,4 @@
-"""实盘 trigger 只能生成 live 域订单，且 token 不具备其他权限。"""
+"""实盘 trigger 不再运行实盘管线，且 token 不具备其他权限。"""
 from app.dependencies import get_strategy_pipeline
 from app.main import create_app
 from app.settings import Settings
@@ -17,18 +17,15 @@ def _client() -> TestClient:
     return TestClient(create_app(settings_override=settings))
 
 
-def test_live_trigger_runs_pipeline_in_live_domain():
+def test_live_trigger_no_longer_runs_the_live_pipeline():
+    """The live pipeline could expire live orders without broker evidence; it is retired."""
     client = _client()
-    calls = {}
+    calls = []
 
     class SpyPipeline:
-        def run(self, trade_date, force=False, execution_domain="paper"):
-            calls.update({
-                "trade_date": trade_date,
-                "force": force,
-                "execution_domain": execution_domain,
-            })
-            return {"trade_date": trade_date, "orders": 0, "execution_domain": execution_domain}
+        def run(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return {}
 
     client.app.dependency_overrides[get_strategy_pipeline] = lambda: SpyPipeline()
     try:
@@ -36,13 +33,8 @@ def test_live_trigger_runs_pipeline_in_live_domain():
             "/hydra/live/trigger?trade_date=20260901",
             headers={"Authorization": "Bearer TRIGGER_KEY"},
         )
-        assert response.status_code == 200, response.text
-        assert response.json()["code"] == 0
-        assert calls == {
-            "trade_date": 20260901,
-            "force": False,
-            "execution_domain": "live",
-        }
+        assert response.status_code == 410, response.text
+        assert calls == []
     finally:
         client.app.dependency_overrides.pop(get_strategy_pipeline, None)
 
