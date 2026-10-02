@@ -75,6 +75,12 @@ class HttpServer:
     def status(self, alias):
         return self._call("GET", "/oms/live/status", params={"account_alias": alias})
 
+    def get_oms_manual_pending(self, alias, trade_date):
+        return self._call("GET", "/oms/live/manual/pending", params={"account_alias": alias, "trade_date": trade_date})
+
+    def post_oms_manual_ack(self, alias, results):
+        return self._call("POST", "/oms/live/manual/ack", {"account_alias": alias, "results": results})
+
 
 def _bars(market_dir: Path, start: str, end: str) -> dict:
     bars = {}

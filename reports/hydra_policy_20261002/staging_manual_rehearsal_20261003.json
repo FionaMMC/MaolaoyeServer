@@ -1,0 +1,373 @@
+{
+  "verdict": "PASS",
+  "checks": {
+    "page_served": true,
+    "operator_cannot_reach_agent_api": true,
+    "agent_cannot_issue_manual_orders": true,
+    "manual_order_filled": true,
+    "ledger_position_increased_by_100": true,
+    "order_instruction_done": true,
+    "cancel_of_unknown_order_failed": true,
+    "second_run_found_nothing": true,
+    "dividend_preview_amount": "420.00",
+    "dividend_registered": true,
+    "audit_actions": [
+      "DIVIDEND_REGISTERED",
+      "MANUAL_CANCEL",
+      "MANUAL_ORDER"
+    ],
+    "eod_reconciled": true,
+    "one_broker_order_for_the_manual_remark": true
+  },
+  "order": {
+    "client_order_id": "E261002001",
+    "instruction_id": "E261002001",
+    "trade_date": "20261002",
+    "status": "PENDING"
+  },
+  "cancel": {
+    "instruction_id": "X261002001",
+    "trade_date": "20261002",
+    "status": "PENDING"
+  },
+  "manual_run": {
+    "status": "DONE",
+    "results": [
+      {
+        "instruction_id": "E261002001",
+        "status": "SUBMITTED",
+        "detail": "broker order 1"
+      },
+      {
+        "instruction_id": "X261002001",
+        "status": "FAILED",
+        "detail": "order not found among today's broker orders"
+      }
+    ],
+    "held_back_by_local_hold": []
+  },
+  "eod": {
+    "snapshot_id": "6da9b34f05edae5bf21bad3ed5e1d6d1ab87ee7100a527e1e78be2d25ca260c0",
+    "reconciliation": {
+      "passed": true,
+      "discrepancies": []
+    },
+    "planned_sessions": [],
+    "cycle_status": null
+  },
+  "overview_after": {
+    "status": {
+      "cycle": {
+        "cycle_id": "C00001",
+        "status": "CLOSED",
+        "frozen_target": {
+          "159915.SZ": 500,
+          "159930.SZ": 1900,
+          "159981.SZ": 2600,
+          "159985.SZ": 3100,
+          "510300.SH": 2700,
+          "511260.SH": 1200,
+          "513100.SH": 1100,
+          "513500.SH": 1200,
+          "518880.SH": 900
+        },
+        "lot_gap": 0.030863712785775932,
+        "schedule": [
+          {
+            "seq": 1,
+            "trade_date": "20260921",
+            "phase": "SELL",
+            "sell_attempt": 0
+          },
+          {
+            "seq": 2,
+            "trade_date": "20260922",
+            "phase": "BUY",
+            "sell_attempt": null
+          },
+          {
+            "seq": 3,
+            "trade_date": "20260922",
+            "phase": "SELL",
+            "sell_attempt": 1
+          },
+          {
+            "seq": 4,
+            "trade_date": "20260923",
+            "phase": "BUY",
+            "sell_attempt": null
+          },
+          {
+            "seq": 5,
+            "trade_date": "20260923",
+            "phase": "SELL",
+            "sell_attempt": 2
+          },
+          {
+            "seq": 6,
+            "trade_date": "20260924",
+            "phase": "BUY",
+            "sell_attempt": null
+          }
+        ]
+      },
+      "sessions": [
+        {
+          "session_id": "C00001:1",
+          "trade_date": "20260921",
+          "phase": "SELL",
+          "status": "CLOSED",
+          "deferrals": []
+        },
+        {
+          "session_id": "C00001:2",
+          "trade_date": "20260922",
+          "phase": "BUY",
+          "status": "CLOSED",
+          "deferrals": []
+        },
+        {
+          "session_id": "C00001:3",
+          "trade_date": "20260922",
+          "phase": "SELL",
+          "status": "CLOSED",
+          "deferrals": []
+        },
+        {
+          "session_id": "C00001:4",
+          "trade_date": "20260923",
+          "phase": "BUY",
+          "status": "CLOSED",
+          "deferrals": []
+        },
+        {
+          "session_id": "C00001:5",
+          "trade_date": "20260923",
+          "phase": "SELL",
+          "status": "CLOSED",
+          "deferrals": []
+        },
+        {
+          "session_id": "C00001:6",
+          "trade_date": "20260924",
+          "phase": "BUY",
+          "status": "CLOSED",
+          "deferrals": []
+        }
+      ],
+      "orders": [
+        {
+          "client_order_id": "H000010201",
+          "symbol": "159915.SZ",
+          "side": "BUY",
+          "quantity": 100,
+          "limit_price": 3.435,
+          "state": "FILLED",
+          "filled_qty": 100,
+          "avg_price": 3.435
+        },
+        {
+          "client_order_id": "H000010202",
+          "symbol": "159930.SZ",
+          "side": "BUY",
+          "quantity": 100,
+          "limit_price": 1.722,
+          "state": "FILLED",
+          "filled_qty": 100,
+          "avg_price": 1.705
+        },
+        {
+          "client_order_id": "H000010203",
+          "symbol": "159985.SZ",
+          "side": "BUY",
+          "quantity": 100,
+          "limit_price": 2.305,
+          "state": "FILLED",
+          "filled_qty": 100,
+          "avg_price": 2.305
+        },
+        {
+          "client_order_id": "H000010204",
+          "symbol": "510300.SH",
+          "side": "BUY",
+          "quantity": 100,
+          "limit_price": 4.631,
+          "state": "FILLED",
+          "filled_qty": 100,
+          "avg_price": 4.631
+        },
+        {
+          "client_order_id": "H000010205",
+          "symbol": "513100.SH",
+          "side": "BUY",
+          "quantity": 100,
+          "limit_price": 2.317,
+          "state": "FILLED",
+          "filled_qty": 100,
+          "avg_price": 2.317
+        },
+        {
+          "client_order_id": "H000010206",
+          "symbol": "518880.SH",
+          "side": "BUY",
+          "quantity": 100,
+          "limit_price": 9.019,
+          "state": "FILLED",
+          "filled_qty": 100,
+          "avg_price": 8.942
+        }
+      ],
+      "last_reconciliation": {
+        "passed": true,
+        "discrepancies": [],
+        "created_at": "2026-10-02T23:19:25+08:00"
+      }
+    },
+    "ledger": {
+      "instance_id": "live_hydra_v481_rb",
+      "cash": 5822.6900000000005,
+      "positions": {
+        "159915.SZ": 500,
+        "159930.SZ": 1900,
+        "159981.SZ": 2600,
+        "159985.SZ": 3100,
+        "510300.SH": 2800,
+        "511260.SH": 1200,
+        "513100.SH": 1100,
+        "513500.SH": 1200,
+        "518880.SH": 900
+      },
+      "last_update": "2026-10-02T23:19:26+08:00"
+    },
+    "manual_orders": [
+      {
+        "client_order_id": "E261002001",
+        "trade_date": "20261002",
+        "symbol": "510300.SH",
+        "side": "BUY",
+        "quantity": 100,
+        "limit_price": 4.476,
+        "state": "FILLED",
+        "filled_qty": 100,
+        "avg_price": 4.476
+      }
+    ],
+    "instructions": [
+      {
+        "instruction_id": "X261002001",
+        "trade_date": "20261002",
+        "kind": "CANCEL",
+        "client_order_id": null,
+        "broker_order_id": "999999999",
+        "status": "FAILED",
+        "reason": "staging rehearsal cancel",
+        "operator": "staging",
+        "created_at": "2026-10-02T15:19:26.069230+00:00",
+        "result": {
+          "instruction_id": "X261002001",
+          "status": "FAILED",
+          "detail": "order not found among today's broker orders"
+        }
+      },
+      {
+        "instruction_id": "E261002001",
+        "trade_date": "20261002",
+        "kind": "ORDER",
+        "client_order_id": "E261002001",
+        "broker_order_id": null,
+        "status": "DONE",
+        "reason": "staging rehearsal manual buy",
+        "operator": "staging",
+        "created_at": "2026-10-02T15:19:26.055008+00:00",
+        "result": {
+          "instruction_id": "E261002001",
+          "status": "SUBMITTED",
+          "detail": "broker order 1"
+        }
+      }
+    ],
+    "overrides": [
+      {
+        "id": 3,
+        "action": "DIVIDEND_REGISTERED",
+        "operator": "staging",
+        "reason": "staging rehearsal dividend",
+        "created_at": "2026-10-02T15:19:26.086999+00:00",
+        "effect": {
+          "entitlement_id": "e6d7486311de14fac3556ad1473ac753ef0951f88777697121cfd8407400efda",
+          "amount": "420.00"
+        }
+      },
+      {
+        "id": 2,
+        "action": "MANUAL_CANCEL",
+        "operator": "staging",
+        "reason": "staging rehearsal cancel",
+        "created_at": "2026-10-02T15:19:26.069230+00:00",
+        "effect": {
+          "instruction_id": "X261002001"
+        }
+      },
+      {
+        "id": 1,
+        "action": "MANUAL_ORDER",
+        "operator": "staging",
+        "reason": "staging rehearsal manual buy",
+        "created_at": "2026-10-02T15:19:26.055008+00:00",
+        "effect": {
+          "client_order_id": "E261002001"
+        }
+      }
+    ],
+    "dividends": [
+      {
+        "symbol": "511260.SH",
+        "record_date": "20261015",
+        "ex_date": "20261016",
+        "pay_date": "20261020",
+        "entitled_quantity": "1200",
+        "cash_per_share": "0.35",
+        "amount": "420.00",
+        "settlement_event_id": "511260.SH-20261015-20261020"
+      },
+      {
+        "symbol": "511260.SH",
+        "record_date": "20260917",
+        "ex_date": "20260918",
+        "pay_date": "20260923",
+        "entitled_quantity": "1200",
+        "cash_per_share": "1.2747",
+        "amount": "1529.64",
+        "settlement_event_id": "1/live_hydra_v481_rb"
+      }
+    ],
+    "latest_snapshot": {
+      "kind": "EOD",
+      "taken_at": "2026-10-02T15:05:00+08:00",
+      "available_cash": 5822.6900000000005,
+      "positions": {
+        "159915.SZ": 500,
+        "159930.SZ": 1900,
+        "159981.SZ": 2600,
+        "159985.SZ": 3100,
+        "510300.SH": 2800,
+        "511260.SH": 1200,
+        "513100.SH": 1100,
+        "513500.SH": 1200,
+        "518880.SH": 900
+      },
+      "open_orders": []
+    },
+    "symbols": [
+      "159915.SZ",
+      "159930.SZ",
+      "159981.SZ",
+      "159985.SZ",
+      "510300.SH",
+      "511260.SH",
+      "513100.SH",
+      "513500.SH",
+      "518880.SH"
+    ]
+  }
+}
