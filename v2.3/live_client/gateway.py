@@ -8,10 +8,17 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event
+from types import SimpleNamespace
 from typing import Any
 
 from live_client.config import LiveClientConfig
-from live_client.qmt_day_order_policy import day_order_expiration
+from live_client.qmt_day_order_policy import CHINA_TIMEZONE, day_order_expiration
+
+# xtconstant values, for gateways that must work without importing xtquant.
+QMT_STOCK_BUY = 23
+QMT_STOCK_SELL = 24
+QMT_FIX_PRICE = 11
+OMS_STRATEGY_NAME = "hydra_oms"
 
 
 @dataclass(frozen=True)
@@ -161,11 +168,88 @@ def classify_qmt_settlement_status(
     raise RuntimeError(f"QMT 委托状态未识别: {qmt_status}")
 
 
+def validate_limit_order(side: str, quantity: int, limit_price: float) -> None:
+    """Reject malformed OMS orders before any broker call."""
+    if side not in ("BUY", "SELL"):
+        raise ValueError(f"OMS 委托方向非法: {side}")
+    if isinstance(quantity, bool) or int(quantity) != quantity or int(quantity) <= 0:
+        raise ValueError(f"OMS 委托数量非法: {quantity}")
+    if not math.isfinite(float(limit_price)) or float(limit_price) <= 0:
+        raise ValueError(f"OMS 委托限价非法: {limit_price}")
+
+
+def oms_submission_result(raw_order_id: Any, limit_price: float) -> SubmissionResult:
+    """Map an ``order_stock`` return value for the OMS.
+
+    Only a positive id acknowledges the order; -1/None is QMT's explicit
+    refusal. Anything else (0, non-integer) proves neither outcome, so it is
+    UNKNOWN and must be resolved by remark, never by resubmitting.
+    """
+    if raw_order_id is None:
+        return SubmissionResult(None, "REJECTED", "QMT order_stock returned None")
+    try:
+        order_id = int(raw_order_id)
+    except (TypeError, ValueError):
+        return SubmissionResult(
+            None, "UNKNOWN", f"QMT order_stock returned non-integer {raw_order_id!r}",
+        )
+    if order_id < 0:
+        return SubmissionResult(str(order_id), "REJECTED", "QMT order_stock returned failure")
+    if order_id == 0:
+        return SubmissionResult(None, "UNKNOWN", "QMT order_stock returned 0; outcome unproven")
+    now = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    return SubmissionResult(
+        str(order_id),
+        "SUBMITTED",
+        execution_meta={
+            "qmt_order_id": str(order_id),
+            "submitted_price": float(limit_price),
+            "submitted_time": now,
+        },
+    )
+
+
+def _broker_time_text(value: Any) -> str:
+    """Epoch timestamps become Beijing-time ISO text; other formats pass through."""
+    if value is None or value == "" or value == 0:
+        return ""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return str(value)
+    digits = str(number)
+    if len(digits) == 14 and digits.startswith("20"):
+        return digits  # YYYYMMDDHHMMSS
+    seconds = number / 1000 if number >= 100_000_000_000 else number
+    if seconds >= 1_000_000_000:
+        return datetime.fromtimestamp(seconds, tz=CHINA_TIMEZONE).isoformat()
+    return digits  # HHMMSS without a date
+
+
+def oms_trade_row(raw: Any, sides: dict[int, str]) -> dict:
+    """One QMT trade detail in the server's BrokerTrade wire shape."""
+    order_type = int(getattr(raw, "order_type", 0) or 0)
+    side = sides.get(order_type)
+    if side is None:
+        raise RuntimeError(f"QMT 成交方向无法识别: order_type={order_type}")
+    return {
+        "broker_trade_id": str(getattr(raw, "traded_id")),
+        "broker_order_id": str(getattr(raw, "order_id")),
+        "symbol": str(getattr(raw, "stock_code", "") or ""),
+        "side": side,
+        "quantity": int(getattr(raw, "traded_volume", 0) or 0),
+        "price": float(getattr(raw, "traded_price", 0) or 0),
+        "traded_at": _broker_time_text(getattr(raw, "traded_time", None)),
+        "remark": str(getattr(raw, "order_remark", "") or ""),
+    }
+
+
 class MockQMTGateway:
     def __init__(self, state_path: Path, expected_account_id: str):
         self.payload = json.loads(Path(state_path).read_text(encoding="utf-8"))
         self.expected_account_id = expected_account_id
         self.sequence = int(self.payload.get("order_sequence_start", 10000))
+        self.oms_orders: list[BrokerOrderSnapshot] = []
 
     def connect(self) -> None:
         if self.payload.get("connect_ok", True) is not True:
@@ -282,6 +366,54 @@ class MockQMTGateway:
                 "detail": detail,
             })
         return results
+
+    def submit_limit(
+        self, *, symbol: str, side: str, quantity: int, limit_price: float, remark: str,
+    ) -> SubmissionResult:
+        validate_limit_order(side, quantity, limit_price)
+        if symbol in set(self.payload.get("reject_symbols", [])):
+            return SubmissionResult(None, "REJECTED", "mock configured rejection")
+        self.sequence += 1
+        self.oms_orders.append(BrokerOrderSnapshot(
+            account_id=str(self.payload.get("account_id", "")),
+            stock_code=symbol,
+            order_id=self.sequence,
+            order_sysid="",
+            order_time=0,
+            order_volume=int(quantity),
+            price=float(limit_price),
+            traded_volume=0,
+            traded_price=0.0,
+            order_status=50,
+            status_msg="mock reported",
+            strategy_name=OMS_STRATEGY_NAME,
+            order_remark=remark,
+            order_type=QMT_STOCK_BUY if side == "BUY" else QMT_STOCK_SELL,
+        ))
+        return oms_submission_result(self.sequence, limit_price)
+
+    def day_orders(self) -> list[BrokerOrderSnapshot]:
+        configured = [
+            _broker_order_snapshot(SimpleNamespace(**row))
+            for row in self.payload.get("day_orders", [])
+        ]
+        return configured + list(self.oms_orders)
+
+    def day_trades(self, timeout_seconds: float = 10.0) -> list[dict] | None:
+        if self.payload.get("trades_hang") is True:
+            return None
+        return [dict(row) for row in self.payload.get("day_trades", [])]
+
+    def quotes(self, symbols: list[str]) -> dict[str, dict]:
+        configured = dict(self.payload.get("quotes", {}))
+        return {
+            symbol: {
+                "last_price": float(configured[symbol]["last_price"]),
+                "is_trading": bool(configured[symbol].get("is_trading", True)),
+            }
+            for symbol in symbols
+            if symbol in configured
+        }
 
 
 class XtQMTGateway:
@@ -934,3 +1066,77 @@ class XtQMTGateway:
                 pending.append(row["order_id"])
                 issues.append({"order_id": row["order_id"], "reason": str(exc)})
         return {"results": results, "pending_order_ids": sorted(set(pending)), "issues": issues}
+
+    def submit_limit(
+        self, *, symbol: str, side: str, quantity: int, limit_price: float, remark: str,
+    ) -> SubmissionResult:
+        """Send one OMS limit order with the client order id as remark, unchanged.
+
+        An exception after the call started never becomes REJECTED: QMT may
+        have accepted the order, so the result is UNKNOWN and is resolved by
+        remark from the day's order list.
+        """
+        validate_limit_order(side, quantity, limit_price)
+        if self.trader is None or self.account is None or self.xtconstant is None:
+            raise RuntimeError("QMT 尚未连接")
+        order_type = (
+            self.xtconstant.STOCK_BUY if side == "BUY" else self.xtconstant.STOCK_SELL
+        )
+        try:
+            raw_order_id = self.trader.order_stock(
+                self.account,
+                symbol,
+                order_type,
+                int(quantity),
+                self.xtconstant.FIX_PRICE,
+                float(limit_price),
+                OMS_STRATEGY_NAME,
+                remark,
+            )
+        except Exception as exc:
+            return SubmissionResult(
+                None, "UNKNOWN", f"QMT order_stock raised {type(exc).__name__}: {exc}",
+            )
+        return oms_submission_result(raw_order_id, limit_price)
+
+    def day_orders(self) -> list[BrokerOrderSnapshot]:
+        """Every order of the current trading day (QMT returns nothing older)."""
+        return [_broker_order_snapshot(raw) for raw in self._query_orders_for_settlement()]
+
+    def day_trades(self, timeout_seconds: float = 10.0) -> list[dict] | None:
+        """Today's trade details, or None when MiniQMT does not answer in time.
+
+        query_stock_trades is known to hang while orders and positions still
+        answer, so the async variant is bounded and a timeout is reported as
+        "no trade evidence" instead of blocking the session.
+        """
+        if self.trader is None or self.account is None or self.xtconstant is None:
+            raise RuntimeError("QMT 尚未连接")
+        done = Event()
+        rows: list[Any] = []
+
+        def _received(response: Any) -> None:
+            try:
+                rows.extend(response or [])
+            finally:
+                done.set()
+
+        self.trader.query_stock_trades_async(self.account, _received)
+        if not done.wait(timeout_seconds):
+            return None
+        sides = {self.xtconstant.STOCK_BUY: "BUY", self.xtconstant.STOCK_SELL: "SELL"}
+        return [oms_trade_row(raw, sides) for raw in rows]
+
+    def quotes(self, symbols: list[str]) -> dict[str, dict]:
+        """Last price and trading flag per symbol; symbols without a valid
+        quote are omitted so the server sees a missing anchor, not a guess."""
+        if self.xtdata is None:
+            raise RuntimeError("QMT 尚未连接")
+        result = {}
+        for symbol in symbols:
+            try:
+                quote = self.market_quote(symbol)
+            except RuntimeError:
+                continue
+            result[symbol] = {"last_price": quote.last_price, "is_trading": quote.is_trading}
+        return result
