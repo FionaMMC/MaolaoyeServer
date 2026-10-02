@@ -25,10 +25,10 @@
    
    Windows 端改成"薄执行代理"：只负责按计划下单、先记日志再下单、查询券商、上传事实。
 
-3. **拆掉会悄悄改乱账本的入口，改成正规的紧急通道**（第 4.10 节）：
-   - 旧的 `/hydra/live/trigger` 会在没有券商证据时，把实盘单改成过期并删单（已核实）。这个行为删除，入口地址和专用密钥保留，改作紧急通道。
-   - 紧急通道可以绕开计划器和对账闸门：直接下单、全部撤单、强制改订单状态、放行暂停、关闭周期。但每个动作都要通过订单账本记录，必须写明原因，全程留痕并发告警。
-   - 管线不再碰实盘执行域；`clear-state` 拒绝作用于实盘。
+3. **拆掉会悄悄改乱账本的入口，人工操作改走看板**（第 4.10 节）：
+   - 旧的 `/hydra/live/trigger` 会在没有券商证据时，把实盘单改成过期并删单（已核实）。这个行为已删除，接口现在返回 410。
+   - 看板提供人工下单、人工撤单和手动登记分红：需要运维专用密钥，写入同一个订单账本，全部留痕。
+   - 管线不再碰实盘执行域。
 
 
 5. **前提**：要有 9/30 的正式月度输入，也就是四流（后复权价、执行用原始价、公司行动、交易日历）。服务器现在只有 9/30 的普通日线备份，第 7 节给出两条获取路径。
@@ -144,7 +144,8 @@
 | `oms_fills` | account_alias、broker_trade_id、client_order_id（可为空，空即外部成交）、symbol、side、qty、price、fee、traded_at | 唯一（account_alias, broker_trade_id） |
 | `oms_broker_snapshots` | id、account_alias、kind（PRE/EOD/ADHOC）、taken_at、positions、cash、orders、trades、sha256 | 唯一（account_alias, sha256） |
 | `oms_reconciliations` | id、snapshot_id、session_id、result（PASS/HOLD）、discrepancies、resolution、resolved_by | 人工处理必须留痕 |
-| `oms_overrides` | id、account_alias、action、payload、reason、operator、created_at、effect | 紧急通道审计，只追加 |
+| `oms_manual_instructions` | instruction_id、account_alias、trade_date、kind（ORDER/CANCEL）、client_order_id、broker_order_id、payload、status、reason、operator、created_at、acked_at、result | 人工指令，执行代理按交易日拉取 |
+| `oms_overrides` | id、account_alias、action、payload、reason、operator、created_at、effect | 人工操作审计（下单、撤单、分红登记、放行暂停），只追加 |
 
 订单号格式：`H` + 周期序号（5 位）+ 时段序号（2 位）+ 腿序号（2 位），例如 `H000120103`，共 10 个字符，同时写入 QMT 委托备注。
 
@@ -261,39 +262,38 @@ A 股委托只在当天有效，所以不存在"昨天的单今天成交"。所�
 - 金样本测试：用 22 个近期周期的输入跑 Planner，订单必须和回测逐笔相同。
 - 每轮报告对比三样：整手误差、执行欠配（分原因）、成交价相对锚定价的偏离；同时标出同期回测的预期区间。
 
-### 4.10 紧急通道（绕开自动逻辑，但不绕开账本）
+### 4.10 人工指令与分红登记（看板入口，2026-10-03 用户确认）
 
-**用途**：自动逻辑卡住、出 bug，或者市场出现异常时，由人立即接管。
+**用途**：自动流程之外，由人在看板上直接发出下单或撤单指令，或者手动登记分红。
 
-**原则**：可以跳过计划器、整手和上限检查、对账闸门；但不能跳过订单账本。紧急动作产生的订单、撤单和状态更正，都和普通订单走同一个账本、同一张成交表，所以紧急处理之后账本仍然自洽，后续自动流程可以无缝接上。
+**原则**：
+- 人工指令不受计划器和冻结目标上限约束，但和自动订单一样写入同一个订单账本、同一套状态机，成交照常映射进策略账本。人工处理之后账本仍然自洽，自动流程可以无缝接上。
+- 每条指令都必须写明操作人和原因，全部留痕。
 
-**服务器动作**（`POST /hydra/live/trigger`，沿用原地址和专用密钥，请求体里写明动作类型）：
+**鉴权**：新增运维专用密钥 `QMT_OMS_OPERATOR_API_KEY`，只能访问看板相关的运维接口。实盘客户端密钥、模拟盘密钥、触发密钥都访问不了这些接口；运维密钥也不能冒充执行代理。看板页面本身不含任何数据，输入运维密钥后才会加载内容。
 
-| 动作 | 作用 |
-|---|---|
-| `hold` / `resume` | 暂停或恢复本账户的一切自动下单，代理在下一次检查时立即生效 |
-| `release_hold` | 放行对账暂停 |
-| `manual_order` | 指定标的、方向、数量、限价，生成订单号以 `E` 开头的紧急订单；不经过计划器和上限检查，由代理在下一次运行时提交；可以附带"立即执行"标记，要求代理马上运行 |
-| `cancel_all` | 撤掉本账户所有挂单 |
-| `force_state` | 把某笔订单强制改成某个状态，必须附上依据，例如人工在 QMT 界面看到的结果 |
-| `adopt_external` | 把在 QMT 界面手工做的成交认定为 Hydra 成交，或者认定为与 Hydra 无关 |
-| `close_cycle` | 立即关闭当前周期 |
+**接口**：
 
-- 每次调用都必须带 `reason` 和操作人，写入 `oms_overrides` 审计表，并发微信告警。
-- 定时任务和代码里的任何流程，都不允许调用这个接口。
+| 接口 | 使用方 | 作用 |
+|---|---|---|
+| `GET /oms/live/overview` | 看板 | 当前周期、时段、订单、最近对账、账本持仓和现金、人工指令记录、操作审计、分红登记 |
+| `POST /oms/live/manual/orders` | 看板 | 人工下单：标的（9 只 ETF）、方向、数量、限价、原因、操作人。生成订单号以 `E` 开头的订单，状态为待执行 |
+| `POST /oms/live/manual/cancels` | 看板 | 人工撤单：按本系统订单号或券商委托号 |
+| `POST /oms/live/dividends/preview`、`POST /oms/live/dividends` | 看板 | 手动登记分红。复用现有的分红登记服务：先预演，再写入。按登记日持仓登记应收分红，现金以实际到账为准，不凭空增加现金 |
+| `GET /oms/live/manual/pending`、`POST /oms/live/manual/ack` | 执行代理 | 代理每分钟拉取当天待执行的人工指令，执行后回报结果 |
 
-**服务器失联时的本地紧急命令**（Windows 端，不依赖服务器）：
-- `hydra-agent emergency hold`：在本地放一个开关文件，代理看到就停止一切提交；
-- `hydra-agent emergency cancel-all`；
-- `hydra-agent emergency order <标的> <方向> <数量> <限价> --reason ...`。
-
-本地紧急命令同样先写本地日志，服务器恢复后上传入账。
+**执行**：
+- Windows 任务 `Hydra-Oms-Manual` 在交易日 09:15–14:59 每分钟运行一次。
+- 人工下单：同样先记日志再下单，委托备注就是 `E` 开头的订单号；卖出数量不超过可卖数量，买入金额不超过可用现金。
+- 人工撤单：按订单号或券商委托号找到对应委托后撤单。
+- 本地急停文件 `HOLD` 存在时，暂停人工下单，但撤单照常执行，因为撤单只会降低风险。
+- 当天没有执行的人工订单，日终终结为"未提交"。
 
 ---
 
 ## 5. 拆除危险入口（第一阶段，十月前完成）
 
-1. `/hydra/live/trigger` 不再执行实盘管线，地址和专用密钥改作紧急通道（第 4.10 节）；`pipeline.run` 遇到 `execution_domain="live"` 一律拒绝。
+1. `/hydra/live/trigger` 不再执行实盘管线，返回 410；人工操作改走看板（第 4.10 节）；`pipeline.run` 遇到 `execution_domain="live"` 一律拒绝。
 2. `/admin/clear-state`、`expire_stale_pending.py`、紧急撤单脚本，对实盘域只读或直接拒绝。
 3. 执行核心启用后（开关 `QMT_OMS_LIVE_ENABLED`），旧的 Hydra `advance`、`stage`、`settle-close` 接口对实盘域返回 409，保证订单状态只有一个写入者。
 4. Windows 端用 `Inspect-HydraTasks.ps1` 导出现有任务清单。旧的 16:05/16:20 任务、旧的 `trigger_pipeline --live` 任务，以及 15:10/16:00/18:00 这一套，必须全部删除，再注册新任务，不允许并存。

@@ -27,7 +27,8 @@ logger = logging.getLogger(__name__)
 CHINA = timezone(timedelta(hours=8))
 MIRROR_STATUS = "OMS_ROUTED"
 OPEN_QMT_STATUSES = {48, 49, 50, 51, 52, 55, 255}
-_CLIENT_ID = re.compile(r"^H\d{9}$")
+# H = cycle orders, E = dashboard manual orders.
+_CLIENT_ID = re.compile(r"^[HE]\d{9}$")
 _EVENT_STATE = {"SUBMIT_STARTED": S.SUBMITTING, "ACKED": S.ACKED,
                 "SUBMIT_REJECTED": S.REJECTED, "SUBMIT_UNKNOWN": S.UNKNOWN}
 
@@ -45,37 +46,44 @@ class OrderLedger:
     # ── planning ──────────────────────────────────────────────────────────
     def create_orders(self, session, *, cycle: OmsCycle, oms_session: OmsSession,
                       planned: list[PlannedOrder], now: str) -> list[OmsOrder]:
-        """Add intents plus legacy mirror rows inside the caller's transaction."""
+        """Add cycle intents plus legacy mirror rows inside the caller's transaction."""
         existing = session.execute(select(func.count()).select_from(OmsOrder)
                                    .where(OmsOrder.session_id == oms_session.session_id)).scalar_one()
-        rows = []
-        for leg, item in enumerate(planned, start=existing + 1):
-            coid = client_order_id(cycle.cycle_no, oms_session.seq, leg)
-            limit = round(item.limit_price, 3)
-            row = OmsOrder(client_order_id=coid, session_id=oms_session.session_id, cycle_id=cycle.cycle_id,
-                           account_alias=cycle.account_alias, trade_date=oms_session.trade_date,
-                           symbol=item.symbol, side=item.side, quantity=int(item.quantity), limit_price=limit,
-                           reference_price=float(item.reference_price), state=S.PLANNED.value, filled_qty=0,
-                           avg_price=0., projected_qty=0, created_at=now, updated_at=now)
-            session.add(row)
-            signal_id = uuid.uuid5(uuid.NAMESPACE_URL, coid).hex
-            session.add(RawSignal(
-                signal_id=signal_id, execution_domain="live", instance_id=cycle.instance_id, symbol=item.symbol,
-                direction=item.side, quantity=int(item.quantity), reference_price=float(item.reference_price),
-                price_offset=limit / float(item.reference_price) - 1, limit_price=limit,
-                valid_date=oms_session.trade_date, signal_time=now, precheck_status="PASS",
-                precheck_reason="oms_planner"))
-            session.add(Order(
-                order_id=coid, execution_domain="live", qmt_account_alias=cycle.account_alias,
-                target_id=cycle.target_version_id, rebalance_id=cycle.cycle_id, attempt_id=None,
-                attempt_number=oms_session.seq, batch_id=oms_session.session_id,
-                batch_sha256=oms_session.plan_sha256, execution_reference_price=float(item.reference_price),
-                account_group=cycle.account_alias, symbol=item.symbol, direction=item.side,
-                quantity=int(item.quantity), limit_price=limit, valid_date=oms_session.trade_date,
-                status=MIRROR_STATUS, created_at=now))
-            session.add(OrderSignalMap(order_id=coid, signal_id=signal_id, signal_quantity=int(item.quantity)))
-            rows.append(row)
-        return rows
+        return [self.add_order(session, client_order_id=client_order_id(cycle.cycle_no, oms_session.seq, leg),
+                               session_id=oms_session.session_id, cycle_id=cycle.cycle_id,
+                               account_alias=cycle.account_alias, instance_id=cycle.instance_id,
+                               trade_date=oms_session.trade_date, target_id=cycle.target_version_id,
+                               plan_sha256=oms_session.plan_sha256, attempt_number=oms_session.seq,
+                               item=item, now=now)
+                for leg, item in enumerate(planned, start=existing + 1)]
+
+    @staticmethod
+    def add_order(session, *, client_order_id: str, session_id: str, cycle_id: str, account_alias: str,
+                  instance_id: str, trade_date: str, target_id: str, plan_sha256: str | None,
+                  attempt_number: int | None, item: PlannedOrder, now: str, precheck_reason: str = "oms_planner"
+                  ) -> OmsOrder:
+        """One intent plus its legacy mirror (status OMS_ROUTED is never served by GET /orders)."""
+        limit = round(item.limit_price, 3)
+        row = OmsOrder(client_order_id=client_order_id, session_id=session_id, cycle_id=cycle_id,
+                       account_alias=account_alias, trade_date=trade_date, symbol=item.symbol, side=item.side,
+                       quantity=int(item.quantity), limit_price=limit, reference_price=float(item.reference_price),
+                       state=S.PLANNED.value, filled_qty=0, avg_price=0., projected_qty=0, created_at=now,
+                       updated_at=now)
+        session.add(row)
+        signal_id = uuid.uuid5(uuid.NAMESPACE_URL, client_order_id).hex
+        session.add(RawSignal(
+            signal_id=signal_id, execution_domain="live", instance_id=instance_id, symbol=item.symbol,
+            direction=item.side, quantity=int(item.quantity), reference_price=float(item.reference_price),
+            price_offset=limit / float(item.reference_price) - 1, limit_price=limit, valid_date=trade_date,
+            signal_time=now, precheck_status="PASS", precheck_reason=precheck_reason))
+        session.add(Order(
+            order_id=client_order_id, execution_domain="live", qmt_account_alias=account_alias,
+            target_id=target_id, rebalance_id=cycle_id, attempt_id=None, attempt_number=attempt_number,
+            batch_id=session_id, batch_sha256=plan_sha256, execution_reference_price=float(item.reference_price),
+            account_group=account_alias, symbol=item.symbol, direction=item.side, quantity=int(item.quantity),
+            limit_price=limit, valid_date=trade_date, status=MIRROR_STATUS, created_at=now))
+        session.add(OrderSignalMap(order_id=client_order_id, signal_id=signal_id, signal_quantity=int(item.quantity)))
+        return row
 
     # ── agent journal events ──────────────────────────────────────────────
     def apply_events(self, account_alias: str, events: list[EventIn], now: str) -> dict:

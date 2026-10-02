@@ -26,6 +26,16 @@ class AuthContext:
         return account_alias is not None and account_alias in self.allowed_account_aliases
 
 
+OPERATOR_CLIENT_ID = "oms-operator"
+OPERATOR_PATHS = frozenset({
+    "/oms/live/overview",
+    "/oms/live/manual/orders",
+    "/oms/live/manual/cancels",
+    "/oms/live/dividends/preview",
+    "/oms/live/dividends",
+})
+
+
 def _aliases(csv_value: str) -> tuple[str, ...]:
     values = tuple(value.strip() for value in csv_value.split(",") if value.strip())
     if len(values) != len(set(values)):
@@ -43,7 +53,8 @@ async def verify_api_key(
     live_key = settings.live_api_key
     trigger_key = settings.live_trigger_api_key
     backup_key = settings.live_data_backup_api_key
-    if not paper_key and not live_key and not trigger_key and not backup_key:
+    operator_key = settings.oms_operator_api_key
+    if not paper_key and not live_key and not trigger_key and not backup_key and not operator_key:
         raise APIError(ErrorCode.AUTH_FAILED, "server API key 未配置", http_status=401)
 
     if not authorization or not authorization.startswith("Bearer "):
@@ -65,6 +76,13 @@ async def verify_api_key(
         if not sources:
             raise APIError(ErrorCode.AUTH_FAILED, "backup source scope 未配置", http_status=401)
         return AuthContext(execution_domain="live", client_id="live-qmt-backup", allowed_account_aliases=sources)
+    if operator_key and hmac.compare_digest(provided, operator_key):
+        if request.url.path not in OPERATOR_PATHS:
+            raise APIError(ErrorCode.AUTH_FAILED, "operator token 只能访问看板运维接口", http_status=403)
+        aliases = _aliases(settings.live_account_aliases_csv)
+        if not aliases:
+            raise APIError(ErrorCode.AUTH_FAILED, "live account alias scope 未配置", http_status=401)
+        return AuthContext(execution_domain="live", client_id=OPERATOR_CLIENT_ID, allowed_account_aliases=aliases)
     if paper_key and hmac.compare_digest(provided, paper_key):
         context = AuthContext(
             execution_domain="paper",
@@ -111,6 +129,8 @@ async def verify_api_key(
             "/oms/live/plan",
             "/oms/live/events",
             "/oms/live/status",
+            "/oms/live/manual/pending",
+            "/oms/live/manual/ack",
         }
         if path not in live_exact_paths:
             raise APIError(

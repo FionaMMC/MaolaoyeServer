@@ -7,7 +7,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.models import Base
 
 __all__ = ["OmsTargetVersion", "OmsCycle", "OmsSession", "OmsOrder", "OmsOrderEvent", "OmsFill",
-           "OmsBrokerSnapshot", "OmsReconciliation"]
+           "OmsBrokerSnapshot", "OmsReconciliation", "OmsManualInstruction", "OmsOverride"]
 
 
 class OmsTargetVersion(Base):
@@ -137,3 +137,34 @@ class OmsReconciliation(Base):
     resolved_by: Mapped[str | None] = mapped_column(String, nullable=True)
     resolved_at: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class OmsManualInstruction(Base):
+    """A dashboard order or cancel waiting for (or answered by) the agent on its trade date."""
+    __tablename__ = "oms_manual_instructions"
+    instruction_id: Mapped[str] = mapped_column(String, primary_key=True)
+    account_alias: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    trade_date: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    client_order_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    broker_order_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    reason: Mapped[str] = mapped_column(String, nullable=False)
+    operator: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+    acked_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class OmsOverride(Base):
+    """Append-only audit of every human action on live execution."""
+    __tablename__ = "oms_overrides"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_alias: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    reason: Mapped[str] = mapped_column(String, nullable=False)
+    operator: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+    effect: Mapped[dict | None] = mapped_column(JSON, nullable=True)

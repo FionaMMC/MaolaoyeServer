@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>执行核心 · 人工操作台</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: #0f1419; color: #d4d8de;
+         padding: 16px; min-height: 100vh; font-size: 14px; }
+  a { color: #4ea1ff; }
+  .header { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; background: #1a2027;
+            border-radius: 8px; margin-bottom: 12px; border-left: 4px solid #f5a623; }
+  .header h1 { font-size: 1.2em; color: #fff; font-weight: 600; }
+  .header .meta { font-size: .8em; color: #8a93a0; margin-top: 2px; }
+  .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; background: #1a2027; padding: 10px 16px;
+         border-radius: 8px; margin-bottom: 12px; }
+  input, select, textarea, button { background: #0f1419; color: #d4d8de; border: 1px solid #2a3340; padding: 6px 9px;
+         border-radius: 4px; font-size: .92em; font-family: inherit; }
+  button { cursor: pointer; }
+  button.primary { background: #4ea1ff; border-color: #4ea1ff; color: #fff; }
+  button.danger { background: #c0392b; border-color: #c0392b; color: #fff; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 12px; margin-bottom: 12px; }
+  .card { background: #1a2027; border-radius: 8px; padding: 14px 16px; }
+  .card h2 { font-size: 1em; color: #fff; margin-bottom: 10px; font-weight: 600; }
+  .muted { color: #8a93a0; font-size: .85em; }
+  .ok { color: #2ecc71; } .bad { color: #ff6b6b; } .warn { color: #f5a623; }
+  table { width: 100%; border-collapse: collapse; font-size: .86em; }
+  th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid #252d38; white-space: nowrap; }
+  th { color: #8a93a0; font-weight: 500; }
+  .scroll { overflow-x: auto; }
+  form { display: grid; grid-template-columns: 110px 1fr; gap: 7px 10px; align-items: center; }
+  form label { color: #8a93a0; font-size: .88em; }
+  form .actions { grid-column: 1 / -1; display: flex; gap: 8px; margin-top: 4px; }
+  .chip { display: inline-block; padding: 2px 7px; border-radius: 10px; background: #252d38; margin: 2px 3px 2px 0;
+          font-size: .82em; }
+  .result { margin-top: 8px; font-size: .86em; white-space: pre-wrap; }
+  .notice { background: #2a2414; border: 1px solid #5c4a1f; color: #f5d08a; padding: 9px 12px; border-radius: 6px;
+            margin-bottom: 12px; font-size: .88em; }
+  #panels { display: none; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>执行核心 · 人工操作台</h1>
+      <div class="meta">人工下单、人工撤单、手动登记分红；所有操作写入订单账本并留痕</div>
+    </div>
+    <a href="/dashboard">← 返回看板</a>
+  </div>
+
+  <div class="bar">
+    <label>运维密钥 <input id="key" type="password" autocomplete="off" size="34" placeholder="QMT_OMS_OPERATOR_API_KEY"></label>
+    <label>账户 <input id="alias" value="hydra-live" size="12"></label>
+    <button class="primary" id="connect">连接</button>
+    <button id="disconnect">断开</button>
+    <span id="conn" class="muted">未连接（页面不含任何数据，连接后加载）</span>
+  </div>
+
+  <div class="notice">人工指令由 Windows 执行代理每分钟拉取一次（交易日 09:15–14:59），然后提交给 QMT。
+    人工订单不受计划器和冻结目标约束，但成交照常记入策略账本；请写清原因，所有操作都会记入审计。
+    急停：在 Windows 端代理数据库目录放置 HOLD 文件，人工下单会暂停，撤单照常执行。</div>
+
+  <div id="panels">
+    <div class="grid">
+      <div class="card"><h2>调仓周期</h2><div id="cycle"></div></div>
+      <div class="card"><h2>最近对账</h2><div id="recon"></div></div>
+      <div class="card"><h2>策略账本</h2><div id="ledger"></div></div>
+      <div class="card"><h2>最近券商快照 · 挂单</h2><div id="snapshot"></div></div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>人工下单</h2>
+        <form id="orderForm">
+          <label>标的</label><select id="o_symbol"></select>
+          <label>方向</label><select id="o_side"><option value="BUY">买入</option><option value="SELL">卖出</option></select>
+          <label>数量（股）</label><input id="o_qty" type="number" min="100" step="100" required>
+          <label>限价</label><input id="o_price" type="number" min="0.001" step="0.001" required>
+          <label>操作人</label><input id="o_operator" required>
+          <label>原因</label><input id="o_reason" required minlength="4">
+          <div class="actions"><button class="primary" type="submit">提交人工下单</button></div>
+        </form>
+        <div class="result" id="orderResult"></div>
+      </div>
+      <div class="card">
+        <h2>人工撤单</h2>
+        <form id="cancelForm">
+          <label>本系统订单号</label><input id="c_coid" placeholder="H000010201 / E261009001">
+          <label>或券商委托号</label><input id="c_broker" placeholder="QMT order_id">
+          <label>操作人</label><input id="c_operator" required>
+          <label>原因</label><input id="c_reason" required minlength="4">
+          <div class="actions"><button class="danger" type="submit">提交人工撤单</button></div>
+        </form>
+        <div class="result" id="cancelResult"></div>
+      </div>
+      <div class="card">
+        <h2>手动登记分红</h2>
+        <form id="divForm">
+          <label>标的</label><select id="d_symbol"></select>
+          <label>股权登记日</label><input id="d_record" placeholder="YYYYMMDD" pattern="\d{8}" required>
+          <label>除息日</label><input id="d_ex" placeholder="YYYYMMDD" pattern="\d{8}" required>
+          <label>派息日</label><input id="d_pay" placeholder="YYYYMMDD" pattern="\d{8}" required>
+          <label>登记日持股</label><input id="d_qty" type="number" min="1" step="1" required>
+          <label>每股派息</label><input id="d_cash" type="number" min="0.000001" step="0.000001" required>
+          <label>依据</label><input id="d_evidence" placeholder="公告标题/链接，至少 8 个字" required minlength="8">
+          <label>操作人</label><input id="d_operator" required>
+          <label>原因</label><input id="d_reason" required minlength="4">
+          <div class="actions">
+            <button type="button" id="divPreview">预演</button>
+            <button class="primary" type="button" id="divApply" disabled>确认登记</button>
+          </div>
+        </form>
+        <div class="result" id="divResult"></div>
+      </div>
+    </div>
+
+    <div class="card scroll" style="margin-bottom:12px"><h2>本周期订单</h2><div id="orders"></div></div>
+    <div class="card scroll" style="margin-bottom:12px"><h2>人工订单</h2><div id="manualOrders"></div></div>
+    <div class="card scroll" style="margin-bottom:12px"><h2>人工指令记录</h2><div id="instructions"></div></div>
+    <div class="card scroll" style="margin-bottom:12px"><h2>操作审计</h2><div id="audit"></div></div>
+    <div class="card scroll"><h2>分红登记</h2><div id="dividends"></div></div>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const state = { key: "", alias: "hydra-live", data: null, timer: null, previewed: null };
+  try {
+    state.key = sessionStorage.getItem("omsOperatorKey") || "";
+    state.alias = sessionStorage.getItem("omsAlias") || "hydra-live";
+  } catch (e) { /* storage unavailable: stay disconnected */ }
+  $("alias").value = state.alias;
+
+  function el(tag, text, cls) {
+    const node = document.createElement(tag);
+    if (text !== undefined && text !== null) node.textContent = String(text);
+    if (cls) node.className = cls;
+    return node;
+  }
+  function table(columns, rows, extra) {
+    if (!rows || !rows.length) return el("div", "（无）", "muted");
+    const t = el("table"), head = el("tr");
+    columns.forEach(([label]) => head.appendChild(el("th", label)));
+    if (extra) head.appendChild(el("th", ""));
+    t.appendChild(head);
+    rows.forEach((row) => {
+      const tr = el("tr");
+      columns.forEach(([, key, fmt]) => {
+        const value = typeof key === "function" ? key(row) : row[key];
+        tr.appendChild(el("td", fmt ? fmt(value, row) : (value === null || value === undefined ? "" : value)));
+      });
+      if (extra) { const td = el("td"); td.appendChild(extra(row)); tr.appendChild(td); }
+      t.appendChild(tr);
+    });
+    return t;
+  }
+  function put(id, node) { const box = $(id); box.replaceChildren(node); }
+  const money = (v) => (v === null || v === undefined ? "" : Number(v).toLocaleString("zh-CN", { maximumFractionDigits: 2 }));
+
+  async function api(method, path, body, params) {
+    const url = path + (params ? "?" + new URLSearchParams(params) : "");
+    const response = await fetch(url, {
+      method, headers: { "Authorization": "Bearer " + state.key, "Content-Type": "application/json" },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    let payload = null;
+    try { payload = await response.json(); } catch (e) { /* non-JSON error */ }
+    if (!response.ok || !payload || payload.code !== 0) {
+      const message = payload && (payload.message || payload.detail) ? (payload.message || JSON.stringify(payload.detail)) : response.statusText;
+      throw new Error(response.status + " " + message);
+    }
+    return payload.data;
+  }
+
+  function renderSymbols(symbols) {
+    ["o_symbol", "d_symbol"].forEach((id) => {
+      const select = $(id), current = select.value;
+      select.replaceChildren(...symbols.map((s) => { const o = el("option", s); o.value = s; return o; }));
+      if (symbols.includes(current)) select.value = current;
+    });
+  }
+
+  function render(data) {
+    state.data = data;
+    renderSymbols(data.symbols);
+    const cycle = data.status && data.status.cycle;
+    if (!cycle) { put("cycle", el("div", "当前没有调仓周期", "muted")); }
+    else {
+      const box = el("div");
+      const cls = cycle.status === "ACTIVE" ? "ok" : (cycle.status === "HELD" ? "bad" : "warn");
+      const line = el("div"); line.append(el("b", cycle.cycle_id + " "), el("span", cycle.status, cls));
+      box.appendChild(line);
+      box.appendChild(el("div", "整手误差 " + (cycle.lot_gap * 100).toFixed(2) + "%", "muted"));
+      const chips = el("div");
+      (data.status.sessions || []).forEach((s) => chips.appendChild(el("span", s.trade_date + " " + s.phase + " · " + s.status, "chip")));
+      box.appendChild(chips);
+      put("cycle", box);
+    }
+    const recon = data.status && data.status.last_reconciliation;
+    if (!recon) put("recon", el("div", "暂无", "muted"));
+    else {
+      const box = el("div");
+      box.appendChild(el("div", recon.passed ? "通过" : "未通过（周期已暂停）", recon.passed ? "ok" : "bad"));
+      box.appendChild(el("div", recon.created_at, "muted"));
+      (recon.discrepancies || []).forEach((d) => box.appendChild(el("div", JSON.stringify(d), "bad")));
+      put("recon", box);
+    }
+    const ledger = el("div");
+    ledger.appendChild(el("div", "现金 " + money(data.ledger.cash)));
+    ledger.appendChild(table([["标的", "symbol"], ["持仓", "qty"]],
+      Object.entries(data.ledger.positions).map(([symbol, qty]) => ({ symbol, qty }))));
+    put("ledger", ledger);
+    const snap = data.latest_snapshot;
+    if (!snap) put("snapshot", el("div", "暂无快照", "muted"));
+    else {
+      const box = el("div");
+      box.appendChild(el("div", snap.kind + " · " + snap.taken_at + " · 可用现金 " + money(snap.available_cash), "muted"));
+      box.appendChild(table([["委托号", "broker_order_id"], ["备注", "remark"], ["标的", "symbol"], ["方向", "side"],
+        ["数量", "quantity"], ["已成交", "traded_volume"], ["价格", "price"], ["状态", "status"]], snap.open_orders,
+        (row) => { const b = el("button", "撤单", "danger"); b.type = "button";
+          b.onclick = () => { $("c_broker").value = row.broker_order_id; $("c_coid").value = ""; $("c_reason").focus(); };
+          return b; }));
+      put("snapshot", box);
+    }
+    put("orders", table([["订单号", "client_order_id"], ["标的", "symbol"], ["方向", "side"], ["数量", "quantity"],
+      ["限价", "limit_price"], ["状态", "state"], ["已成交", "filled_qty"], ["均价", "avg_price"]],
+      (data.status && data.status.orders) || []));
+    put("manualOrders", table([["订单号", "client_order_id"], ["日期", "trade_date"], ["标的", "symbol"], ["方向", "side"],
+      ["数量", "quantity"], ["限价", "limit_price"], ["状态", "state"], ["已成交", "filled_qty"], ["均价", "avg_price"]],
+      data.manual_orders));
+    put("instructions", table([["指令", "instruction_id"], ["日期", "trade_date"], ["类型", "kind"],
+      ["订单号", "client_order_id"], ["券商委托号", "broker_order_id"], ["状态", "status"], ["操作人", "operator"],
+      ["原因", "reason"], ["结果", (r) => (r.result ? (r.result.status + " " + (r.result.detail || "")) : "")]],
+      data.instructions));
+    put("audit", table([["#", "id"], ["动作", "action"], ["操作人", "operator"], ["原因", "reason"],
+      ["时间", "created_at"], ["结果", (r) => JSON.stringify(r.effect || {})]], data.overrides));
+    put("dividends", table([["标的", "symbol"], ["登记日", "record_date"], ["除息日", "ex_date"], ["派息日", "pay_date"],
+      ["持股", "entitled_quantity"], ["每股", "cash_per_share"], ["金额", "amount"]], data.dividends));
+  }
+
+  async function refresh() {
+    try {
+      render(await api("GET", "/oms/live/overview", null, { account_alias: state.alias }));
+      $("conn").textContent = "已连接 · " + new Date().toLocaleTimeString();
+      $("conn").className = "ok";
+      $("panels").style.display = "block";
+    } catch (error) {
+      $("conn").textContent = "连接失败：" + error.message;
+      $("conn").className = "bad";
+    }
+  }
+  function connect() {
+    state.key = $("key").value.trim() || state.key;
+    state.alias = $("alias").value.trim() || "hydra-live";
+    if (!state.key) { $("conn").textContent = "请输入运维密钥"; return; }
+    try { sessionStorage.setItem("omsOperatorKey", state.key); sessionStorage.setItem("omsAlias", state.alias); } catch (e) {}
+    $("key").value = "";
+    clearInterval(state.timer);
+    refresh();
+    state.timer = setInterval(refresh, 15000);
+  }
+  function disconnect() {
+    clearInterval(state.timer);
+    state.key = ""; state.data = null;
+    try { sessionStorage.removeItem("omsOperatorKey"); } catch (e) {}
+    $("panels").style.display = "none";
+    $("conn").textContent = "未连接"; $("conn").className = "muted";
+  }
+  $("connect").onclick = connect;
+  $("disconnect").onclick = disconnect;
+
+  $("orderForm").onsubmit = async (event) => {
+    event.preventDefault();
+    const body = { account_alias: state.alias, symbol: $("o_symbol").value, side: $("o_side").value,
+      quantity: Number($("o_qty").value), limit_price: Number($("o_price").value),
+      operator: $("o_operator").value.trim(), reason: $("o_reason").value.trim(), confirm: true };
+    const text = "确认人工下单？\n" + (body.side === "BUY" ? "买入 " : "卖出 ") + body.symbol + " " + body.quantity +
+      " 股，限价 " + body.limit_price + "\n预计金额 " + money(body.quantity * body.limit_price) + "\n原因：" + body.reason;
+    if (!window.confirm(text)) return;
+    try {
+      const out = await api("POST", "/oms/live/manual/orders", body);
+      $("orderResult").textContent = "已登记 " + out.client_order_id + "（" + out.trade_date + "），等待执行代理拉取";
+      $("orderResult").className = "result ok";
+      refresh();
+    } catch (error) { $("orderResult").textContent = "失败：" + error.message; $("orderResult").className = "result bad"; }
+  };
+
+  $("cancelForm").onsubmit = async (event) => {
+    event.preventDefault();
+    const body = { account_alias: state.alias, client_order_id: $("c_coid").value.trim() || null,
+      broker_order_id: $("c_broker").value.trim() || null, operator: $("c_operator").value.trim(),
+      reason: $("c_reason").value.trim(), confirm: true };
+    if (!body.client_order_id && !body.broker_order_id) { $("cancelResult").textContent = "请填写订单号或券商委托号"; return; }
+    if (!window.confirm("确认人工撤单？\n" + (body.client_order_id || ("券商委托号 " + body.broker_order_id)) + "\n原因：" + body.reason)) return;
+    try {
+      const out = await api("POST", "/oms/live/manual/cancels", body);
+      $("cancelResult").textContent = "已登记撤单指令 " + out.instruction_id + "，等待执行代理拉取";
+      $("cancelResult").className = "result ok";
+      refresh();
+    } catch (error) { $("cancelResult").textContent = "失败：" + error.message; $("cancelResult").className = "result bad"; }
+  };
+
+  function dividendBody() {
+    return { account_alias: state.alias, symbol: $("d_symbol").value, record_date: $("d_record").value.trim(),
+      ex_date: $("d_ex").value.trim(), pay_date: $("d_pay").value.trim(), entitled_quantity: $("d_qty").value,
+      cash_per_share: $("d_cash").value, evidence: $("d_evidence").value.trim(), operator: $("d_operator").value.trim(),
+      reason: $("d_reason").value.trim() };
+  }
+  $("d_symbol").onchange = () => {
+    if (state.data && state.data.ledger.positions[$("d_symbol").value]) $("d_qty").value = state.data.ledger.positions[$("d_symbol").value];
+  };
+  $("divForm").oninput = () => { $("divApply").disabled = true; state.previewed = null; };
+  $("divPreview").onclick = async () => {
+    const body = dividendBody();
+    try {
+      const out = await api("POST", "/oms/live/dividends/preview", body);
+      state.previewed = JSON.stringify(body);
+      $("divResult").textContent = (out.already_registered ? "已登记过（相同条款）。" : "预演：应收金额 " + out.amount +
+        " 元。请核对登记日持股和每股派息后确认登记。") + "\n登记号 " + out.entitlement_id.slice(0, 16);
+      $("divResult").className = "result " + (out.already_registered ? "warn" : "ok");
+      $("divApply").disabled = !!out.already_registered;
+    } catch (error) { $("divResult").textContent = "失败：" + error.message; $("divResult").className = "result bad"; }
+  };
+  $("divApply").onclick = async () => {
+    const body = dividendBody();
+    if (JSON.stringify(body) !== state.previewed) { $("divResult").textContent = "内容已修改，请重新预演"; return; }
+    if (!window.confirm("确认登记分红？\n" + body.symbol + " 登记日 " + body.record_date + " 持股 " + body.entitled_quantity +
+      " × 每股 " + body.cash_per_share)) return;
+    try {
+      const out = await api("POST", "/oms/live/dividends", body);
+      $("divResult").textContent = "已登记，应收 " + out.amount + " 元；现金以实际到账为准";
+      $("divResult").className = "result ok";
+      $("divApply").disabled = true;
+      refresh();
+    } catch (error) { $("divResult").textContent = "失败：" + error.message; $("divResult").className = "result bad"; }
+  };
+
+  if (state.key) connect();
+})();
+</script>
+</body>
+</html>

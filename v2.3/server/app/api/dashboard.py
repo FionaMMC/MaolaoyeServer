@@ -445,6 +445,7 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
       </select>
       <a href="/dashboard/review">设计与风控审阅</a>
       <a href="/dashboard/blueprint">三盘新架构 · 交互讲解</a>
+      <a href="/dashboard/oms">执行核心 · 人工操作台</a>
       <button class="primary" onclick="refreshAll()">↻ 刷新</button>
     </div>
   </div>

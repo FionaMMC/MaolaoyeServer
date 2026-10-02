@@ -56,7 +56,7 @@ def _validated_plan(plan: dict) -> dict:
         raise ValueError(f"计划缺少字段: {missing}")
     if not re.fullmatch(r"\d{8}", str(plan["trade_date"])):
         raise ValueError(f"计划 trade_date 非法: {plan['trade_date']}")
-    if plan["phase"] not in ("SELL", "BUY"):
+    if plan["phase"] not in ("SELL", "BUY", "MANUAL"):
         raise ValueError(f"计划 phase 非法: {plan['phase']}")
     if not str(plan["plan_sha256"]) or not str(plan["session_id"]):
         raise ValueError("计划缺少 plan_sha256 或 session_id")

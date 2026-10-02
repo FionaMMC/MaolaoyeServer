@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("pre", "sell", "buy", "cancel", "eod", "upload-spool", "status")]
+    [ValidateSet("pre", "sell", "buy", "cancel", "eod", "manual", "upload-spool", "status")]
     [string]$Command,
 
     [ValidatePattern("^\d{8}$")]

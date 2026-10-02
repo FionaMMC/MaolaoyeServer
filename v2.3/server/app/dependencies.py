@@ -191,6 +191,15 @@ def get_oms_cycle_service(
     return CycleService(sf, OrderLedger(sf, settlement), ReconcileService(session_factory=sf))
 
 
+def get_oms_manual_service(
+    sf: sessionmaker = Depends(get_session_factory),
+    settings: Settings = Depends(get_settings),
+):
+    from app.oms.manual import ManualService
+
+    return ManualService(sf, get_oms_cycle_service(sf, settings))
+
+
 def get_reconcile_service(
     sf: sessionmaker = Depends(get_session_factory),
     settings: Settings = Depends(get_settings),

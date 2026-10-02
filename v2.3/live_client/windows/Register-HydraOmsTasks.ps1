@@ -25,7 +25,9 @@ $items = @(
     @{ Name = "Hydra-Oms-Sell-1456";    Args = "-Command sell -PollUntil 1501";    Hour = 14; Minute = 56; LimitMinutes = 8;   RestartCount = 0 },
     @{ Name = "Hydra-Oms-Eod-1505";     Args = "-Command eod";                     Hour = 15; Minute = 5;  LimitMinutes = 10;  RestartCount = 1 },
     @{ Name = "Hydra-Oms-Eod-1530";     Args = "-Command eod";                     Hour = 15; Minute = 30; LimitMinutes = 10;  RestartCount = 1 },
-    @{ Name = "Hydra-Oms-Upload-1800";  Args = "-Command upload-spool";            Hour = 18; Minute = 0;  LimitMinutes = 10;  RestartCount = 0 }
+    @{ Name = "Hydra-Oms-Upload-1800";  Args = "-Command upload-spool";            Hour = 18; Minute = 0;  LimitMinutes = 10;  RestartCount = 0 },
+    # Dashboard manual orders/cancels: every minute 09:15-15:00; each run exits within seconds.
+    @{ Name = "Hydra-Oms-Manual";       Args = "-Command manual";                  Hour = 9;  Minute = 15; LimitMinutes = 2;   RestartCount = 0; RepeatMinutes = 1; RepeatHours = 5.75 }
 )
 $legacyTasks = @(Get-ScheduledTask -TaskName "Hydra-Live-*" -ErrorAction SilentlyContinue)
 if ($legacyTasks.Count -gt 0 -and -not $DisableLegacyTasks) {
@@ -39,6 +41,10 @@ try {
         # Restart only the read-only steps; a restarted sell/buy/cancel could act twice.
         $action = New-ScheduledTaskAction -Execute "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$runner`" $($item.Args)"
         $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At ([datetime]::Today.Date.AddHours($item.Hour).AddMinutes($item.Minute))
+        if ($item.ContainsKey("RepeatMinutes")) {
+            $at = [datetime]::Today.Date.AddHours($item.Hour).AddMinutes($item.Minute)
+            $trigger.Repetition = (New-ScheduledTaskTrigger -Once -At $at -RepetitionInterval (New-TimeSpan -Minutes $item.RepeatMinutes) -RepetitionDuration (New-TimeSpan -Minutes ([int]($item.RepeatHours * 60)))).Repetition
+        }
         $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Highest
         $settingsParameters = @{
             ExecutionTimeLimit = New-TimeSpan -Minutes $item.LimitMinutes

@@ -178,7 +178,9 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
     app.include_router(live_trigger.router, tags=["hydra-live-trigger"])
     app.include_router(canary.router, tags=["hydra-canary"])
     from app.oms import api as oms_api
+    from app.oms import dashboard as oms_dashboard
     app.include_router(oms_api.router, tags=["oms"])
+    app.include_router(oms_dashboard.router, tags=["oms-dashboard"])
     app.include_router(admin.router, tags=["admin"])
     from app.api import pipeline_jobs
     app.include_router(pipeline_jobs.router, tags=["paper-pipeline-jobs"])

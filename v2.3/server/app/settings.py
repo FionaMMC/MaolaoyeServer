@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     live_qmt_account_sha256: str = ""
     # Execution core owns live order state once enabled; legacy live write paths then refuse.
     oms_live_enabled: bool = False
+    # Dashboard operator: manual orders/cancels and dividend registration only (never the agent API).
+    oms_operator_api_key: str = ""
 
     # Hydra live relay allowlists / limits。risk_mode 默认 disabled；只有显式选择
     # static/auto 且打开生成闸门后才能产出 live 订单。

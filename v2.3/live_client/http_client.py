@@ -115,6 +115,22 @@ class LiveServerClient:
             raise RuntimeError(f"GET /oms/live/status 失败: {body}")
         return body["data"]
 
+    def get_oms_manual_pending(self, account_alias: str, trade_date: str) -> dict:
+        response = requests.get(
+            f"{self.base_url}/oms/live/manual/pending",
+            params={"account_alias": account_alias, "trade_date": trade_date},
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        body = response.json()
+        if body.get("code") != 0:
+            raise RuntimeError(f"GET /oms/live/manual/pending 失败: {body}")
+        return body["data"]
+
+    def post_oms_manual_ack(self, account_alias: str, results: list[dict]) -> dict:
+        return self._post("/oms/live/manual/ack", {"account_alias": account_alias, "results": results})
+
     def post_oms_events(self, account_alias: str, events: list[dict]) -> dict:
         return self._post("/oms/live/events", {"account_alias": account_alias, "events": events})
 

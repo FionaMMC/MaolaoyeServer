@@ -20,6 +20,7 @@ BARS = {
 class FakeServer:
     def __init__(self, plans):
         self.plans, self.snapshots, self.events, self.down = plans, [], [], False
+        self.manual, self.acks, self.fail_ack = [], [], False
 
     def _check(self):
         if self.down:
@@ -40,6 +41,18 @@ class FakeServer:
         self._check()
         self.events.extend(events)
         return {"applied": len(events)}
+
+    def get_oms_manual_pending(self, alias, trade_date):
+        self._check()
+        done = {a["instruction_id"] for a in self.acks}
+        return {"trade_date": trade_date, "instructions": [m for m in self.manual if m["instruction_id"] not in done]}
+
+    def post_oms_manual_ack(self, alias, results):
+        self._check()
+        if self.fail_ack:
+            raise ConnectionError("ack lost")
+        self.acks.extend(results)
+        return {"updated": len(results)}
 
 
 def _plan(day, phase, orders, frozen, executable=True, seq=1):
@@ -178,3 +191,72 @@ def test_agent_affordability_matches_planner_cost_exactly(tmp_path):
     agent, exchange, _, _ = _setup(tmp_path, plans, positions={"510300.SH": 1200}, cash=cash, at=(D2, "091505"))
     agent.execute(D2, "BUY")
     assert [o["order_volume"] for o in exchange.orders()] == [1000]
+
+
+MANUAL_BUY = {"instruction_id": "E261008001", "kind": "ORDER", "client_order_id": "E261008001",
+              "broker_order_id": None, "symbol": "513100.SH", "side": "BUY", "quantity": 500, "limit_price": 2.21}
+
+
+def _manual_setup(tmp_path, at=(D1, "100000"), plans=None):
+    agent, exchange, server, journal = _setup(tmp_path, plans or {}, at=at)
+    server.manual, server.acks = [], []
+    return agent, exchange, server, journal
+
+
+def test_manual_order_is_submitted_with_e_remark_and_acked(tmp_path):
+    agent, exchange, server, journal = _manual_setup(tmp_path)
+    server.manual = [MANUAL_BUY]
+    out = agent.run_manual(D1)
+    assert out["results"][0]["status"] == "SUBMITTED"
+    assert [o["order_remark"] for o in exchange.orders()] == ["E261008001"]
+    assert server.acks[0]["instruction_id"] == "E261008001" and journal.intent("E261008001")["state"] == "ACKED"
+    assert agent.run_manual(D1)["status"] == "NOTHING_PENDING"
+
+
+def test_lost_ack_never_resubmits_a_manual_order(tmp_path):
+    agent, exchange, server, _ = _manual_setup(tmp_path)
+    server.manual, server.fail_ack = [MANUAL_BUY], True
+    agent.run_manual(D1)
+    server.fail_ack = False
+    out = agent.run_manual(D1)                                  # still pending on the server side
+    assert out["results"][0]["status"] == "SUBMITTED" and len(exchange.orders()) == 1
+
+
+def test_manual_cancel_by_broker_id_and_unknown_target_fails(tmp_path):
+    agent, exchange, server, _ = _manual_setup(tmp_path)
+    resting = exchange.order_stock("510300.SH", "BUY", 100, 4.50, "manual-in-qmt-gui")
+    server.manual = [{"instruction_id": "X261008001", "kind": "CANCEL", "client_order_id": None,
+                      "broker_order_id": str(resting)},
+                     {"instruction_id": "X261008002", "kind": "CANCEL", "client_order_id": "H000019999",
+                      "broker_order_id": None}]
+    out = agent.run_manual(D1)
+    statuses = {r["instruction_id"]: r["status"] for r in out["results"]}
+    assert statuses == {"X261008001": "CANCEL_REQUESTED", "X261008002": "FAILED"}
+    assert exchange.orders()[0]["order_status"] in (51, 54)
+
+
+def test_local_hold_pauses_manual_orders_but_still_cancels(tmp_path):
+    agent, exchange, server, _ = _manual_setup(tmp_path)
+    resting = exchange.order_stock("510300.SH", "BUY", 100, 4.50, "manual-in-qmt-gui")
+    server.manual = [MANUAL_BUY, {"instruction_id": "X261008001", "kind": "CANCEL", "client_order_id": None,
+                                  "broker_order_id": str(resting)}]
+    (tmp_path / "HOLD").write_text("hold")
+    out = agent.run_manual(D1)
+    assert out["held_back_by_local_hold"] == ["E261008001"]
+    assert [r["instruction_id"] for r in server.acks] == ["X261008001"]      # the order stays pending
+    assert all(o["order_remark"] != "E261008001" for o in exchange.orders())
+
+
+def test_manual_outside_window_is_refused(tmp_path):
+    agent, exchange, server, _ = _manual_setup(tmp_path, at=(D1, "150100"))
+    server.manual = [MANUAL_BUY]
+    assert agent.run_manual(D1)["status"] == "OUTSIDE_WINDOW" and exchange.orders() == []
+
+
+def test_manual_plans_never_shadow_the_cycle_plan_cache(tmp_path):
+    plans = {(D1, "SELL"): _plan(D1, "SELL", [SELL], FROZEN)}
+    agent, _, server, journal = _manual_setup(tmp_path, plans=plans)
+    agent.fetch_plan(D1, "SELL")
+    server.manual = [MANUAL_BUY]
+    agent.run_manual(D1)
+    assert journal.plan(D1, "SELL")["session_id"] == "C00001:1"

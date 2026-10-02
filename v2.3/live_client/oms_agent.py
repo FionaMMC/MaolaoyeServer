@@ -26,7 +26,10 @@ WINDOWS = {"SELL": (time(14, 57, 0), time(14, 59, 30)), "BUY": (time(9, 15, 0), 
 SUBMIT_AT = {"SELL": time(14, 57, 5), "BUY": time(9, 15, 5)}
 CANCEL_DEADLINE = time(14, 57, 0)
 OPEN_STATUSES = (48, 49, 50, 55)
-OUR_REMARK = re.compile(r"^H\d{9}$")
+CANCELLABLE = (48, 49, 50, 55)
+MANUAL_WINDOW = (time(9, 15, 0), time(14, 59, 30))
+CYCLE_REMARK = re.compile(r"^H\d{9}$")       # orders of a rebalance cycle
+OUR_REMARK = re.compile(r"^[HE]\d{9}$")      # cycle orders plus dashboard manual (E) orders
 LOT = 100
 MIN_FEE = 5.0
 _SIDES = {QMT_STOCK_BUY: "BUY", QMT_STOCK_SELL: "SELL"}
@@ -206,7 +209,7 @@ class OmsAgent:
         requested = []
         for order in self.gateway.day_orders():
             remark = (order.order_remark or "").strip()
-            if (OUR_REMARK.match(remark) and _SIDES.get(int(order.order_type or 0)) == "BUY"
+            if (CYCLE_REMARK.match(remark) and _SIDES.get(int(order.order_type or 0)) == "BUY"
                     and int(order.order_status) in OPEN_STATUSES):
                 self.gateway.cancel_order(int(order.order_id))
                 requested.append(remark)
@@ -222,6 +225,99 @@ class OmsAgent:
 
     def eod(self) -> dict:
         return self.snapshot("EOD")
+
+    # ── dashboard manual instructions ─────────────────────────────────────
+    def run_manual(self, trade_date: str) -> dict:
+        """Execute today's pending dashboard orders and cancels, then report back.
+
+        Orders: journal first, never resubmit, capped by sellable shares / available cash.
+        Cancels: by our client order id or the broker order id. A local HOLD file pauses
+        manual orders (they stay pending) but cancels still run, since they only cut risk.
+        """
+        now = self.clock().astimezone(CHINA)
+        if not MANUAL_WINDOW[0] <= now.time() <= MANUAL_WINDOW[1]:
+            return {"status": "OUTSIDE_WINDOW"}
+        try:
+            pending = self.server.get_oms_manual_pending(self.account_alias, trade_date)["instructions"]
+        except Exception as exc:
+            logger.error("manual instructions unavailable: %s", exc)
+            return {"status": "SERVER_UNAVAILABLE"}
+        if not pending:
+            return {"status": "NOTHING_PENDING"}
+        hold = self.journal.hold_flag()
+        account = self.gateway.account_snapshot()
+        orders = self.gateway.day_orders()
+        by_remark = {}
+        for order in orders:
+            by_remark.setdefault((order.order_remark or "").strip(), order)
+        by_broker_id = {str(order.order_id): order for order in orders}
+        cash = float(account.available_cash)
+        results, held_back = [], []
+        for item in pending:
+            if item["kind"] == "CANCEL":
+                results.append(self._manual_cancel(item, by_remark, by_broker_id))
+            elif hold:
+                held_back.append(item["instruction_id"])
+            else:
+                outcome, cost = self._manual_order(item, trade_date, account, by_remark, cash)
+                cash -= cost
+                results.append(outcome)
+        if results:
+            try:
+                self.server.post_oms_manual_ack(self.account_alias, results)
+            except Exception as exc:  # orders are journaled; the next run re-reports from the journal
+                logger.error("manual ack failed: %s", exc)
+        self.flush_events()
+        if any(r["status"] in ("SUBMITTED", "CANCEL_REQUESTED", "UNKNOWN") for r in results):
+            self.snapshot("ADHOC")
+        return {"status": "DONE", "results": results, "held_back_by_local_hold": held_back}
+
+    def _manual_cancel(self, item, by_remark, by_broker_id) -> dict:
+        target = (by_remark.get(item["client_order_id"]) if item.get("client_order_id")
+                  else by_broker_id.get(str(item.get("broker_order_id"))))
+        base = {"instruction_id": item["instruction_id"]}
+        if target is None:
+            return {**base, "status": "FAILED", "detail": "order not found among today's broker orders"}
+        if int(target.order_status) not in CANCELLABLE:
+            return {**base, "status": "FAILED", "detail": f"order is not open (QMT status {target.order_status})"}
+        try:
+            self.gateway.cancel_order(int(target.order_id))
+        except Exception as exc:
+            return {**base, "status": "FAILED", "detail": f"cancel refused: {exc}"}
+        return {**base, "status": "CANCEL_REQUESTED", "detail": f"broker order {target.order_id}"}
+
+    def _manual_order(self, item, trade_date, account, by_remark, cash) -> tuple[dict, float]:
+        coid, symbol, side = item["client_order_id"], item["symbol"], item["side"]
+        limit, quantity = float(item["limit_price"]), int(item["quantity"])
+        base = {"instruction_id": item["instruction_id"]}
+        order = {"client_order_id": coid, "symbol": symbol, "side": side, "quantity": quantity, "limit_price": limit}
+        self.journal.cache_plan({"plan_sha256": "manual-" + coid, "session_id": "MANUAL:" + coid,
+                                 "cycle_id": "MANUAL", "trade_date": trade_date, "phase": "MANUAL",
+                                 "orders": [order], "executable": True, "frozen_target": {}})
+        intent = self.journal.intent(coid)
+        if coid in by_remark:
+            if intent is None or intent["state"] in ("SUBMITTING", "UNKNOWN"):
+                self.journal.mark(coid, "ACKED", str(by_remark[coid].order_id), "found at broker by remark")
+            return {**base, "status": "SUBMITTED", "detail": f"already at broker {by_remark[coid].order_id}"}, 0.
+        if intent is not None:
+            mapped = {"ACKED": "SUBMITTED", "REJECTED": "REJECTED"}.get(intent["state"], "UNKNOWN")
+            return {**base, "status": mapped, "detail": f"journal state {intent['state']}"}, 0.
+        if side == "SELL" and quantity > int(account.sellable_positions.get(symbol, 0)):
+            return {**base, "status": "FAILED", "detail": "more than the sellable quantity"}, 0.
+        cost = _buy_cost(quantity, limit) if side == "BUY" else 0.
+        if cost > cash:
+            return {**base, "status": "FAILED", "detail": f"needs {cost:.2f}, available {cash:.2f}"}, 0.
+        self.journal.mark(coid, "SUBMITTING", None, None)
+        outcome = self.gateway.submit_limit(symbol=symbol, side=side, quantity=quantity, limit_price=limit,
+                                            remark=coid)
+        if outcome.status == "SUBMITTED":
+            self.journal.mark(coid, "ACKED", outcome.local_order_id, None)
+            return {**base, "status": "SUBMITTED", "detail": f"broker order {outcome.local_order_id}"}, cost
+        if outcome.status == "REJECTED":
+            self.journal.mark(coid, "REJECTED", None, outcome.detail)
+            return {**base, "status": "REJECTED", "detail": outcome.detail}, 0.
+        self.journal.mark(coid, "UNKNOWN", None, outcome.detail)
+        return {**base, "status": "UNKNOWN", "detail": outcome.detail}, cost
 
     def upload_spool(self) -> dict:
         """Upload snapshots spooled while the server was down, oldest first; move each when accepted."""
@@ -261,7 +357,8 @@ def main(argv=None) -> int:
     from live_client.oms_journal import OmsJournal
 
     parser = argparse.ArgumentParser(prog="python -m live_client.oms_agent")
-    parser.add_argument("command", choices=["pre", "sell", "buy", "cancel", "eod", "upload-spool", "status"])
+    parser.add_argument("command", choices=["pre", "sell", "buy", "cancel", "eod", "manual", "upload-spool",
+                                            "status"])
     parser.add_argument("--date", required=True, help="trade date YYYYMMDD; must be today for sell/buy")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--poll-until", default=None, help="HHMM; keep taking ADHOC snapshots until then")
@@ -298,6 +395,8 @@ def main(argv=None) -> int:
                 result = agent.cancel_open()
             elif args.command == "upload-spool":
                 result = agent.upload_spool()
+            elif args.command == "manual":
+                result = agent.run_manual(args.date)
             else:
                 result = agent.eod()
         finally:
