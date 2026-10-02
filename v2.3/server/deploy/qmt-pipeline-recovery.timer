@@ -1,0 +1,10 @@
+[Unit]
+Description=Poll durable paper recovery queue
+
+[Timer]
+OnBootSec=45s
+OnUnitInactiveSec=15s
+Unit=qmt-pipeline-recovery.service
+
+[Install]
+WantedBy=timers.target

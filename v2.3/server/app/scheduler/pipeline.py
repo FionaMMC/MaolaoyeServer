@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Type
@@ -11,7 +12,8 @@ import yaml
 from sqlalchemy import delete, select
 
 from app.execution import ExecutionDomain, normalize_execution_domain
-from app.models import InstanceState, Order, OrderSignalMap, RawSignal, Trade
+from app.scheduler.pipeline_lock import PipelineBusy, pipeline_mutex
+from app.models import InstanceState, Order, OrderSignalMap, PipelineJob, RawSignal, Trade
 from app.services.aggregate import AggregateService, TaggedSignal
 from app.services.blacklist import BlacklistService
 from app.services.orders_queue import OrdersQueueService
@@ -89,11 +91,42 @@ class StrategyPipeline:
         return (_to_date(trade_date) - _to_date(latest)).days
 
     def run(
+        self, trade_date: int, force: bool = False,
+        execution_domain: ExecutionDomain = "paper", account_group: str | None = None,
+        recovery: bool = False,
+    ) -> dict:
+        try:
+            with pipeline_mutex(self.session_factory):
+                return self._run(trade_date, force, execution_domain, account_group, recovery)
+        except PipelineBusy:
+            return {"trade_date": trade_date, "valid_date": str(trade_date),
+                    "instances": 0, "signals": 0, "passed": 0, "orders": 0,
+                    "skipped": "pipeline_busy"}
+
+    def _order_summary(self, trade_date, execution_domain, account_group=None):
+        """Read-only: unlike GET /orders this never stamps fetched_at."""
+        with self.session_factory() as session:
+            stmt = select(Order).where(Order.valid_date == str(trade_date),
+                                       Order.execution_domain == execution_domain)
+            if account_group is not None:
+                stmt = stmt.where(Order.account_group == account_group)
+            rows = session.scalars(stmt).all()
+            counts, breakdown = {}, {}
+            for row in rows:
+                counts[row.status] = counts.get(row.status, 0) + 1
+                group = breakdown.setdefault(row.account_group, {"BUY": 0, "SELL": 0})
+                group[row.direction] = group.get(row.direction, 0) + 1
+            return {"orders": len(rows), "order_ids": [r.order_id for r in rows],
+                    "order_status_counts": counts, "order_breakdown": breakdown,
+                    "bookkeeping_divergence": any(r.bookkeeping_divergence for r in rows)}
+
+    def _run(
         self,
         trade_date: int,
         force: bool = False,
         execution_domain: ExecutionDomain = "paper",
         account_group: str | None = None,
+        recovery: bool = False,
     ) -> dict:
         """完整管线。返回执行摘要。
 
@@ -109,6 +142,34 @@ class StrategyPipeline:
         instances = [i for i in all_instances if account_group is None or i["account_group"] == account_group]
         if account_group is not None and not instances:
             raise ValueError(f"unknown account group: {account_group}")
+        if recovery:
+            if force or execution_domain != "paper" or account_group is None:
+                raise ValueError("recovery requires one paper account group and forbids force")
+            existing = self._order_summary(trade_date, execution_domain, account_group)
+            if existing["orders"]:
+                return {"trade_date": trade_date, "valid_date": valid_date_str,
+                        "instances": len(instances), "signals": 0, "passed": 0,
+                        "reused": True, **existing}
+        else:
+            with self.session_factory() as session:
+                jobs = session.scalars(select(PipelineJob).where(
+                    PipelineJob.trade_date == trade_date,
+                    PipelineJob.execution_domain == execution_domain,
+                    True if account_group is None else PipelineJob.account_group == account_group,
+                )).all()
+                if any(self._order_summary(trade_date, execution_domain, job.account_group)["orders"]
+                       for job in jobs):
+                    # Even an unfetched durable publication must keep its IDs.
+                    # A legacy bulk/force trigger is not a replacement approval.
+                    return {"trade_date": trade_date, "valid_date": valid_date_str,
+                            "signals": 0, "passed": 0, "orders": 0, "instances": 0,
+                            "skipped": "recovery_batch_published"}
+                now = datetime.now(timezone.utc).timestamp()
+                if any(job.priority == 100 and job.status in {"QUEUED", "RUNNING", "RETRY_WAIT", "WAITING_INPUT"}
+                       and job.next_attempt_at <= now < job.deadline for job in jobs):
+                    return {"trade_date": trade_date, "valid_date": valid_date_str,
+                            "signals": 0, "passed": 0, "orders": 0, "instances": 0,
+                            "skipped": "manual_recovery_queued"}
         logger.info(
             "pipeline_start trade_date=%s execution_domain=%s",
             trade_date,
@@ -233,8 +294,8 @@ class StrategyPipeline:
         # Strict instances must be checked before _clear_for_date.  Otherwise a
         # same-day rerun could delete their unfetched PENDING order and only then
         # discover that a rebalance was still unresolved.
-        # Evaluate shared-account ownership against every configured instance,
-        # even when publication is scoped to one account group.
+        # Account ownership must still be evaluated against ALL configured
+        # instances. Only execution blockers/clearing/publication are scoped.
         all_guards = self._execution_guards(all_instances)
         preflight_guards = {i["instance_id"]: all_guards[i["instance_id"]] for i in instances}
         operational_blockers = {
@@ -282,6 +343,7 @@ class StrategyPipeline:
 
         # 2. 加载/创建 instance_state
         states = self._ensure_instance_states(instances)
+        expected_states = deepcopy(states)
 
         # 2.5. 计算 risk blacklist（自动 + 手工）
         risk_bl = self.blacklist.compute(execution_domain=execution_domain)
@@ -304,18 +366,7 @@ class StrategyPipeline:
             execution_guards=preflight_guards,
         )
 
-        # 3.5. 写回 strategy_state（仅在策略 set_strategy_state 时）
-        if any(s is not None for s in next_states_by_instance.values()):
-            with self.session_factory() as session:
-                for inst_id, new_state in next_states_by_instance.items():
-                    if new_state is None:
-                        continue
-                    row = session.get(InstanceState, inst_id)
-                    if row is None:
-                        continue
-                    row.strategy_state = new_state
-                    row.last_update = _now_iso()
-                session.commit()
+        # Strategy state is committed with order publication below, not before.
 
         # 4. 预检 + 写 raw_signals 表 + 收集 PASS 的
         # 关键顺序（Bug A 修复）：每个实例内 SELL 先 precheck，
@@ -405,7 +456,10 @@ class StrategyPipeline:
         agg = self.aggregate.aggregate(all_pass_tagged, valid_date=valid_date_str)
 
         # 6. 写订单 + 映射
-        self.orders_queue.write_aggregated(agg.orders, agg.mappings)
+        self.orders_queue.write_aggregated(
+            agg.orders, agg.mappings, strategy_states=next_states_by_instance,
+            expected_states=expected_states,
+        )
 
         # 7. NAV 快照
         # 关键：用「**today**」作为快照日期，不是 trade_date。
@@ -417,9 +471,12 @@ class StrategyPipeline:
         #   - T 日 9:00 同日 trigger T  → 也写 snapshot[today=T]，但是 pre-trade state
         #     → 后面 16:00 trigger 时 UPSERT 覆盖为正确版本
         today_str = datetime.now().strftime("%Y%m%d")
-        self.perf.snapshot_all(int(today_str), execution_domain=execution_domain)
+        # Manual recovery must not depend on an unrelated all-strategy NAV job.
+        # Normal end-of-day valuation remains on the ordinary pipeline path.
+        if not recovery:
+            self.perf.snapshot_all(int(today_str), execution_domain=execution_domain)
         daily_risk_summary = None
-        if self.daily_risk is not None:
+        if self.daily_risk is not None and not recovery:
             try:
                 daily_risk_summary = self.daily_risk.upsert_for_date(
                     today_str, execution_domain=execution_domain,
@@ -445,6 +502,12 @@ class StrategyPipeline:
             summary["stale_orders_terminalized"] = stale_orders
         if runner.input_statuses:
             summary["waiting_input"] = runner.input_statuses
+        if runner.errors:
+            summary["strategy_errors"] = runner.errors
+        if recovery:
+            summary["valuation_deferred"] = True
+            summary["execution_guards"] = preflight_guards
+        summary.update(self._order_summary(trade_date, execution_domain, account_group))
         if fetched and force:
             # 审计标记：这次重算换掉了已被客户端拉走的批次
             summary["force_regen_after_fetch"] = len(fetched)
@@ -704,6 +767,7 @@ class StrategyPipeline:
                     .where(Order.execution_domain == execution_domain)
                     .where(True if account_group is None else Order.account_group == account_group)
                     .where(Order.order_id.in_(
+                        # Preserve attribution inside the requested group.
                         select(Trade.order_id).where(
                             Trade.execution_domain == execution_domain
                         )
@@ -734,8 +798,8 @@ class StrategyPipeline:
                 select(Order)
                 .where(Order.valid_date < cutoff_exclusive)
                 .where(Order.execution_domain == execution_domain)
-                    .where(True if account_group is None else Order.account_group == account_group)
                 .where(Order.status.in_(("PENDING", "PARTIAL")))
+                .where(True if account_group is None else Order.account_group == account_group)
                 .order_by(Order.valid_date, Order.order_id)
             ).scalars().all()
             traded_ids = {

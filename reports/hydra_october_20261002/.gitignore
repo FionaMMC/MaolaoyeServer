@@ -1,0 +1,3 @@
+# Private readiness/account aggregates remain local
+readiness.json
+*.zip

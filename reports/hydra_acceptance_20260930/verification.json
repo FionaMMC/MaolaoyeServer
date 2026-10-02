@@ -1,0 +1,17 @@
+{
+  "status": "PASS",
+  "tests": {
+    "server_tests.xml": 92,
+    "client_tests.xml": 151,
+    "research_tests.xml": 17
+  },
+  "total_tests": 260,
+  "estimator": "OLS/HAC independently matches statsmodels at n=21/43/120",
+  "checks": [
+    "nested R2 partition",
+    "return component identity",
+    "covariance partition",
+    "remote tested source hashes match local",
+    "12 replay scenarios with nonnegative cash"
+  ]
+}

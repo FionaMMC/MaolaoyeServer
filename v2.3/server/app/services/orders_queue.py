@@ -4,9 +4,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Iterable
 
-from sqlalchemy import case, select
+from sqlalchemy import case, select, text
 
-from app.models import HydraExecutionAttempt, Order, OrderSignalMap
+from app.models import HydraExecutionAttempt, InstanceState, Order, OrderSignalMap
 from app.schemas.orders import OrderItem
 from app.services.aggregate import AggregatedOrder, OrderSignalMapping
 from app.services.ledger_transaction import begin_ledger_transaction
@@ -14,6 +14,10 @@ from app.services.ledger_transaction import begin_ledger_transaction
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+class StrategyStateChanged(RuntimeError):
+    """A fill/capital change arrived while computing; retry from the new ledger."""
 
 
 class OrdersQueueService:
@@ -26,12 +30,30 @@ class OrdersQueueService:
         self,
         orders: list[AggregatedOrder],
         mappings: Iterable[OrderSignalMapping],
+        strategy_states: dict | None = None,
+        expected_states: dict | None = None,
     ) -> int:
-        if not orders:
+        if not orders and not strategy_states:
             return 0
 
         now = _now_iso()
         with self.session_factory() as session:
+            if expected_states is not None:
+                session.execute(text("BEGIN IMMEDIATE"))
+                for instance_id, expected in expected_states.items():
+                    row = session.get(InstanceState, instance_id)
+                    if row is None or (float(row.virtual_cash) != expected["cash"]
+                                       or (row.virtual_positions or {}) != expected["positions"]
+                                       or (row.strategy_state or {}) != (expected["strategy_state"] or {})):
+                        raise StrategyStateChanged(instance_id)
+            # Publish state and orders together. A crash must not advance the
+            # strategy's monthly cursor without publishing its orders.
+            for instance_id, state in (strategy_states or {}).items():
+                if state is not None:
+                    row = session.get(InstanceState, instance_id)
+                    if row is not None:
+                        row.strategy_state = state
+                        row.last_update = now
             for o in orders:
                 session.add(Order(
                     order_id=o.order_id,
