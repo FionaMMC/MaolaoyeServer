@@ -153,3 +153,17 @@ def test_cancel_open_only_touches_our_buy_orders_and_refuses_after_1457(tmp_path
     exchange.set_clock(D2, "145700")
     assert agent.cancel_open()["status"] == "TOO_LATE"
     assert manual > 0
+
+
+def test_spooled_snapshots_upload_in_order_once_server_returns(tmp_path):
+    agent, exchange, server, _ = _setup(tmp_path, {}, at=(D1, "150500"))
+    server.down = True
+    agent.eod()
+    exchange.set_clock(D1, "153000")
+    agent.eod()
+    assert server.snapshots == [] and len(list((tmp_path / "spool").glob("snapshot-*.json"))) == 2
+    server.down = False
+    out = agent.upload_spool()
+    assert out["failed"] is None and len(out["uploaded"]) == 2
+    assert [s["taken_at"][11:19] for s in server.snapshots] == ["15:05:00", "15:30:00"]
+    assert list((tmp_path / "spool").glob("snapshot-*.json")) == []

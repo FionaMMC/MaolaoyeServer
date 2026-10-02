@@ -223,6 +223,25 @@ class OmsAgent:
     def eod(self) -> dict:
         return self.snapshot("EOD")
 
+    def upload_spool(self) -> dict:
+        """Upload snapshots spooled while the server was down, oldest first; move each when accepted."""
+        if not self.spool_dir.exists():
+            return {"uploaded": [], "failed": None}
+        done_dir = self.spool_dir / "uploaded"
+        uploaded = []
+        for path in sorted(self.spool_dir.glob("snapshot-*.json"), key=lambda p: json.loads(
+                p.read_text(encoding="utf-8"))["taken_at"]):
+            try:
+                self.server.post_oms_snapshot(json.loads(path.read_text(encoding="utf-8")))
+            except Exception as exc:
+                logger.error("spooled snapshot %s still not accepted: %s", path.name, exc)
+                return {"uploaded": uploaded, "failed": path.name}
+            done_dir.mkdir(exist_ok=True)
+            path.replace(done_dir / path.name)
+            uploaded.append(path.name)
+        self.flush_events()
+        return {"uploaded": uploaded, "failed": None}
+
     def wait_until(self, moment: time) -> None:
         while self.clock().astimezone(CHINA).time() < moment:
             now = self.clock().astimezone(CHINA)
@@ -242,7 +261,7 @@ def main(argv=None) -> int:
     from live_client.oms_journal import OmsJournal
 
     parser = argparse.ArgumentParser(prog="python -m live_client.oms_agent")
-    parser.add_argument("command", choices=["pre", "sell", "buy", "cancel", "eod", "status"])
+    parser.add_argument("command", choices=["pre", "sell", "buy", "cancel", "eod", "upload-spool", "status"])
     parser.add_argument("--date", required=True, help="trade date YYYYMMDD; must be today for sell/buy")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--poll-until", default=None, help="HHMM; keep taking ADHOC snapshots until then")
@@ -277,6 +296,8 @@ def main(argv=None) -> int:
                     agent.poll(time(int(args.poll_until[:2]), int(args.poll_until[2:])))
             elif args.command == "cancel":
                 result = agent.cancel_open()
+            elif args.command == "upload-spool":
+                result = agent.upload_spool()
             else:
                 result = agent.eod()
         finally:

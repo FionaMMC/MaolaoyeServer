@@ -254,6 +254,8 @@ $runtimeScriptNames = @(
     "Invoke-HydraLiveOperations.ps1",
     "Register-HydraLiveSubmitTask.ps1",
     "Register-HydraLiveOperationsTasks.ps1",
+    "Run-HydraOms.ps1",
+    "Register-HydraOmsTasks.ps1",
     "hydra_live_market_backup.py"
 )
 $existingRuntimeScripts = @{}
