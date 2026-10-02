@@ -19,11 +19,14 @@ def test_terminal_is_sticky_and_idempotent():
             transition(terminal, S.ACKED)
 
 
-def test_planned_can_only_start_submitting_or_be_dropped():
+def test_planned_accepts_broker_evidence_but_not_an_unknown_without_submit():
     assert transition(S.PLANNED, S.SUBMITTING) is S.SUBMITTING
     assert transition(S.PLANNED, S.NOT_SUBMITTED) is S.NOT_SUBMITTED
+    # The broker already holds our remark although the agent's events never arrived.
+    assert transition(S.PLANNED, S.FILLED) is S.FILLED
+    assert transition(S.PLANNED, S.PARTIAL) is S.PARTIAL
     with pytest.raises(IllegalTransition):
-        transition(S.PLANNED, S.FILLED)
+        transition(S.PLANNED, S.UNKNOWN)
 
 
 def test_unknown_never_goes_back_to_planned_and_can_be_resolved():

@@ -23,7 +23,9 @@ TERMINAL = frozenset({S.FILLED, S.CANCELLED, S.REJECTED, S.EXPIRED_DAY, S.NOT_SU
 # Any broker-observed state; an unknown submit can resolve to any of them.
 _BROKER = frozenset({S.ACKED, S.PARTIAL, S.PENDING_CANCEL, S.FILLED, S.CANCELLED, S.REJECTED, S.EXPIRED_DAY})
 ALLOWED = {
-    S.PLANNED: {S.SUBMITTING, S.NOT_SUBMITTED},
+    # Broker evidence wins: an order can appear at the broker before the agent's
+    # SUBMIT_STARTED event reaches the server (server down, agent crash after submit).
+    S.PLANNED: _BROKER | {S.SUBMITTING, S.NOT_SUBMITTED},
     S.SUBMITTING: _BROKER | {S.UNKNOWN, S.NOT_SUBMITTED},
     S.UNKNOWN: _BROKER | {S.NOT_SUBMITTED},
     S.ACKED: _BROKER,
