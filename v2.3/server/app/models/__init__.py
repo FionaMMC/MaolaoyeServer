@@ -78,3 +78,6 @@ __all__ = [
     "ArchitectureReviewComment",
     "ArchitectureReviewDecision",
 ]
+
+# Execution-core tables live in app.oms; import last so Base is already defined.
+from app.oms.models import *  # noqa: E402, F401, F403
