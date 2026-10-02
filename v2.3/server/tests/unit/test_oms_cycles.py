@@ -183,3 +183,54 @@ def test_positive_weight_without_close_is_refused(tmp_path):
         svc.publish_target(instance_id=INSTANCE, account_alias=ALIAS, signal_date="20260930",
                            weights=dict(WEIGHTS, **{"159981.SZ": 0.1}), signal_closes=CLOSES, calendar=CAL,
                            source_sha256="v" * 64, now="2026-10-07T20:00:00+08:00")
+
+
+# ── regressions for bugs found by the system replays ──────────────────────
+def test_open_buy_orders_freeze_commission_per_order_not_once(tmp_path):
+    """Bug 1/7: reconciliation added back one minimum commission for all open buys.
+
+    Four small open buys freeze 4 x (200 + 5); the old add-back (800 x 1.001 + 5) fell
+    14 CNY short of that and held the cycle on every intraday PRE snapshot."""
+    _, svc = _service(tmp_path)
+    open_buys = [dict(broker_order_id=str(i), symbol="513100.SH", side="BUY", quantity=100, price=2.0,
+                      traded_volume=0, traded_price=0.0, status=50, remark=f"H0000102{i:02d}") for i in range(1, 5)]
+    frozen = 4 * (100 * 2.0 + 5.0)
+    snap = _snap("20261008", "1445", "PRE", {"510300.SH": 3000}, 100000.0 - frozen, orders=open_buys)
+    found = svc._discrepancies(snap, {"external": [], "conflicts": []}, None, {})
+    assert [d for d in found if d["type"] == "CASH_SHORTFALL"] == []
+
+
+def test_eod_before_first_sell_day_does_not_hold(tmp_path):
+    """Bug 4: a Friday EOD before a Monday first sell held the cycle (no buy anchor yet)."""
+    sf, svc = _service(tmp_path)
+    cal = ["20261001", "20261002", "20261005", "20261006", "20261007", "20261008"]   # Thu, Fri, Mon...
+    svc.publish_target(instance_id=INSTANCE, account_alias=ALIAS, signal_date="20261001", weights=WEIGHTS,
+                       signal_closes=CLOSES, calendar=cal, source_sha256="f" * 64, now="2026-10-01T20:00:00+08:00")
+    svc.approve("C00001", "tester", "n")
+    out = svc.ingest_snapshot(_snap("20261002", "1505", "EOD", {"510300.SH": 3000}, 100000.0), "n")
+    assert out["cycle_status"] == "ACTIVE" and out["reconciliation"]["passed"] is True
+
+
+def test_cycle_closes_even_if_report_fails(tmp_path, monkeypatch):
+    """Bug 3: a report error (unpriced symbol) kept a finished cycle open forever."""
+    sf, svc = _service(tmp_path)
+    _publish(svc)
+    svc.approve("C00001", "tester", "n")
+    monkeypatch.setattr(svc, "_build_report", lambda *a, **k: (_ for _ in ()).throw(KeyError("159981.SZ")))
+    with sf() as s:
+        cycle = s.get(OmsCycle, "C00001")
+        svc._close(s, cycle, "WINDOW_COMPLETE", _snap("20261013", "1505", "EOD", {}, 0.0), "n")
+        s.commit()
+    with sf() as s:
+        cycle = s.get(OmsCycle, "C00001")
+        assert cycle.status == "CLOSED" and cycle.report["error"] == "REPORT_FAILED"
+
+
+def test_report_values_unpriced_symbols_without_error(tmp_path):
+    """Bug 3: report pricing must tolerate symbols with no close (not yet listed)."""
+    sf, svc = _service(tmp_path)
+    svc.publish_target(instance_id=INSTANCE, account_alias=ALIAS, signal_date="20260930",
+                       weights=dict(WEIGHTS, **{"159981.SZ": 0.0}), signal_closes=dict(CLOSES, **{"159981.SZ": None}),
+                       calendar=CAL, source_sha256="r" * 64, now="2026-10-07T20:00:00+08:00")
+    report = svc.report("C00001")
+    assert "159981.SZ" not in report["unfinished"] and report["nav"] > 0

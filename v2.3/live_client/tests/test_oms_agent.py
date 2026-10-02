@@ -167,3 +167,14 @@ def test_spooled_snapshots_upload_in_order_once_server_returns(tmp_path):
     assert out["failed"] is None and len(out["uploaded"]) == 2
     assert [s["taken_at"][11:19] for s in server.snapshots] == ["15:05:00", "15:30:00"]
     assert list((tmp_path / "spool").glob("snapshot-*.json")) == []
+
+
+def test_agent_affordability_matches_planner_cost_exactly(tmp_path):
+    """Bug 5: the agent trimmed a lot the planner had funded (different cost formula)."""
+    from app.oms.planner import _cost
+    order = dict(BUY, quantity=1000, limit_price=2.233)
+    cash = _cost({"limit_price": 2.233}, 1000) / 100          # exactly what the planner reserved
+    plans = {(D2, "BUY"): _plan(D2, "BUY", [order], {"510300.SH": 1200, "513100.SH": 1000}, seq=2)}
+    agent, exchange, _, _ = _setup(tmp_path, plans, positions={"510300.SH": 1200}, cash=cash, at=(D2, "091505"))
+    agent.execute(D2, "BUY")
+    assert [o["order_volume"] for o in exchange.orders()] == [1000]
