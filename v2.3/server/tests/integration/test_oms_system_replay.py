@@ -132,6 +132,12 @@ class ServerAdapter:
         assert body["code"] == 0, body
         return body["data"]
 
+    def get_oms_status(self, alias):
+        self._check()
+        body = self.client.get("/oms/live/status", params={"account_alias": alias}, headers=LIVE).json()
+        assert body["code"] == 0, body
+        return body["data"]
+
 
 class DirectServer:
     """Same surface, no HTTP: payloads still pass the wire schemas (used where httpx is absent)."""
@@ -156,6 +162,10 @@ class DirectServer:
         self._check()
         from app.oms.schemas import EventIn
         return self.service.ledger.apply_events(alias, [EventIn.model_validate(e) for e in events], "n")
+
+    def get_oms_status(self, alias):
+        self._check()
+        return self.service.status(alias)
 
 
 class System:

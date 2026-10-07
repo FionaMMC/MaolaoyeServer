@@ -215,6 +215,28 @@ def test_account_writer_lock_is_shared_across_strategy_state_locations(tmp_path)
         pass
 
 
+def test_account_lock_wait_takes_over_when_the_holder_finishes(tmp_path):
+    import threading
+    from live_client.execution_queue import SubmissionLockBusy
+    held, release = threading.Event(), threading.Event()
+
+    def holder():
+        with account_submission_lock(tmp_path, "a" * 64):
+            held.set()
+            release.wait(10)
+
+    thread = threading.Thread(target=holder)
+    thread.start()
+    assert held.wait(10)
+    with pytest.raises(SubmissionLockBusy, match="已有离线提交进程"):
+        with account_submission_lock(tmp_path, "a" * 64, wait_seconds=.6):
+            pass
+    threading.Timer(.5, release.set).start()
+    with account_submission_lock(tmp_path, "a" * 64, wait_seconds=10):
+        pass
+    thread.join()
+
+
 def test_own_confirmed_proceeds_are_not_counted_twice_for_two_buys():
     sell = {"order_id": "sell", "direction": "SELL", "quantity": 100, "submit_status": "SUBMITTED"}
     buy = {"order_id": "buy", "direction": "BUY", "quantity": 100, "limit_price": 3.0, "submit_status": "SUBMITTED"}

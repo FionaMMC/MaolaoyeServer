@@ -1,9 +1,12 @@
 """OMS agent: journal before submit, never resubmit an unknown, cap buys at live positions."""
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
+import json
+from pathlib import Path
+import re
 
 import pytest
 
-from live_client.oms_agent import OmsAgent
+from live_client.oms_agent import CANCEL_DEADLINE, INTRADAY_WINDOW, LOCK_WAIT_SECONDS, WINDOWS, OmsAgent
 from live_client.oms_journal import OmsJournal
 from live_client.sim_exchange import SimExchange, SimQMTGateway
 
@@ -21,6 +24,7 @@ class FakeServer:
     def __init__(self, plans):
         self.plans, self.snapshots, self.events, self.down = plans, [], [], False
         self.manual, self.acks, self.fail_ack = [], [], False
+        self.sessions = []
 
     def _check(self):
         if self.down:
@@ -53,6 +57,10 @@ class FakeServer:
             raise ConnectionError("ack lost")
         self.acks.extend(results)
         return {"updated": len(results)}
+
+    def get_oms_status(self, alias):
+        self._check()
+        return {"sessions": self.sessions}
 
 
 def _plan(day, phase, orders, frozen, executable=True, seq=1):
@@ -193,6 +201,19 @@ def test_agent_affordability_matches_planner_cost_exactly(tmp_path):
     assert [o["order_volume"] for o in exchange.orders()] == [1000]
 
 
+
+def test_eod_caches_the_next_session_so_a_morning_outage_does_not_stop_it(tmp_path):
+    """Design 4.4: the next session's plan is cached the evening before, not only at 09:00."""
+    plans = {(D2, "BUY"): _plan(D2, "BUY", [BUY], FROZEN, seq=2)}
+    agent, exchange, server, _ = _setup(tmp_path, plans, at=(D1, "150500"))
+    server.sessions = [{"trade_date": D1, "phase": "SELL", "status": "CLOSED"},
+                       {"trade_date": D2, "phase": "BUY", "status": "PLANNED"}]
+    assert agent.eod()["cached_upcoming"] == [f"{D2}:BUY"]
+    server.down = True
+    exchange.set_clock(D2, "091505")
+    assert agent.execute(D2, "BUY")["status"] == "EXECUTED"
+    assert [o["order_remark"] for o in exchange.orders()] == ["H000010201"]
+
 MANUAL_BUY = {"instruction_id": "E261008001", "kind": "ORDER", "client_order_id": "E261008001",
               "broker_order_id": None, "symbol": "513100.SH", "side": "BUY", "quantity": 500, "limit_price": 2.21}
 
@@ -260,3 +281,103 @@ def test_manual_plans_never_shadow_the_cycle_plan_cache(tmp_path):
     server.manual = [MANUAL_BUY]
     agent.run_manual(D1)
     assert journal.plan(D1, "SELL")["session_id"] == "C00001:1"
+
+
+# ── every-minute intraday task and the account lock ──────────────────────
+def test_intraday_snapshots_every_run_even_with_nothing_pending(tmp_path):
+    agent, _, server, _ = _manual_setup(tmp_path, at=(D1, "103000"))
+    out = agent.intraday(D1)
+    assert out["manual"]["status"] == "NOTHING_PENDING"
+    assert [s["kind"] for s in server.snapshots] == ["ADHOC"]
+
+
+def test_intraday_snapshot_shows_the_manual_order_it_just_sent(tmp_path):
+    agent, _, server, _ = _manual_setup(tmp_path)
+    server.manual = [MANUAL_BUY]
+    out = agent.intraday(D1)
+    assert out["manual"]["results"][0]["status"] == "SUBMITTED"
+    assert [[o["remark"] for o in s["orders"]] for s in server.snapshots] == [["E261008001"]]
+
+
+def test_intraday_covers_the_closing_auction_then_stops(tmp_path):
+    agent, exchange, server, _ = _manual_setup(tmp_path, at=(D1, "150030"))
+    assert agent.intraday(D1)["snapshot"] is not None
+    exchange.set_clock(D1, "150130")
+    assert agent.intraday(D1)["snapshot"] is None and len(server.snapshots) == 1
+
+
+def test_intraday_snapshot_is_not_spooled_while_the_server_is_down(tmp_path):
+    agent, _, server, _ = _manual_setup(tmp_path)
+    server.down = True
+    out = agent.intraday(D1)
+    assert out["manual"]["status"] == "SERVER_UNAVAILABLE" and out["snapshot"] == {"uploaded": False}
+    assert list(tmp_path.glob("spool/*.json")) == []
+
+
+class _Config:
+    def __init__(self, root):
+        self.root = root
+        self.log_dir = self.userdata_dir = root
+        self.state_db = root / "state.db"
+        self.server_base_url, self.api_key, self.execution_domain = "http://server", "key", "live"
+        self.account_alias, self.expected_account_sha256 = ALIAS, "a" * 64
+
+    @classmethod
+    def from_env(cls):
+        return cls(_Config.ROOT)
+
+    def validate_startup(self):
+        pass
+
+
+class _Gateway:
+    def __init__(self, cfg):
+        pass
+
+    def connect(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def test_intraday_skips_a_busy_minute_but_a_cycle_step_waits_for_the_lock(tmp_path, monkeypatch, capsys):
+    """Bug: the minute task and a cycle step started in the same second; the loser failed outright."""
+    from live_client import oms_agent
+    from live_client.execution_queue import SubmissionLockBusy, account_submission_lock
+    _Config.ROOT = tmp_path
+    monkeypatch.setattr("live_client.config.LiveClientConfig", _Config)
+    monkeypatch.setattr("live_client.gateway.XtQMTGateway", _Gateway)
+    monkeypatch.setattr("live_client.http_client.LiveServerClient", lambda *a, **k: None)
+    monkeypatch.setattr(OmsAgent, "eod", lambda self: {"status": "EOD_TAKEN"})
+    monkeypatch.setitem(LOCK_WAIT_SECONDS, "eod", .6)
+    with account_submission_lock(tmp_path, "a" * 64):
+        assert oms_agent.main(["intraday", "--date", D1]) == 0
+        assert json.loads(capsys.readouterr().out.strip().splitlines()[-1]) == {"status": "SKIPPED_ACCOUNT_BUSY"}
+        with pytest.raises(SubmissionLockBusy):
+            oms_agent.main(["eod", "--date", D1])
+    assert oms_agent.main(["eod", "--date", D1]) == 0
+    assert json.loads(capsys.readouterr().out.strip().splitlines()[-1]) == {"status": "EOD_TAKEN"}
+
+
+TASKS = Path(__file__).resolve().parents[1] / "windows" / "Register-HydraOmsTasks.ps1"
+
+
+def test_task_schedule_fits_the_lock_waits_and_the_trading_windows():
+    """The intraday task fires every minute, so it can start with any cycle step; no step polls for long."""
+    rows = re.findall(r'Name = "(Hydra-Oms-[\w-]+)";\s*Args = "-Command ([\w-]+)([^"]*)";\s*Hour = (\d+);'
+                      r'\s*Minute = (\d+);\s*LimitMinutes = (\d+)', TASKS.read_text(encoding="utf-8"))
+    tasks = {name: {"command": cmd, "extra": extra.strip(), "start": time(int(h), int(m)), "limit": int(lim) * 60}
+             for name, cmd, extra, h, m, lim in rows}
+    assert len(tasks) == 9 and all(t["extra"] == "" for t in tasks.values())
+    for task in tasks.values():
+        assert LOCK_WAIT_SECONDS[task["command"]] + 120 <= task["limit"]       # the wait plus two minutes of work
+
+    def lock_by(name):
+        start = datetime.combine(date(2026, 10, 8), tasks[name]["start"])
+        return (start + timedelta(seconds=LOCK_WAIT_SECONDS[tasks[name]["command"]])).time()
+
+    assert lock_by("Hydra-Oms-Buy-0914") < WINDOWS["BUY"][1]
+    assert lock_by("Hydra-Oms-Sell-1456") < WINDOWS["SELL"][1]
+    assert lock_by("Hydra-Oms-Cancel-1455") < CANCEL_DEADLINE
+    assert tasks["Hydra-Oms-Intraday"]["start"] == INTRADAY_WINDOW[0] and LOCK_WAIT_SECONDS["intraday"] == 0

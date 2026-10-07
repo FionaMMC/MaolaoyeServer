@@ -74,8 +74,8 @@ def main() -> int:
     agent = OmsAgent(account_alias=args.account, gateway=gateway, server=agent_api,
                      journal=OmsJournal(stage / "manual-agent" / "oms-agent.db", clock=exchange.now),
                      clock=exchange.now, symbols=SYMBOLS, spool_dir=stage / "manual-agent" / "spool")
-    manual_run = agent.run_manual(today)
-    second_run = agent.run_manual(today)
+    manual_run = agent.intraday(today)                 # the every-minute task: instructions, then a snapshot
+    second_run = agent.intraday(today)
     exchange.set_clock(today, "150500")
     eod = agent.eod()
     after = operator._call("GET", "/oms/live/overview", params={"account_alias": args.account})
@@ -88,7 +88,8 @@ def main() -> int:
             after["ledger"]["positions"].get("510300.SH", 0) == positions.get("510300.SH", 0) + 100,
         "order_instruction_done": instructions[order["instruction_id"]]["status"] == "DONE",
         "cancel_of_unknown_order_failed": instructions[cancel["instruction_id"]]["status"] == "FAILED",
-        "second_run_found_nothing": second_run["status"] == "NOTHING_PENDING",
+        "second_run_found_nothing": second_run["manual"]["status"] == "NOTHING_PENDING",
+        "intraday_snapshots_uploaded": all("snapshot_id" in (run["snapshot"] or {}) for run in (manual_run, second_run)),
         "dividend_preview_amount": preview["amount"],
         "dividend_registered": registered["applied"] is True and len(after["dividends"]) >= 1,
         "audit_actions": sorted({o["action"] for o in after["overrides"]}),

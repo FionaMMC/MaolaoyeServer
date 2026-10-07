@@ -1135,7 +1135,7 @@ class OmsAgent:
         #   BUY 额外检查：实时持仓 + 本单数量 ≤ frozen_target，否则缩量到上限；本单金额×1.001 ≤ 券商可用现金，否则按整手缩量；
         #   mark SUBMITTING → submit_limit → mark ACKED / REJECTED / UNKNOWN；dry_run 时只记录、不调用 submit。
         # 最后上传 outbox。
-    def poll(self, until: time) -> None                       # 每 30 秒一次 snapshot("ADHOC")，直到 until
+    def intraday(self, trade_date) -> dict                    # 每分钟任务：看板人工指令，再 snapshot("ADHOC")（10/7 取代 poll）
     def cancel_open(self) -> dict                             # 只撤本周期的 BUY 挂单（备注前缀 H），14:57 之后拒绝
     def eod(self) -> dict                                     # snapshot("EOD")，然后上传 outbox
 
@@ -1160,7 +1160,7 @@ def main(argv=None) -> int:   # python -m live_client.oms_agent {pre,sell,buy,ca
 
 - **驱动**：真实的 `create_app`（临时数据库，开关打开）加上 `TestClient`；`OmsAgent` 的 server 换成基于 TestClient 的适配器；网关用 `SimQMTGateway`。
   - 每个信号调用 `CycleService.publish_target` 和 `approve`；
-  - 按时段日程推进时钟：pre → sell/buy → poll → cancel → eod。
+  - 按时段日程推进时钟：pre → sell/buy → intraday → cancel → eod。
 - **对照组**：同一份合成数据跑 `policy_replay.run(C3, touch=True)`。
 - **断言**：每个周期结束时，系统的持仓、策略现金（误差 ≤ 1 元，手续费模型统一取 1bp、最低 5 元：测试里把 SettlementService 的佣金参数设成与回测相同，印花税设为 0）与回测逐周期相等。
 - **故障注入用例**，每个都要断言"没有重复下单"（仿真交易所里同一备注最多一笔单）和"账本与仿真交易所持仓一致"：
@@ -1189,6 +1189,7 @@ def main(argv=None) -> int:   # python -m live_client.oms_agent {pre,sell,buy,ca
 | Hydra-Oms-Sell-1456 | 14:56 | sell（等到 14:57:05） |
 | Hydra-Oms-Eod-1505 | 15:05 | eod |
 | Hydra-Oms-Eod-1530 | 15:30 | eod |
+| Hydra-Oms-Intraday | 09:15–15:00 每分钟 | intraday（10/7 补充：人工指令 + 状态快照；周期步骤等锁，本任务跳过） |
 
 - 注册前先调用 `Inspect-HydraTasks.ps1` 留档；然后停用所有旧的 `Hydra-Live-*` 任务（不删除，便于回滚）。
 - `oms_holiday_check.py --account live|sim`：只读快照，结果写到 `C:\private\hydra-october\holiday-check-<account>.json`。加 `--reject-probe` 且账户为模拟账户时，发一笔休市时必然被拒的单，记录三项：返回值、委托清单里委托备注保存了几个字符、查询能不能查到之前的委托。实盘账户禁止使用 `--reject-probe`。

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import os
+import time
 from contextlib import contextmanager
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from pathlib import Path
@@ -125,12 +126,18 @@ def cash_readiness(
     }
 
 
+class SubmissionLockBusy(RuntimeError):
+    """Another cooperating writer still holds the account lock."""
+
+
 @contextmanager
-def account_submission_lock(userdata_dir: Path, account_fingerprint: str):
+def account_submission_lock(userdata_dir: Path, account_fingerprint: str, wait_seconds: float = 0.):
     """One cooperating writer per QMT userdata/account, across strategy DBs.
 
     The OS releases the lock on process death. A lock file's existence is not
     ownership. This does not coordinate legacy clients or a second computer.
+    wait_seconds > 0 retries for that long before giving up (scheduled steps that
+    may start in the same second as another writer); 0 fails at once.
     """
     directory = Path(userdata_dir) / "hydra_execution_locks"
     directory.mkdir(parents=True, exist_ok=True)
@@ -141,15 +148,20 @@ def account_submission_lock(userdata_dir: Path, account_fingerprint: str):
             handle.write(b"0")
             handle.flush()
         handle.seek(0)
-        try:
-            if os.name == "nt":
-                import msvcrt
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            raise RuntimeError("该 QMT 账户已有离线提交进程，稍后继续队列") from exc
+        deadline = time.monotonic() + wait_seconds
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if time.monotonic() >= deadline:
+                    raise SubmissionLockBusy("该 QMT 账户已有离线提交进程，稍后继续队列") from exc
+                time.sleep(.5)
         try:
             yield
         finally:

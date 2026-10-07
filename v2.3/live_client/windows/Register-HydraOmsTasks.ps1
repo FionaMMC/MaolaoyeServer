@@ -17,17 +17,20 @@ if (-not (Test-Path -LiteralPath (Join-Path $InspectionDirectory "tasks.json") -
 $runner = "C:\hydra-live\scripts\Run-HydraOms.ps1"
 if (-not (Test-Path -LiteralPath $runner -PathType Leaf)) { throw "OMS runner is missing: $runner" }
 
+# Cycle steps wait for the account lock (oms_agent.LOCK_WAIT_SECONDS) because they can start in
+# the same second as the every-minute intraday task; LimitMinutes covers that wait plus the step.
 $items = @(
-    @{ Name = "Hydra-Oms-Pre-0900";     Args = "-Command pre";                     Hour = 9;  Minute = 0;  LimitMinutes = 5;   RestartCount = 1 },
-    @{ Name = "Hydra-Oms-Buy-0914";     Args = "-Command buy -PollUntil 1000";     Hour = 9;  Minute = 14; LimitMinutes = 60;  RestartCount = 0 },
-    @{ Name = "Hydra-Oms-Pre-1445";     Args = "-Command pre";                     Hour = 14; Minute = 45; LimitMinutes = 5;   RestartCount = 1 },
-    @{ Name = "Hydra-Oms-Cancel-1455";  Args = "-Command cancel";                  Hour = 14; Minute = 55; LimitMinutes = 2;   RestartCount = 0 },
-    @{ Name = "Hydra-Oms-Sell-1456";    Args = "-Command sell -PollUntil 1501";    Hour = 14; Minute = 56; LimitMinutes = 8;   RestartCount = 0 },
-    @{ Name = "Hydra-Oms-Eod-1505";     Args = "-Command eod";                     Hour = 15; Minute = 5;  LimitMinutes = 10;  RestartCount = 1 },
-    @{ Name = "Hydra-Oms-Eod-1530";     Args = "-Command eod";                     Hour = 15; Minute = 30; LimitMinutes = 10;  RestartCount = 1 },
-    @{ Name = "Hydra-Oms-Upload-1800";  Args = "-Command upload-spool";            Hour = 18; Minute = 0;  LimitMinutes = 10;  RestartCount = 0 },
-    # Dashboard manual orders/cancels: every minute 09:15-15:00; each run exits within seconds.
-    @{ Name = "Hydra-Oms-Manual";       Args = "-Command manual";                  Hour = 9;  Minute = 15; LimitMinutes = 2;   RestartCount = 0; RepeatMinutes = 1; RepeatHours = 5.75 }
+    @{ Name = "Hydra-Oms-Pre-0900";     Args = "-Command pre";       Hour = 9;  Minute = 0;  LimitMinutes = 5;   RestartCount = 1 },
+    @{ Name = "Hydra-Oms-Buy-0914";     Args = "-Command buy";       Hour = 9;  Minute = 14; LimitMinutes = 10;  RestartCount = 0 },
+    @{ Name = "Hydra-Oms-Pre-1445";     Args = "-Command pre";       Hour = 14; Minute = 45; LimitMinutes = 5;   RestartCount = 1 },
+    @{ Name = "Hydra-Oms-Cancel-1455";  Args = "-Command cancel";    Hour = 14; Minute = 55; LimitMinutes = 4;   RestartCount = 0 },
+    @{ Name = "Hydra-Oms-Sell-1456";    Args = "-Command sell";      Hour = 14; Minute = 56; LimitMinutes = 6;   RestartCount = 0 },
+    @{ Name = "Hydra-Oms-Eod-1505";     Args = "-Command eod";       Hour = 15; Minute = 5;  LimitMinutes = 10;  RestartCount = 1 },
+    @{ Name = "Hydra-Oms-Eod-1530";     Args = "-Command eod";       Hour = 15; Minute = 30; LimitMinutes = 10;  RestartCount = 1 },
+    @{ Name = "Hydra-Oms-Upload-1800";  Args = "-Command upload-spool"; Hour = 18; Minute = 0;  LimitMinutes = 10;  RestartCount = 0 },
+    # Every minute 09:15-15:00: dashboard orders/cancels, then one status snapshot. Each run takes
+    # seconds and skips its minute (exit 0) while a cycle step holds the account.
+    @{ Name = "Hydra-Oms-Intraday";     Args = "-Command intraday";  Hour = 9;  Minute = 15; LimitMinutes = 2;   RestartCount = 0; RepeatMinutes = 1; RepeatHours = 5.75 }
 )
 $legacyTasks = @(Get-ScheduledTask -TaskName "Hydra-Live-*" -ErrorAction SilentlyContinue)
 if ($legacyTasks.Count -gt 0 -and -not $DisableLegacyTasks) {
@@ -37,6 +40,8 @@ $legacyEnabledBefore = @{}
 foreach ($legacy in $legacyTasks) { $legacyEnabledBefore[$legacy.TaskName] = $legacy.State -ne "Disabled" }
 $registeredNames = @()
 try {
+    # Renamed to Hydra-Oms-Intraday (it also takes the status snapshots); never leave the old one behind.
+    Get-ScheduledTask -TaskName "Hydra-Oms-Manual" -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
     foreach ($item in $items) {
         # Restart only the read-only steps; a restarted sell/buy/cancel could act twice.
         $action = New-ScheduledTaskAction -Execute "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$runner`" $($item.Args)"

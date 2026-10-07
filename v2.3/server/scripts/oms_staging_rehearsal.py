@@ -75,6 +75,8 @@ class HttpServer:
     def status(self, alias):
         return self._call("GET", "/oms/live/status", params={"account_alias": alias})
 
+    get_oms_status = status
+
     def get_oms_manual_pending(self, alias, trade_date):
         return self._call("GET", "/oms/live/manual/pending", params={"account_alias": alias, "trade_date": trade_date})
 

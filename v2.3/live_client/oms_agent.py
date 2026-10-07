@@ -28,6 +28,12 @@ CANCEL_DEADLINE = time(14, 57, 0)
 OPEN_STATUSES = (48, 49, 50, 55)
 CANCELLABLE = (48, 49, 50, 55)
 MANUAL_WINDOW = (time(9, 15, 0), time(14, 59, 30))
+INTRADAY_WINDOW = (time(9, 15, 0), time(15, 1, 0))    # status snapshots from the every-minute task
+# Seconds a step waits for the account lock. A cycle step can start in the same second as the
+# every-minute intraday task (or while the cancel step is still confirming), so it waits;
+# the intraday task never waits, it skips that minute.
+LOCK_WAIT_SECONDS = {"pre": 120., "buy": 240., "sell": 150., "cancel": 100., "eod": 120., "upload-spool": 120.,
+                     "intraday": 0.}
 CYCLE_REMARK = re.compile(r"^H\d{9}$")       # orders of a rebalance cycle
 OUR_REMARK = re.compile(r"^[HE]\d{9}$")      # cycle orders plus dashboard manual (E) orders
 LOT = 100
@@ -54,7 +60,7 @@ class OmsAgent:
         self.spool_dir = spool_dir or journal.path.parent / "oms-spool"
 
     # ── facts ─────────────────────────────────────────────────────────────
-    def snapshot(self, kind: str) -> dict:
+    def snapshot(self, kind: str, spool: bool = True) -> dict:
         now = self.clock().astimezone(CHINA)
         account = self.gateway.account_snapshot()
         orders = [self._order_wire(o) for o in self.gateway.day_orders()]
@@ -72,9 +78,13 @@ class OmsAgent:
         try:
             result = self.server.post_oms_snapshot(payload)
         except Exception as exc:  # keep the evidence; the server reconciles it once uploaded
-            path = self._spool(payload)
-            logger.error("snapshot upload failed (%s); spooled to %s", exc, path)
-            result = {"uploaded": False, "spooled": str(path)}
+            if spool:
+                path = self._spool(payload)
+                logger.error("snapshot upload failed (%s); spooled to %s", exc, path)
+                result = {"uploaded": False, "spooled": str(path)}
+            else:
+                logger.warning("%s snapshot upload failed (%s); not spooled", kind, exc)
+                result = {"uploaded": False}
         self.flush_events()
         return result
 
@@ -194,15 +204,6 @@ class OmsAgent:
         self.flush_events()
         return {"status": "DRY_RUN" if dry_run else "EXECUTED", "orders": results}
 
-    def poll(self, until: time, interval: float = 30.) -> int:
-        count = 0
-        while True:
-            self.snapshot("ADHOC")
-            count += 1
-            if self.clock().astimezone(CHINA).time() >= until:
-                return count
-            self.sleep(interval)
-
     def cancel_open(self, wait_seconds: float = 60., step: float = 5.) -> dict:
         if self.clock().astimezone(CHINA).time() >= CANCEL_DEADLINE:
             return {"status": "TOO_LATE"}
@@ -224,9 +225,44 @@ class OmsAgent:
         return {"status": "REQUESTED", "requested": requested}
 
     def eod(self) -> dict:
-        return self.snapshot("EOD")
+        result = self.snapshot("EOD")
+        return {**result, "cached_upcoming": self.cache_upcoming()}
 
-    # ── dashboard manual instructions ─────────────────────────────────────
+    def cache_upcoming(self) -> list[str]:
+        """Cache the plans of later sessions after the EOD snapshot (the server plans the next
+        session from it), so a server outage the next morning does not stop them. A fetch the
+        next morning refreshes ``executable``; the local HOLD file stops them regardless."""
+        today = self.clock().astimezone(CHINA).strftime("%Y%m%d")
+        try:
+            sessions = self.server.get_oms_status(self.account_alias).get("sessions") or []
+        except Exception as exc:
+            logger.error("status unavailable (%s); upcoming plans not cached", exc)
+            return []
+        cached = []
+        for item in sessions:
+            if item["trade_date"] <= today or item["status"] != "PLANNED":
+                continue
+            try:
+                if self.fetch_plan(item["trade_date"], item["phase"]) is not None:
+                    cached.append(f"{item['trade_date']}:{item['phase']}")
+            except Exception as exc:  # e.g. a journal conflict: keep the EOD result and report it
+                logger.error("plan %s %s not cached: %s", item["trade_date"], item["phase"], exc)
+        return cached
+
+    # ── every minute: dashboard instructions and status ───────────────────
+    def intraday(self, trade_date: str) -> dict:
+        """The every-minute task: dashboard instructions, then one status snapshot.
+
+        Status snapshots never drive orders (the next plan comes from the EOD snapshot);
+        they keep the server's view of acks and fills current through the day. They are
+        not spooled while the server is down, because the PRE/EOD snapshots carry the evidence.
+        """
+        manual = self.run_manual(trade_date)
+        now = self.clock().astimezone(CHINA).time()
+        if not INTRADAY_WINDOW[0] <= now <= INTRADAY_WINDOW[1]:
+            return {"manual": manual, "snapshot": None}
+        return {"manual": manual, "snapshot": self.snapshot("ADHOC", spool=False)}
+
     def run_manual(self, trade_date: str) -> dict:
         """Execute today's pending dashboard orders and cancels, then report back.
 
@@ -268,8 +304,6 @@ class OmsAgent:
             except Exception as exc:  # orders are journaled; the next run re-reports from the journal
                 logger.error("manual ack failed: %s", exc)
         self.flush_events()
-        if any(r["status"] in ("SUBMITTED", "CANCEL_REQUESTED", "UNKNOWN") for r in results):
-            self.snapshot("ADHOC")
         return {"status": "DONE", "results": results, "held_back_by_local_hold": held_back}
 
     def _manual_cancel(self, item, by_remark, by_broker_id) -> dict:
@@ -351,17 +385,16 @@ def _china_now() -> datetime:
 
 def main(argv=None) -> int:
     from live_client.config import HYDRA_LIVE_EXECUTABLE_SYMBOLS, LiveClientConfig
-    from live_client.execution_queue import account_submission_lock
+    from live_client.execution_queue import SubmissionLockBusy, account_submission_lock
     from live_client.gateway import XtQMTGateway
     from live_client.http_client import LiveServerClient
     from live_client.oms_journal import OmsJournal
 
     parser = argparse.ArgumentParser(prog="python -m live_client.oms_agent")
-    parser.add_argument("command", choices=["pre", "sell", "buy", "cancel", "eod", "manual", "upload-spool",
+    parser.add_argument("command", choices=["pre", "sell", "buy", "cancel", "eod", "intraday", "upload-spool",
                                             "status"])
     parser.add_argument("--date", required=True, help="trade date YYYYMMDD; must be today for sell/buy")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--poll-until", default=None, help="HHMM; keep taking ADHOC snapshots until then")
     args = parser.parse_args(argv)
 
     cfg = LiveClientConfig.from_env()
@@ -376,31 +409,37 @@ def main(argv=None) -> int:
     if args.command in ("sell", "buy") and not args.dry_run:
         cfg.require_submission_enabled()
     journal = OmsJournal(cfg.state_db.with_name("oms-agent.db"))
-    with account_submission_lock(cfg.userdata_dir, cfg.expected_account_sha256):
-        gateway = XtQMTGateway(cfg)
-        gateway.connect()
-        try:
-            agent = OmsAgent(account_alias=cfg.account_alias, gateway=gateway, server=server, journal=journal,
-                             clock=_china_now, symbols=sorted(HYDRA_LIVE_EXECUTABLE_SYMBOLS))
-            if args.command == "pre":
-                result = agent.pre(args.date)
-            elif args.command in ("sell", "buy"):
-                phase = args.command.upper()
-                if not args.dry_run:
-                    agent.wait_until(SUBMIT_AT[phase])
-                result = agent.execute(args.date, phase, dry_run=args.dry_run)
-                if args.poll_until:
-                    agent.poll(time(int(args.poll_until[:2]), int(args.poll_until[2:])))
-            elif args.command == "cancel":
-                result = agent.cancel_open()
-            elif args.command == "upload-spool":
-                result = agent.upload_spool()
-            elif args.command == "manual":
-                result = agent.run_manual(args.date)
-            else:
-                result = agent.eod()
-        finally:
-            gateway.close()
+    try:
+        with account_submission_lock(cfg.userdata_dir, cfg.expected_account_sha256,
+                                     wait_seconds=LOCK_WAIT_SECONDS[args.command]):
+            gateway = XtQMTGateway(cfg)
+            gateway.connect()
+            try:
+                agent = OmsAgent(account_alias=cfg.account_alias, gateway=gateway, server=server, journal=journal,
+                                 clock=_china_now, symbols=sorted(HYDRA_LIVE_EXECUTABLE_SYMBOLS))
+                if args.command == "pre":
+                    result = agent.pre(args.date)
+                elif args.command in ("sell", "buy"):
+                    phase = args.command.upper()
+                    if not args.dry_run:
+                        agent.wait_until(SUBMIT_AT[phase])
+                    result = agent.execute(args.date, phase, dry_run=args.dry_run)
+                elif args.command == "cancel":
+                    result = agent.cancel_open()
+                elif args.command == "upload-spool":
+                    result = agent.upload_spool()
+                elif args.command == "intraday":
+                    result = agent.intraday(args.date)
+                else:
+                    result = agent.eod()
+            finally:
+                gateway.close()
+    except SubmissionLockBusy:
+        if args.command != "intraday":
+            raise
+        # A cycle step holds the account this minute; the next minute's run picks up the work.
+        logger.info("account busy with a cycle step; intraday run skipped")
+        result = {"status": "SKIPPED_ACCOUNT_BUSY"}
     print(json.dumps(result, ensure_ascii=False, default=str))
     return 0
 

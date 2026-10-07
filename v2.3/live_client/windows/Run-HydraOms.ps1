@@ -1,14 +1,11 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("pre", "sell", "buy", "cancel", "eod", "manual", "upload-spool", "status")]
+    [ValidateSet("pre", "sell", "buy", "cancel", "eod", "intraday", "upload-spool", "status")]
     [string]$Command,
 
     [ValidatePattern("^\d{8}$")]
     [string]$Date,
-
-    [ValidatePattern("^\d{4}$")]
-    [string]$PollUntil,
 
     [switch]$DryRun,
     [string]$InstallRoot = "C:\hydra-live",
@@ -102,7 +99,6 @@ try {
     $env:PYTHONIOENCODING = "utf-8"
     $arguments = @("-m", "live_client.oms_agent", $Command, "--date", $Date)
     if ($DryRun) { $arguments += "--dry-run" }
-    if ($PollUntil) { $arguments += @("--poll-until", $PollUntil) }
     $previousErrorActionPreference = $ErrorActionPreference
     try {
         # A native stderr log line is not a failed Python command on PS 5.1.
