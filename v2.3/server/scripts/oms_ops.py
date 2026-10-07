@@ -35,10 +35,11 @@ def _table(rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _preview(sf, policy, *, instance, account, signal_date, weights, closes, calendar) -> dict:
+def _preview(sf, policy, *, instance, account, signal_date, weights, closes, calendar, now) -> dict:
     """What publish would freeze, computed read-only."""
     import math
     from app.models import InstanceState
+    from app.oms.cycles import earliest_sell_day
     from app.oms.planner import lot_target, plan_sell_session, session_schedule
     closes = {s: float(p) for s, p in closes.items() if p is not None and math.isfinite(float(p)) and float(p) > 0}
     with sf() as session:
@@ -49,7 +50,7 @@ def _preview(sf, policy, *, instance, account, signal_date, weights, closes, cal
         cash = float(inst.virtual_cash)
     nav = cash + sum(q * closes[s] for s, q in positions.items())
     frozen = lot_target(nav, weights, closes, policy)
-    schedule = session_schedule(calendar, signal_date, policy.window)
+    schedule = session_schedule(calendar, signal_date, policy.window, earliest_sell=earliest_sell_day(now))
     sells, deferrals = plan_sell_session(target=frozen, positions=positions, sellable=positions, sell_anchor=closes,
                                          attempt=0, policy=policy)
     rows = [{"symbol": s, "weight": float(weights.get(s, 0.)), "close": closes.get(s), "target": frozen.get(s, 0),
@@ -95,8 +96,9 @@ def main(argv=None, *, session_factory=None, settings=None) -> int:
         weights = json.loads(Path(args.weights).read_text(encoding="utf-8"))
         closes = json.loads(Path(args.closes).read_text(encoding="utf-8"))
         calendar = json.loads(Path(args.calendar).read_text(encoding="utf-8"))
+        now = args.now or _now()
         preview = _preview(session_factory, service.policy, instance=args.instance, account=args.account,
-                           signal_date=args.signal_date, weights=weights, closes=closes, calendar=calendar)
+                           signal_date=args.signal_date, weights=weights, closes=closes, calendar=calendar, now=now)
         print(_table(preview["shares"]))
         print(json.dumps({k: preview[k] for k in ("nav", "cash", "schedule", "first_session_sells", "deferrals")},
                          ensure_ascii=False, indent=2))
@@ -105,8 +107,7 @@ def main(argv=None, *, session_factory=None, settings=None) -> int:
             return 0
         out = service.publish_target(instance_id=args.instance, account_alias=args.account,
                                      signal_date=args.signal_date, weights=weights, signal_closes=closes,
-                                     calendar=calendar, source_sha256=args.source_sha256,
-                                     now=args.now or _now())
+                                     calendar=calendar, source_sha256=args.source_sha256, now=now)
         print(json.dumps({k: out[k] for k in ("cycle_id", "status", "target_version_id", "lot_gap")}, indent=2))
         return 0
 

@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import select
 
 from app.db import init_db, make_engine, make_session_factory
 from app.models import InstanceState
@@ -184,6 +185,22 @@ def test_positive_weight_without_close_is_refused(tmp_path):
                            weights=dict(WEIGHTS, **{"159981.SZ": 0.1}), signal_closes=CLOSES, calendar=CAL,
                            source_sha256="v" * 64, now="2026-10-07T20:00:00+08:00")
 
+
+
+@pytest.mark.parametrize("now,first_sell", [("2026-10-08T10:00:00+08:00", "20261008"),
+                                             ("2026-10-08T14:50:00+08:00", "20261012"),
+                                             ("2026-10-09T09:00:00+08:00", "20261012")])
+def test_late_publish_starts_at_the_next_pair_still_ahead(tmp_path, now, first_sell):
+    """It used to refuse ("schedule already started"), so the runbook's 10/12-10/13 fallback had no path."""
+    sf, svc = _service(tmp_path)
+    svc.publish_target(instance_id=INSTANCE, account_alias=ALIAS, signal_date="20260930", weights=WEIGHTS,
+                       signal_closes=CLOSES, calendar=CAL, source_sha256="l" * 64, now=now)
+    with sf() as s:
+        cycle = s.get(OmsCycle, "C00001")
+        assert cycle.schedule[0]["trade_date"] == first_sell and cycle.schedule[0]["phase"] == "SELL"
+        first = s.execute(select(OmsSession).where(OmsSession.cycle_id == "C00001")
+                          .order_by(OmsSession.seq)).scalars().first()
+        assert first.trade_date == first_sell
 
 # ── regressions for bugs found by the system replays ──────────────────────
 def test_open_buy_orders_freeze_commission_per_order_not_once(tmp_path):

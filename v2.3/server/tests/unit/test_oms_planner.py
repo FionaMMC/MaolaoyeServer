@@ -48,3 +48,13 @@ def test_october_schedule_matches_design_table():
     assert session_schedule(cal, "20260930", 3) == [
         Session(1, "20261008", "SELL", 0), Session(2, "20261009", "BUY", None),
         Session(3, "20261012", "SELL", 1), Session(4, "20261013", "BUY", None)]
+
+
+def test_late_publish_starts_at_the_next_adjacent_pair():
+    """Runbook fallback: a 9/30 signal published after 10/8 starts with 10/12 sell, 10/13 buy."""
+    cal = ["20260929", "20260930", "20261008", "20261009", "20261012", "20261013", "20261014", "20261015"]
+    assert session_schedule(cal, "20260930", 3, earliest_sell="20261009") == [
+        Session(1, "20261012", "SELL", 0), Session(2, "20261013", "BUY", None),
+        Session(3, "20261013", "SELL", 1), Session(4, "20261014", "BUY", None),
+        Session(5, "20261014", "SELL", 2), Session(6, "20261015", "BUY", None)]
+    assert session_schedule(cal, "20260930", 3, earliest_sell="20261008") == session_schedule(cal, "20260930", 3)

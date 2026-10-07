@@ -7,7 +7,7 @@ projecting broker facts, capped by the frozen target of the cycle.
 from __future__ import annotations
 
 from dataclasses import asdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 import hashlib
 import json
 import logging
@@ -41,6 +41,15 @@ def _date(iso: str) -> str:
     return datetime.fromisoformat(iso).astimezone(CHINA).strftime("%Y%m%d")
 
 
+SELL_PLAN_CUTOFF = time(14, 45)     # the PRE snapshot that caches the day's sell plan
+
+
+def earliest_sell_day(now: str) -> str:
+    """First day a cycle published at ``now`` can still sell: today before the 14:45 PRE, else tomorrow."""
+    local = datetime.fromisoformat(now).astimezone(CHINA)
+    return (local if local.time() < SELL_PLAN_CUTOFF else local + timedelta(days=1)).strftime("%Y%m%d")
+
+
 class CycleService:
     def __init__(self, session_factory, ledger: OrderLedger, reconcile, policy: Policy = Policy()):
         self.session_factory = session_factory
@@ -69,9 +78,9 @@ class CycleService:
             cash = float(inst.virtual_cash)
             nav = cash + sum(q * float(signal_closes[s]) for s, q in positions.items())
             frozen = lot_target(nav, weights, signal_closes, self.policy)
-            schedule = session_schedule(calendar, signal_date, self.policy.window)
-            if _date(now) > schedule[0].trade_date:
-                raise ValueError("execution schedule already started")
+            # Published late (the runbook fallback), the cycle starts at the next pair still ahead.
+            schedule = session_schedule(calendar, signal_date, self.policy.window,
+                                        earliest_sell=earliest_sell_day(now))
             lot_gap = sum(max(0., (1 - self.policy.reserve) * w - frozen[s] * signal_closes.get(s, 0.) / nav)
                           for s, w in weights.items())
             version_id = "tv_" + _sha({"instance": instance_id, "signal": signal_date, "weights": weights,

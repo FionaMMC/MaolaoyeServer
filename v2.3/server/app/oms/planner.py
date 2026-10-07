@@ -207,14 +207,17 @@ def _adjacent(a: str, b: str) -> bool:
     return (_day(b) - _day(a)).days == 1
 
 
-def session_schedule(calendar: Sequence[str], signal_date: str, window: int) -> list[Session]:
+def session_schedule(calendar: Sequence[str], signal_date: str, window: int,
+                     earliest_sell: str | None = None) -> list[Session]:
     """Close-sell / next-natural-day open-buy sessions; mirrors policy_replay eligibility.
 
     The window counts trading sessions from the first opening buy. A buy needs the
     previous trading day to be the previous natural day; a sell needs the next one.
+    earliest_sell starts a late-published cycle at the first such pair on or after that
+    day (a 9/30 signal published on 10/9 starts with a 10/12 sell and a 10/13 buy).
     """
     days = sorted(set(calendar))
-    later = [d for d in days if d > signal_date]
+    later = [d for d in days if d > signal_date and (earliest_sell is None or d >= earliest_sell)]
     first_sell = next((a for a, b in zip(later, later[1:]) if _adjacent(a, b)), None)
     if first_sell is None:
         raise ValueError("no adjacent trading-day pair after signal")
