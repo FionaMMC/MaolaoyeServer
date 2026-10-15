@@ -1,0 +1,8 @@
+{
+  "stage_dir": "/opt/qmt-server/private/research-runs/v713-live-readiness-20261015-0pvund_4",
+  "source_sha256": "3ab95aabe6c0c332890a8228454ee56fe13eef4da7171d1cf6c142533798a8d8",
+  "file_count": 390,
+  "archive_sha256": "b8b2559984351d1d5c58bbb4bf501b90e79a18c5355f4a9997b490b1a73c44cf",
+  "verified": true,
+  "production_services_changed": false
+}
