@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SUFFIXES = {".py", ".ps1", ".sh", ".html", ".css", ".js", ".toml", ".yaml", ".md"}
 SCOPES = ["v2.3/server/app", "v2.3/server/scripts", "v2.3/server/plugins", "v2.3/server/tests",
           "v2.3/server/strategies.yaml", "v2.3/server/.env.example",
+          "v2.3/client/__init__.py", "v2.3/client/market_push.py",  # legacy upload-failure regression dependency
           "v2.3/server/pyproject.toml", "v2.3/live_client", "reports/hydra_policy_20261002/policy_replay.py",
           "docs/THREE_MODE_TRADING_ARCHITECTURE_SPEC_20260907.md",
           "docs/V713_SHARED_OMS_HANDOFF_20261015.md", "tools/build_v713_readiness.py",
