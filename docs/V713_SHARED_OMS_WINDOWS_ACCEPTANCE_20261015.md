@@ -2,41 +2,71 @@
 
 日期：2026-10-15。交付对象：维护 Windows、MiniQMT 和任务计划程序的人员。
 
-本文件说明源码包的安装和验收方法，不表示生产已部署或真实交易已通过验收。整个流程保持交易关闭、任务停用；不提交或撤销真实订单。服务端发布、策略资金分配、冻结 V713 policy、真实订单验收另行处理。
+本文件说明通过既有 **GitHub / server 交付流程**取得固定源码后，在 Windows 安装和只读验收的方法，不表示生产已部署或真实交易已通过验收。整个流程保持交易关闭、任务停用；不提交或撤销真实订单。服务端发布、策略资金分配、冻结 V713 policy、真实订单验收另行处理。
 
-## 1. 包目录与执行环境
+本次已测功能基线固定为 **`bcdfd166faf13281c535d514c73d809570231ac9`**。本说明可以由后续文档提交更新，但不能把文档所在提交或分支最新 HEAD 自动替换成安装的功能基线。ZIP 仅为可选离线附件，主流程不需要 ZIP 或 `RELEASE_MANIFEST.json`。
+
+| 顺序 | Windows/QMT 人员做什么 | 产物 | 通过条件 | 下一步对接角色 |
+| --- | --- | --- | --- | --- |
+| 1 | fetch，创建固定 SHA 的独立干净 checkout | 源码 SHA、干净状态 | 与上述基线一致，原工作区未被覆盖 | 发布维护人员核对版本来源；通过后继续现场检查 |
+| 2 | 采集 before，私有备份后停用调度 | `before` 报告、本机私有备份 | 实际入口可识别，任务停用且运行实例结束 | Windows 运维人员继续安装；账务/未知委托问题交 OMS 后端人员 |
+| 3 | 保留账户绑定，关闭交易，执行安装器 | `INSTALLED` 结果、运行备份、active release | 双离线 gate/doctor 通过，任务未启用 | 客户端工程人员核对安装结果 |
+| 4 | 运行不连 QMT 的本地验收 | `local` 目录五个 JSON | 原生 parser、离线 gate 通过，无 blocker | Windows/QMT 人员继续只读连接 |
+| 5 | 显式连接 QMT，只读采样 | `qmt-readonly` 报告和行情 fixture | 账户指纹匹配，冻结资金字段已观测，所需原始字段可解释 | QMT 接口人员与客户端工程人员核对字段；策略人员核对标的规则 |
+| 6 | 如需检查任务，使用 `-StageOnly` | `staged` 报告 | 九个 OMS 任务和旧任务均停用，入口路径正确 | Windows 运维人员回传结果 |
+| 7 | 汇总脱敏证据与未覆盖项 | 第 8 节回传清单 | 不含私钥/账户明细，未执行真实交易 | OMS 后端与客户端工程人员完成双端结果核对 |
+
+## 1. 从 GitHub 取得固定版本与执行环境
 
 使用 **Windows PowerShell 5.1**，以维护该 QMT 实例和任务的同一 Windows 用户打开管理员窗口。使用当前已安装 `xtquant` 的 Python，不能随意换成系统 Python。无需 pytest。
 
-ZIP 保留以下目录；展开到独立目录，不覆盖运行目录，不放入另一个 Git 工作区：
-
-```text
-C:\handoff\v713-package\
-  RELEASE_MANIFEST.json
-  docs\V713_SHARED_OMS_WINDOWS_ACCEPTANCE_20261015.md
-  v2.3\live_client\
-    oms_offline_acceptance.py
-    windows\Install-HydraLiveClient.ps1
-    windows\Inspect-V713SharedOms.ps1
-    windows\Run-V713OmsAcceptance.ps1
-    windows\Register-HydraOmsTasks.ps1
-```
-
-先按主交接说明核对 ZIP 的 SHA-256 和发布清单。正式安装使用最终已提交版本的包；不要安装标有 provisional 的隔离验证包。命令中的示例私有路径需换成本机既有值：
+从 Windows 上现有仓库 fetch，只更新 Git 对象和远程引用；不对原工作区执行 checkout、reset、clean 或覆盖复制。下列 `$ExistingRepo` 请填写本机现有仓库，`origin` 沿用它已配置的 GitHub 远程和认证方式：
 
 ```powershell
-$PackageRoot = "C:\handoff\v713-package"
-$SourceRoot = Join-Path $PackageRoot "v2.3"
+$ExistingRepo = "C:\src\MaolaoyeServer"
+$SourceCommit = "bcdfd166faf13281c535d514c73d809570231ac9"
+$SourceCheckout = "C:\handoff\v713-source-bcdfd166"
+git -C $ExistingRepo status --short
+if ($LASTEXITCODE -ne 0) { throw "请核对既有仓库路径" }
+git -C $ExistingRepo fetch origin codex/v713-live-readiness-20261015
+if ($LASTEXITCODE -ne 0) { throw "fetch 失败，保留现有现场并核对远程连接" }
+git -C $ExistingRepo cat-file -e "$($SourceCommit)^{commit}"
+if ($LASTEXITCODE -ne 0) { throw "未取得指定功能基线，请发布维护人员核对远程提交" }
+if (Test-Path -LiteralPath $SourceCheckout) { throw "目标目录已存在；另选新路径，不删除或覆盖旧目录" }
+git -C $ExistingRepo worktree add --detach $SourceCheckout $SourceCommit
+if ($LASTEXITCODE -ne 0) { throw "独立 worktree 创建失败；核对 Git 支持情况或使用下述独立 clone" }
+```
+
+原工作区有未提交修改也可以使用独立 worktree，原修改留在原处。若本机 Git 不支持 worktree，使用**独立 clone 替代上面最后的 worktree 步骤**。两种方式选一种，不在失败后残留的目录继续 clone：
+
+```powershell
+$SourceCheckout = "C:\handoff\v713-clone-bcdfd166"
+if (Test-Path -LiteralPath $SourceCheckout) { throw "请选择新的独立 clone 目录" }
+$RemoteUrl = (git -C $ExistingRepo config --get remote.origin.url)
+if ($LASTEXITCODE -ne 0 -or -not $RemoteUrl) { throw "无法读取既有 origin；请核对远程配置" }
+git clone --no-checkout $RemoteUrl $SourceCheckout
+if ($LASTEXITCODE -ne 0) { throw "独立 clone 失败" }
+git -C $SourceCheckout checkout --detach $SourceCommit
+if ($LASTEXITCODE -ne 0) { throw "无法 checkout 指定功能基线" }
+```
+
+确认独立源码的 HEAD 与干净状态，再设置安装参数。保留新版本操作说明在 checkout 之外，不修改这份固定源码：
+
+```powershell
+$ActualCommit = (git -C $SourceCheckout rev-parse HEAD)
+if ($LASTEXITCODE -ne 0 -or $ActualCommit -cne $SourceCommit) { throw "源码 HEAD 与指定基线不符" }
+$SourceChanges = @(git -C $SourceCheckout status --porcelain)
+if ($LASTEXITCODE -ne 0 -or $SourceChanges.Count -ne 0) { throw "独立源码必须干净，不能夹带现场修改" }
+$SourceRoot = Join-Path $SourceCheckout "v2.3"
 $SourceWindows = Join-Path $SourceRoot "live_client\windows"
 $InstallRoot = "C:\hydra-live"
 $EnvFile = Join-Path $InstallRoot "config\hydra-live.env"
 $PythonExe = "C:\private\miniqmt-python\python.exe"
 $Evidence = Join-Path "C:\handoff" ("v713-acceptance-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
-$ReleaseManifest = Get-Content (Join-Path $PackageRoot "RELEASE_MANIFEST.json") -Raw -Encoding UTF8 | ConvertFrom-Json
-$SourceCommit = [string]$ReleaseManifest.source_commit
-if ($SourceCommit -cnotmatch '^[0-9a-f]{40}$') { throw "需要最终发布的完整 40 位 source_commit" }
 if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) { throw "请填写既有 QMT Python 的绝对路径" }
 New-Item -ItemType Directory -Path $Evidence | Out-Null
+$ActualCommit | Set-Content -LiteralPath (Join-Path $Evidence "source-commit.txt") -Encoding ASCII
+"CLEAN" | Set-Content -LiteralPath (Join-Path $Evidence "source-worktree-status.txt") -Encoding ASCII
 Get-TimeZone | Select-Object Id
 $PSVersionTable.PSVersion
 & $PythonExe --version
@@ -44,9 +74,11 @@ $PSVersionTable.PSVersion
 
 时区必须是 `China Standard Time`。若不符，停止任务注册，由主机维护人核对其他任务后处理时区；本流程不自动修改时区。当前注册脚本的 runner 固定为 `C:\hydra-live\scripts\Run-HydraOms.ps1`，因此本次必须使用上述安装目录，不能只改 `-InstallRoot` 后继续注册。
 
+若本机执行策略阻止直接运行 `.ps1`，先保留该失败。主机维护人可按既有运维规范，在上述 SHA / 干净状态核对完成后，对**当前维护进程**使用 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force`；不修改 CurrentUser / LocalMachine，进程退出即失效。若组织 MachinePolicy / UserPolicy 仍限制执行，将错误交主机维护人处理，不尝试绕过组织策略。后续命令沿用同一窗口中的变量。
+
 ## 2. 先取证，再停用旧调度
 
-已有安装时，先从交付包运行新检查脚本，读取当前 active release；默认不连接 QMT、服务器，不改配置、journal 或任务：
+已有安装时，先从上述固定版本 checkout 运行新检查脚本，读取当前 active release；默认不连接 QMT、服务器，不改配置、journal 或任务：
 
 ```powershell
 & (Join-Path $SourceWindows "Inspect-V713SharedOms.ps1") `
@@ -55,6 +87,8 @@ $PSVersionTable.PSVersion
 ```
 
 它需要已有 `config\active-release.txt`、对应 release 和 `release.json`。如果是首次安装，这三项不存在，可跳过安装前检查，安装后再检查；如果是升级却缺失或哈希不符，保留错误，先定位实际运行入口，不伪造 manifest 或删除文件绕过检查。
+
+如果旧版本有临时改动或清单不一致，检查器可能在生成三个 `before` JSON 前退出。此时允许回传“失败阶段及错误类型、上述源提交、`active-release.txt` 的版本值、实际 `gateway.py` / runner 的路径和 `Get-FileHash -Algorithm SHA256` 摘要”，注明 JSON 未生成；开发侧据此核对差异，不要求先修清单或覆盖代码凑齐回执。只传路径 / 版本 / 哈希，不传私有 env。
 
 取得维护窗口后，导出当前任务定义和原配置到**本机私有备份目录**。XML、私有 env 不在回传清单内。不要把私有备份放入 `$Evidence`：
 
@@ -113,15 +147,17 @@ HYDRA_LIVE_INITIAL_ALLOCATED_POSITIONS_JSON=<保留既有Hydra配置>
 HYDRA_LIVE_ALLOWED_SYMBOLS=510300.SH,159915.SZ,511260.SH,518880.SH,159981.SZ,159985.SZ,159930.SZ,513500.SH,513100.SH
 ```
 
-其他必需字段以包内 `v2.3\live_client\.env.example` 和既有配置为准。`HYDRA_PAPER_QMT_ACCOUNT_IDS`、`HYDRA_PAPER_QMT_SESSION_IDS`、`HYDRA_PAPER_WRITABLE_PATHS`、`HYDRA_PAPER_TASK_PREFIXES` 同机隔离信息必须保留；不能为了通过校验而填假值或关闭隔离。HTTP 设置沿用已批准配置，不在本次验收中放宽。
+其他必需字段以固定 checkout 内 `v2.3\live_client\.env.example` 和既有配置为准。`HYDRA_PAPER_QMT_ACCOUNT_IDS`、`HYDRA_PAPER_QMT_SESSION_IDS`、`HYDRA_PAPER_WRITABLE_PATHS`、`HYDRA_PAPER_TASK_PREFIXES` 同机隔离信息必须保留；不能为了通过校验而填假值或关闭隔离。HTTP 设置沿用已批准配置，不在本次验收中放宽。
 
 共享账户仍只有一套调度和一个 `oms-agent.db`；V713 股票权限来自服务端签发的 v2 plan，不通过把股票追加到旧的九只 ETF 白名单获得。V713 的资金归属和初始持仓由服务端单独确认，此处不初始化或重置它们。
 
 `oms-agent.db` 位于 `HYDRA_LIVE_STATE_DB` **同一目录**。绑定由 `account_alias`、`execution_domain`、账户指纹、`client_id=HYDRA_LIVE_TASK_PREFIX` 四项构成。检查结果只输出指纹/绑定摘要和是否匹配，不输出原始账户号或私有 env。绑定不符应停止；不要删除或改写 journal 以强行绑定。首次尚无 journal 时，检查不会创建它；`present=false` 不等于正式运行的绑定已验收。
 
+已有 journal 若 `present=true` 但 `binding_present=false`，属于旧版尚无绑定证据，和“存在绑定但值不匹配”分开记录；检查器仍会保守输出 `JOURNAL_BINDING_UNVERIFIED`。安装器 / doctor 不会替 OMS journal 生成该绑定，因此此分支先停留在 Handoff N03：回传证据，由开发侧核对旧订单、缓存和账户身份，准备有据的绑定迁移与复测步骤。不要手改 SQLite、删除 journal 或运行交易 agent 来消除 blocker；该项是否存在，以现场检查结果为准。
+
 ## 4. 安装：保留运行证据，不启用任务
 
-调用的是 ZIP 中的安装器；`-SourceRoot` 指向包含 `live_client` 的 `v2.3` 目录，不是 `live_client` 或 `windows` 目录：
+调用固定 checkout 中原有的 `Install-HydraLiveClient.ps1`；`-SourceRoot` 指向包含 `live_client` 的 `v2.3` 目录，不是仓库根、`live_client` 或 `windows` 目录。`-SourceCommit` 必须是上述固定完整 SHA；安装器会检查源码工作区干净，并自行生成安装目录内的 `release.json`，不要求事先提供 `RELEASE_MANIFEST.json`：
 
 ```powershell
 & (Join-Path $SourceWindows "Install-HydraLiveClient.ps1") `
@@ -160,6 +196,7 @@ HYDRA_LIVE_ALLOWED_SYMBOLS=510300.SH,159915.SZ,511260.SH,518880.SH,159981.SZ,159
 
 - `blockers` 应为空，包和已安装 runtime hash 匹配，Windows 时区正确。
 - 已有 journal 的 `integrity_ok`、`binding_matches` 应为 `true`；`unknown_count`、`submitting_count` 应为 0。
+- 若为前述 legacy 无绑定，保持 `BLOCKED` 回传开发侧，不把它当错账户，也不要求本地安装自动修复；待有据迁移及复测通过后再继续。
 - HOLD、未送达 outbox/spool 必须解释。UNKNOWN/SUBMITTING/HOLD 是保留证据的理由，不是待删除的垃圾。
 - QMT 进程版本与 `xtquant_version` 是不同指标；无法读取时可能为 `null`。补充 QMT“关于”和 `xtquant` 安装来源/版本的脱敏截图或文字，不把 `null` 当作已验证。
 
@@ -214,7 +251,7 @@ $FixtureSymbols = @("000001.SZ", "510300.SH")
 
 ## 8. 回传清单与通过范围
 
-回传最终 ZIP/发布清单的 SHA-256、完整 `source_commit`、执行时间/Windows 与 Python 版本、安装结果非敏感摘要，以及以下生成文件：
+回传 `source-commit.txt`、`source-worktree-status.txt`，以及执行时间/Windows 与 Python 版本、安装结果非敏感摘要。检查报告中应能看到相同的 active release 和实际安装包/运行脚本哈希。只有使用可选离线附件时才补充 ZIP 与附带清单的 SHA-256。其余生成文件如下：
 
 | 目录 | 回传文件 |
 | --- | --- |
@@ -235,3 +272,9 @@ $FixtureSymbols = @("000001.SZ", "510300.SH")
 不能把升级前 SQLite 覆盖回去来消除 UNKNOWN/SUBMITTING，因为券商侧的委托或成交不会随文件回退。不能同时启用两套调度，不能让旧客户端接管新协议产生的订单。任何未知委托先按账户指纹和订单标识完成 broker 事实核对，再决定恢复；本文件没有自动恢复或恢复交易命令。
 
 开发机已运行静态 PowerShell token/here-string 检查和嵌入 Python 的合成测试，验证双库 WAL 备份、spool/HOLD 保留、错误绑定拒绝和只读检查。**开发机没有 PowerShell，静态测试不等于 Windows PowerShell 5.1 原生解析或执行通过。** 本文的目标机 parser/安装/只读连接结果是交接仍需回传的证据。
+
+## 10. 可选离线附件
+
+仅在 Windows 无法通过既有 GitHub 连接取得固定版本时，使用与 `bcdfd166faf13281c535d514c73d809570231ac9` 对应的离线 ZIP。它是同一功能基线的附件，不替代 GitHub/server 主交付记录。先核对发布方给出的 SHA-256；若附带 `RELEASE_MANIFEST.json`，同时核对其中 `source_commit`。不要使用 provisional 包，也不要根据文档新提交号推断功能版本。
+
+展开到新的独立目录，保留 `v2.3\live_client` 层级，不覆盖运行目录或现有 Git 工作区。将 `$SourceCheckout` 改为该附件的展开根目录，设置 `$SourceRoot = Join-Path $SourceCheckout "v2.3"`、`$SourceWindows = Join-Path $SourceRoot "live_client\windows"`，`$SourceCommit` 仍显式设为上述固定 SHA，然后沿用第 2–9 节。没有 `.git` 时不执行第 1 节的 Git HEAD/干净状态检查；回传附件校验结果代替 `source-worktree-status.txt`。安装器不读取附件的 `RELEASE_MANIFEST.json`，安装本身不依赖它存在。

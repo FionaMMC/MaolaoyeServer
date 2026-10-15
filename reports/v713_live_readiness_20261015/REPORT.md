@@ -1,8 +1,8 @@
-# V713 工程完成及外部验收交接
+# V713 工程验证报告
 
-日期：2026-10-15。状态：**本侧实现和可复现验证完成，等待目标 Windows / QMT 验收。** 方案为 Hydra / V713 共用物理账户、各自 attributed 账本、单台账户执行器。
+状态：**本侧工程实现、合成联调和回归已验证，等待目标 Windows / QMT 现场验收。** 方案为 Hydra / V713 共用物理账户、各自 attributed 账本、单台账户执行器。本报告的测试数不是策略收益回测结果；已有 V713 研究证据及仍需完成的历史重放见 [回测与验证证据报告](BACKTEST_AND_VALIDATION.md)。
 
-交付源码提交：`bcdfd166faf13281c535d514c73d809570231ac9`，基于 2026-10-08 的 `11bebfbc4782512c7037ddedd49ae3b584fd127b`。候选分支：`codex/v713-live-readiness-20261015`。后续仅追加验收证据，不改变这份包内源码。
+已测功能基线：`bcdfd166faf13281c535d514c73d809570231ac9`，基于 2026-10-08 的 `11bebfbc4782512c7037ddedd49ae3b584fd127b`。GitHub 候选分支：`codex/v713-live-readiness-20261015`，[草稿 PR #3](https://github.com/FionaMMC/MaolaoyeServer/pull/3)。后续文档 / 证据更新不改变该功能基线；接手流程见 [Handoff](../../docs/V713_SHARED_OMS_HANDOFF_20261015.md)。
 
 ## 已完成的工程
 
@@ -39,11 +39,17 @@
 
 生产数据库只以 `mode=ro + query_only` 创建远程一致性副本，新 schema 仅应用于副本。新增对象是 `accounting_receipts` 表及两个索引。原始账户、订单、行情和副本未回传本地。生产服务、生产配置、策略资金、目标、审批及交易开关均未改变；没有提交任何真实委托。
 
-## 交给对方的材料
+## 交给对方的材料与下一步
 
-1. [Windows / QMT 验收步骤](../../docs/V713_SHARED_OMS_WINDOWS_ACCEPTANCE_20261015.md)：准确的 ZIP 展开层级、安装、备份、只读连接、字段采样、StageOnly 和回传清单。
-2. [主工程交接](../../docs/V713_SHARED_OMS_HANDOFF_20261015.md)：服务端候选验收顺序、期初/划拨、policy 必填契约、目标 dry-run、停止/恢复纪律。
-3. 本目录 `artifacts/v713-shared-oms-windows.zip`、`v713-readiness-source.tar.gz`、`RELEASE_MANIFEST.json`、`build_receipt.json`（本地生成物，不重复放入 Git）。完整提交与逐文件 SHA 可核对；包内不含生产 env、行情或账户库。
+1. [主 Handoff](../../docs/V713_SHARED_OMS_HANDOFF_20261015.md)：GitHub 固定提交、改动范围、N01–N05 的负责人 / 动作 / 产物 / 通过条件。
+2. [回测与验证证据报告](BACKTEST_AND_VALIDATION.md)：V713 已有研究和短期模拟账本、Hydra 执行研究、本轮工程测试的分别结论，以及我方仍需补做的历史回放。
+3. 本工程验证报告及同目录 JSON / JUnit 回执。
+
+对方首先按 [Windows / QMT 验收步骤](../../docs/V713_SHARED_OMS_WINDOWS_ACCEPTANCE_20261015.md)，用 GitHub 的固定功能提交和现有安装脚本完成现场取证、离线与只读验收，回传 `before`、`local`、`qmt-readonly` 约定的脱敏文件。开发侧负责核对、修复兼容性并复测；再根据已确认的证券 / 费用 / policy / 资金输入完成 V713 历史重放和首轮 dry-run。通过后才形成具体生产启用步骤。详细顺序和交接条件以主 Handoff 的 N01–N05 表为准。
+
+## 可选归档附件
+
+此前生成的 `artifacts/v713-shared-oms-windows.zip`、`v713-readiness-source.tar.gz`、`RELEASE_MANIFEST.json`、`build_receipt.json` 是固定功能版本的离线源码快照（本地生成物，不重复放入 Git）。它们保留以下原校验记录；**GitHub / server 主流程不要求下载 ZIP**，后续交付文档从 PR 获取。包内不含生产 env、行情或账户库。
 
 最终源码集合 SHA256：`e8c520e5b9da3957ca31927ade58ce0aefb40f2bb83d49c8c25fb965ac276eab`。
 
@@ -59,4 +65,4 @@
 - 报告三笔历史单的券商终局与旧缓存责任；本次未重放或改写事故周期。
 - 经确认的 V713 policy、真实期初资金及来源、单一执行器、首轮目标与订单差异清单。上述输入形成具体方案后，再进入生产部署、启用与首轮真实成交/日终核账。
 
-对方回传约定的脱敏验收文件后，按失败项修正并复核即可继续推进；无需重新做本轮工程评估。
+对方回传约定的脱敏验收文件后，开发侧按失败项修正并复核，继续完成规则冻结、历史重放和首轮计划。工程验证完成不代表研究与实盘准入已全部完成；无需重新做本轮工程实现或用旧回测收益替代这些结果。

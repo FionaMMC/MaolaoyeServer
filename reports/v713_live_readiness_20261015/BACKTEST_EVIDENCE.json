@@ -1,0 +1,310 @@
+{
+  "schema_version": 1,
+  "prepared_on": "2026-10-15",
+  "kind": "curated_non_sensitive_archive_evidence_not_a_new_strategy_backtest",
+  "scope": {
+    "purpose": "GitHub-deliverable evidence for BACKTEST_AND_VALIDATION.md without publishing pre-existing untracked archives.",
+    "excludes": [
+      "broker account identifiers",
+      "credentials",
+      "individual stock holdings",
+      "account cash amounts",
+      "raw market rows",
+      "security-level account or trade records"
+    ],
+    "numeric_conventions": {
+      "returns_weights_completion_and_drawdown": "decimal ratios, not percentages; drawdown is signed nonpositive",
+      "bootstrap_delta_and_interval": "percentage points",
+      "aum_yuan": "predeclared research parameters, not account balances or approved live allocations"
+    },
+    "archive_provenance": "source_path and SHA256 identify development-side archival files; these paths are not hyperlinks or promised GitHub downloads. Extracted summaries below travel with this JSON.",
+    "method": "Read saved JSON fields and source documents locally; no production query, raw-data download or historical return recalculation."
+  },
+  "sources": [
+    {
+      "source_path": "reports/smallcap_risk_20260928/aggregate_results.json",
+      "sha256": "e17f2fa77d69407afaabe52bd217ded6b24fa3cac546102853a9af157e8486d2",
+      "delivery": "development_archive_not_in_this_git_delivery"
+    },
+    {
+      "source_path": "reports/smallcap_risk_20260928/analyze_remote.py",
+      "sha256": "19d5829767f0671cb909dad99eaa82e4f7f73c6dee5652126b61162770fc5232",
+      "delivery": "development_archive_not_in_this_git_delivery"
+    },
+    {
+      "source_path": "reports/smallcap_risk_20260928/verify_analysis.py",
+      "sha256": "574af47524eaa9416fe4593cfb823b5f475c833bcbff973da68aa2afffbd129b",
+      "delivery": "development_archive_not_in_this_git_delivery"
+    },
+    {
+      "source_path": "reports/smallcap_risk_20260928/V713_PUBLIC_COMPARISON.md",
+      "sha256": "88f94a705d6be1fd7b4e1ee234a30e007b6830ee02171d206358a3e3a488d701",
+      "delivery": "development_archive_not_in_this_git_delivery"
+    },
+    {
+      "source_path": "reports/v713_attribution_20260928/experiment.json",
+      "sha256": "550d009d9fe0c06f1434af2e0d01efb0b808014a0a5e6bf2221fa17d44be1cf1",
+      "delivery": "development_archive_not_in_this_git_delivery"
+    },
+    {
+      "source_path": "reports/v713_attribution_20260928/STATUS.md",
+      "sha256": "68c852524a784d6b38005a3e4054919ec83319571374887cbd29e6eee9a957c1",
+      "delivery": "development_archive_not_in_this_git_delivery"
+    },
+    {
+      "source_path": "reports/v713_attribution_20260928/test_attribution_metrics.py",
+      "sha256": "81aaf6713971f4558f50ee1a140f6c92af9aa5cb575c489b9f2bc8399c4bba4b",
+      "delivery": "development_archive_not_in_this_git_delivery"
+    },
+    {
+      "source_path": "reports/v713_attribution_20260928/attribution_metrics.py",
+      "sha256": "be0e7cfb5c5bce91b7c80fabd327d16aa6fafdfadb34205ca62cd27c5d51c774",
+      "delivery": "development_archive_not_in_this_git_delivery"
+    },
+    {
+      "source_path": "reports/v713_attribution_20260928/probe_remote.py",
+      "sha256": "50a34d1a13f66394c458734d4b7bd2a24fe0bd9e93c48f4c16cbe268314e0053",
+      "delivery": "development_archive_not_in_this_git_delivery"
+    },
+    {
+      "source_path": "reports/v713_attribution_20260928/resume_verification.json",
+      "sha256": "13e6838e2f41b37ffa2543102beb4dfbcfae643d60a0cbbb92096d586ce00a37",
+      "delivery": "development_archive_not_in_this_git_delivery"
+    },
+    {
+      "source_path": "reports/execution_final_20260928/daily_summary.json",
+      "sha256": "d0c1fae29272e6fabfad42aee37a478cc825121337eb0f8368b8b0e405498fda",
+      "delivery": "development_archive_not_in_this_git_delivery"
+    },
+    {
+      "source_path": "reports/execution_final_20260928/intraday_summary.json",
+      "sha256": "06a5d50a145ad780177066024af573335add855b22276f007f10feb1c642b22e",
+      "delivery": "development_archive_not_in_this_git_delivery"
+    }
+  ],
+  "v713_paper_20260928": {
+    "source_path": "reports/smallcap_risk_20260928/aggregate_results.json",
+    "source_selector": "comparisons.stock_pair; holdings.paper_v79_v713_relay; collected_at; commit",
+    "ledger_type": "V7.13 Base paper ledger; not live_v713_base and not Shadow_Base",
+    "collected_at": "2026-09-28T03:51:57.762966+00:00",
+    "source_commit": "b688b6c989a9a4bd6d44a6a9a96df7f56f0b607b",
+    "start": "20260727",
+    "end": "20260924",
+    "endpoints": 42,
+    "intervals": 41,
+    "return": 0.03290544146000007,
+    "max_drawdown": -0.03146855748203403,
+    "benchmark": "CSI 1000 price index, not a pure microcap TOP50 backtest",
+    "benchmark_return": 0.04722232021010364,
+    "csi1000_beta": 0.20532790827142258,
+    "csi1000_beta_ci95": [
+      0.13623268582686,
+      0.2744231307159852
+    ],
+    "csi1000_correlation": 0.6122553720197176,
+    "asset_allocation_weights": {
+      "date": "20260924",
+      "equity_weight": 0.31726844185929365,
+      "etf_weight": 0.49657581363401404,
+      "cash_and_receivable_weight": 0.18615574450669237
+    },
+    "cash_flow_convention": "External flows are assigned to interval end, per archived analysis code.",
+    "limitations": [
+      "Short observed paper-ledger window, not annualized here.",
+      "Old marks, income recognition and execution/accounting differences can affect results.",
+      "Overall portfolio beta includes ETF and cash allocation; it is not stock-sleeve alpha."
+    ]
+  },
+  "v713_attribution_protocol": {
+    "source_path": "reports/v713_attribution_20260928/experiment.json",
+    "version": "v713-attribution-1",
+    "strategy": "V7.13 Base",
+    "experiments": {
+      "A": "Smallest total-market-cap 50 stocks after common investability filters; no ROE filter",
+      "B": "Same investability rules plus V713 PIT ROE-positive and year-over-year improvement rules; smallest 50",
+      "C": "Fixed 50% B stock sleeve plus 50% exact V713 Hydra sleeve, monthly rebalance",
+      "D": "V713 B sleeve with exact T1/Aux rules and exact V713 Hydra sleeve"
+    },
+    "fixed_blend_stock_weight": 0.5,
+    "fixed_blend_choice": "predeclared simple control, no optimization on evaluation returns",
+    "selection_aum_yuan": 1000000,
+    "selection_aum_status": "existing research default; verify production manifest before freezing execution scenarios",
+    "execution_aum_sensitivity_yuan": [
+      1000000,
+      10000000
+    ],
+    "data_gates": [
+      "Verify deployed source and target manifests; bind source SHA256 and data provenance",
+      "Point-in-time listing, delisting, ST, suspension, shares and financial announcement availability",
+      "Use total capital consistently; do not silently substitute float shares for delisted stocks",
+      "Stock adjusted returns and raw prices must have a documented common corporate-action basis",
+      "Exact V713 Hydra history; live V481-RB is not an interchangeable proxy",
+      "No missing-price reweighting, missing-return zero fills or hindsight delisting exclusions",
+      "Month-end signals executed no earlier than the next tradable session; no same-close fills",
+      "Same complete-portfolio fees, liquidity, participation, price-limit, lot and cash constraints",
+      "Report unavailable and unrecoverable inputs explicitly; no fabricated returns"
+    ],
+    "inference": {
+      "minimum_intervals": 30,
+      "daily_hac_lags": 5,
+      "monthly_hac_lags": 3,
+      "alpha_convention": "regression intercept, not proof of causal or investable alpha",
+      "annualization": "compound growth uses elapsed calendar time; regression intercept stays per interval",
+      "chronological_evaluation": "freeze split only after data coverage inventory, before inspecting performance; label retrospective holdout honestly"
+    },
+    "historical_status_as_of_20260928": {
+      "source_path": "reports/v713_attribution_20260928/STATUS.md",
+      "security_level_replay_completed": false,
+      "network_block_at_that_time": "SSH banner exchange timed out; this is a historical status only."
+    },
+    "current_scope_as_of_20261015": "QMT connectivity is established by tracked remote_verification.json. This engineering task did not perform the A/B/C/D security-level historical replay. R0/R1 and A/B/C/D are separate outstanding research; migration acceptance requires the same-target R2/R3/S path.",
+    "public_comparison_archive": {
+      "source_path": "reports/smallcap_risk_20260928/V713_PUBLIC_COMPARISON.md",
+      "conclusion": "Third-party published backtests were not independently rerun and are not accepted as V713 performance. The later experiment.json predeclares 50/50 as the fixed allocation control."
+    },
+    "development_side_verification_20261015": {
+      "summary_checker": "reports/smallcap_risk_20260928/verify_analysis.py",
+      "summary_checker_result": "PASS: OLS/HAC versus statsmodels and period/allocation/paired-beta identities",
+      "synthetic_tests": "reports/v713_attribution_20260928/test_attribution_metrics.py",
+      "passed": 11,
+      "failures": 0,
+      "elapsed_seconds": 3.89,
+      "meaning": "Synthetic statistics checks only; not A/B/C/D market results and not the separate final integration/safety 11 tests.",
+      "delivery_boundary": "These archived helper scripts are developer-side follow-up research inputs, not runnable artifacts promised to the GitHub recipient."
+    }
+  },
+  "hydra_execution_20260928": {
+    "strategy_identity": "Frozen historical Hydra ETF targets; not V713 equity-selection performance or an interchangeable V713 defensive sleeve.",
+    "tracked_explanation": "reports/execution_final_20260928/FINAL_DECISION.md",
+    "policy_definitions": {
+      "fixed50_3d": "Fixed initial reference-close buy limit +0.5%, maximum three sessions.",
+      "gold100_us150_3d": "Fixed initial reference-close limit: gold +1%, Nasdaq/S&P ETFs +1.5%, maximum three sessions; other six ETFs and sells retain prior boundaries.",
+      "gold100_us150_2d": "Change only the three focus ETFs buy horizon to two sessions; keep other orders at three."
+    },
+    "daily": {
+      "source_path": "reports/execution_final_20260928/daily_summary.json",
+      "source_selector": "primary portfolios and focus3 BUY metrics; bootstrap.gold100_us150_3d",
+      "candidate_policy_count": 32,
+      "portfolio_runs": 62,
+      "episode_runs": 4960,
+      "portfolios": [
+        {
+          "policy": "fixed50_3d",
+          "start": "2019-12-05",
+          "end": "2026-09-03",
+          "total_return": 0.5464809587499999,
+          "max_drawdown": -0.03953484223844339
+        },
+        {
+          "policy": "gold100_us150_3d",
+          "start": "2019-12-05",
+          "end": "2026-09-03",
+          "total_return": 0.54783695875,
+          "max_drawdown": -0.03953510909128921
+        }
+      ],
+      "focus_three_buy_metrics": [
+        {
+          "policy": "fixed50_3d",
+          "orders": 82,
+          "completion": 0.8603635587824482,
+          "first_day_completion": 0.7755509552335331
+        },
+        {
+          "policy": "gold100_us150_3d",
+          "orders": 82,
+          "completion": 0.9741365228899357,
+          "first_day_completion": 0.964694195260335
+        }
+      ],
+      "differentiated_vs_baseline_paired_bootstrap": {
+        "delta_pp": 0.1356000000000058,
+        "block3_ci95_pp": [
+          -0.030544007286310012,
+          0.36934845403367317
+        ]
+      }
+    },
+    "intraday_60m_primary": {
+      "source_path": "reports/execution_final_20260928/intraday_summary.json",
+      "source_selector": "panels[scale=60,scenario=primary]",
+      "scale": 60,
+      "scenario": "primary",
+      "cycles": 23,
+      "first_reference": "2024-10-08",
+      "last_reference": "2026-08-03",
+      "portfolios": [
+        {
+          "policy": "fixed50_3d",
+          "start": "2024-10-08",
+          "end": "2026-09-03",
+          "total_return": 0.14073198726313518,
+          "max_drawdown": -0.020211199282863745
+        },
+        {
+          "policy": "gold100_us150_3d",
+          "start": "2024-10-08",
+          "end": "2026-09-03",
+          "total_return": 0.1415260126758966,
+          "max_drawdown": -0.020210204116295594
+        },
+        {
+          "policy": "gold100_us150_2d",
+          "start": "2024-10-08",
+          "end": "2026-09-03",
+          "total_return": 0.14086991829164108,
+          "max_drawdown": -0.020203195127968754
+        }
+      ],
+      "focus_three_buy_metrics": [
+        {
+          "policy": "fixed50_3d",
+          "orders": 27,
+          "completion": 0.868383265174838,
+          "first_day_completion": 0.6145177595000689
+        },
+        {
+          "policy": "gold100_us150_3d",
+          "orders": 27,
+          "completion": 0.980770114414373,
+          "first_day_completion": 0.9559114092726188
+        },
+        {
+          "policy": "gold100_us150_2d",
+          "orders": 27,
+          "completion": 0.980770114414373,
+          "first_day_completion": 0.9559114092726188
+        }
+      ],
+      "nasdaq_etf_buy_metrics": [
+        {
+          "policy": "fixed50_3d",
+          "orders": 12,
+          "completion": 0.5575319123494066,
+          "first_day_completion": 0.4731697109204508
+        },
+        {
+          "policy": "gold100_us150_3d",
+          "orders": 12,
+          "completion": 0.8999133060297151,
+          "first_day_completion": 0.8999133060297151
+        }
+      ],
+      "differentiated_vs_baseline_paired_bootstrap": {
+        "delta_pp": 0.07940254127613791,
+        "block3_ci95_pp": [
+          -0.010877720733795115,
+          0.21210767737808106
+        ]
+      }
+    },
+    "frozen_data_archive": "/opt/qmt-server/private/research-data/etf-execution-20260928/",
+    "remote_research_working_copy": "/opt/qmt-server/private/research-runs/etf-final-20260928/",
+    "limitations": [
+      "Historical model results, not broker executions.",
+      "Parameters were selected retrospectively; confidence intervals are not a prospective validation.",
+      "ETF fee/lot assumptions, coarse-bar liquidity and incomplete historical premium gates do not certify V713 stock execution.",
+      "Two- and three-session focus-buy completion is equal in this 60-minute sample; no proven superiority of day three."
+    ]
+  }
+}
