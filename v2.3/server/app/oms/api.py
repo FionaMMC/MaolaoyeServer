@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Literal
+from pydantic import BaseModel, Field
 
 from fastapi import APIRouter, Depends, Query
 
@@ -49,14 +50,37 @@ def post_snapshot(snapshot: SnapshotIn, auth: AuthContext = Depends(verify_api_k
 
 @router.get("/plan", response_model=APIResponse[PlanOut])
 def get_plan(account_alias: str, trade_date: str = Query(pattern=r"^\d{8}$"),
-             phase: Literal["SELL", "BUY"] = Query(), auth: AuthContext = Depends(verify_api_key),
+             phase: Literal["SELL", "BUY"] = Query(), instance_id: str | None = None,
+             auth: AuthContext = Depends(verify_api_key),
              settings: Settings = Depends(get_settings), service: CycleService = Depends(get_oms_cycle_service)):
     _authorize(auth, account_alias)
     try:
-        plan = service.plan_for(account_alias, trade_date, phase, executable_flag=settings.oms_live_enabled)
+        plan = service.plan_for(account_alias, trade_date, phase, executable_flag=settings.oms_live_enabled,
+                                instance_id=instance_id)
     except LookupError as exc:
         raise APIError(ErrorCode.NO_ORDERS_MATCHED, str(exc), http_status=404) from exc
+    except ValueError as exc:
+        raise _bad_request(exc) from exc
     return APIResponse[PlanOut](code=0, message="ok", data=plan)
+
+
+@router.get("/plans", response_model=APIResponse[dict])
+def get_plans(account_alias: str, trade_date: str = Query(pattern=r"^\d{8}$"),
+              phase: Literal["SELL", "BUY"] = Query(), auth: AuthContext = Depends(verify_api_key),
+              settings: Settings = Depends(get_settings), service: CycleService = Depends(get_oms_cycle_service)):
+    _authorize(auth, account_alias)
+    try:
+        data = service.plans_for(account_alias, trade_date, phase, executable_flag=settings.oms_live_enabled, now=_now())
+    except ValueError as exc:
+        raise _bad_request(exc) from exc
+    return APIResponse[dict](code=0, message="ok", data=data)
+
+
+@router.get("/universe", response_model=APIResponse[dict])
+def get_universe(account_alias: str, auth: AuthContext = Depends(verify_api_key),
+                 service: CycleService = Depends(get_oms_cycle_service)):
+    _authorize(auth, account_alias)
+    return APIResponse[dict](code=0, message="ok", data=service.universe(account_alias))
 
 
 @router.post("/events", response_model=APIResponse[dict])
@@ -68,19 +92,19 @@ def post_events(body: EventsIn, auth: AuthContext = Depends(verify_api_key),
 
 
 @router.get("/status", response_model=APIResponse[dict])
-def get_status(account_alias: str, auth: AuthContext = Depends(verify_api_key),
+def get_status(account_alias: str, instance_id: str | None = None, auth: AuthContext = Depends(verify_api_key),
                service: CycleService = Depends(get_oms_cycle_service)):
     _authorize(auth, account_alias)
-    return APIResponse[dict](code=0, message="ok", data=service.status(account_alias))
+    return APIResponse[dict](code=0, message="ok", data=service.status(account_alias, instance_id))
 
 
 # ── dashboard operator ─────────────────────────────────────────────────────
 @router.get("/overview", response_model=APIResponse[dict])
-def get_overview(account_alias: str, auth: AuthContext = Depends(verify_api_key),
+def get_overview(account_alias: str, instance_id: str | None = None, auth: AuthContext = Depends(verify_api_key),
                  service: ManualService = Depends(get_oms_manual_service)):
     _authorize_operator(auth, account_alias)
     try:
-        return APIResponse[dict](code=0, message="ok", data=service.overview(account_alias))
+        return APIResponse[dict](code=0, message="ok", data=service.overview(account_alias, instance_id))
     except ValueError as exc:
         raise _bad_request(exc) from exc
 
@@ -128,10 +152,33 @@ def post_dividend(body: DividendIn, auth: AuthContext = Depends(verify_api_key),
 @router.get("/manual/pending", response_model=APIResponse[dict])
 def get_manual_pending(account_alias: str, trade_date: str | None = Query(default=None, pattern=r"^\d{8}$"),
                        auth: AuthContext = Depends(verify_api_key),
+                       settings: Settings = Depends(get_settings),
                        service: ManualService = Depends(get_oms_manual_service)):
     _authorize(auth, account_alias)
     day = trade_date or datetime.now(timezone.utc).astimezone(CHINA).strftime("%Y%m%d")
-    return APIResponse[dict](code=0, message="ok", data=service.pending(account_alias, day))
+    return APIResponse[dict](code=0, message="ok", data=service.pending(
+        account_alias, day, executable_flag=settings.oms_live_enabled, now=_now()))
+
+
+class InstanceControlIn(BaseModel):
+    account_alias: str
+    instance_id: str
+    enabled: bool
+    operator: str = Field(min_length=1)
+    reason: str = Field(min_length=4)
+    confirm: Literal[True]
+
+
+@router.post("/control", response_model=APIResponse[dict])
+def post_instance_control(body: InstanceControlIn, auth: AuthContext = Depends(verify_api_key),
+                          service: ManualService = Depends(get_oms_manual_service)):
+    _authorize_operator(auth, body.account_alias)
+    try:
+        result = service.control(body.account_alias, body.instance_id, body.enabled, body.operator,
+                                 body.reason, datetime.now(timezone.utc))
+    except ValueError as exc:
+        raise _bad_request(exc) from exc
+    return APIResponse[dict](code=0, message="ok", data=result)
 
 
 @router.post("/manual/ack", response_model=APIResponse[dict])

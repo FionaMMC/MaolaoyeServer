@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -27,6 +28,14 @@ class AccountInitializationRequest(BaseModel):
     allocated_positions: dict[str, int] | None = None
     snapshot_time: str = Field(min_length=1)
     evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("snapshot_time")
+    @classmethod
+    def zoned_time(cls, value):
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.utcoffset() is None:
+            raise ValueError("snapshot_time must carry a timezone")
+        return parsed.isoformat()
 
     @field_validator("qmt_cash", "qmt_total_asset", "allocated_cash")
     @classmethod
@@ -79,6 +88,8 @@ class AccountInitializationResponseData(BaseModel):
     evidence_sha256: str
     external_position_count: int = 0
     idempotent_replay: bool
+    current_virtual_cash: float | None = None
+    current_positions: dict[str, int] | None = None
 
 
 class StrategyLedgerResponseData(BaseModel):

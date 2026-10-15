@@ -227,8 +227,17 @@ class StrategyCapitalService:
             if limit <= 0:
                 _conflict("未终局买单缺少有效限价，无法计算可减现金")
             notional = own_remaining * limit
-            fee = max(self.min_commission, notional * self.commission_rate)
-            protected += notional + fee
+            from app.services.order_instruments import explicit_order_instrument
+            from app.oms.instruments import buy_cost
+            try:
+                spec = explicit_order_instrument(session, order)
+            except ValueError as exc:
+                _conflict(f"未终局买单证券规格无效: {exc}")
+            if spec is not None:
+                protected += _cash(buy_cost(spec, float(limit), int(own_remaining), reserve=True))
+            else:
+                fee = max(self.min_commission, notional * self.commission_rate)
+                protected += notional + fee
         return protected.quantize(Decimal("0.01"), rounding=ROUND_CEILING)
 
     @classmethod

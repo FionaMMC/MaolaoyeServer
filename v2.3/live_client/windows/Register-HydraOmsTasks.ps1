@@ -1,18 +1,32 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$InspectionDirectory,
-    [switch]$DisableLegacyTasks
+    [switch]$DisableLegacyTasks,
+    [switch]$StageOnly
 )
 
 # Stage the OMS agent tasks disabled, verify them, then (with -DisableLegacyTasks)
 # disable every legacy Hydra-Live-* task and enable the OMS ones. Legacy tasks are
-# disabled, never deleted, so a rollback is Enable-ScheduledTask on them.
-# -InspectionDirectory must hold tasks.json exported by Inspect-HydraTasks.ps1 first.
+# disabled, never deleted. Rollback requires broker reconciliation by the operator;
+# this script never automatically re-enables a legacy trading schedule on failure.
+# -InspectionDirectory must hold tasks.json exported by Inspect-V713SharedOms.ps1
+# (or the prior operator Inspect-HydraTasks.ps1) first.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+if ((Get-TimeZone).Id -ne "China Standard Time") {
+    throw "OMS schedules require Windows timezone China Standard Time; no tasks were modified"
+}
+if ($StageOnly -and $DisableLegacyTasks) {
+    throw "-StageOnly cannot be combined with -DisableLegacyTasks"
+}
+$running = @(Get-ScheduledTask -ErrorAction Stop | Where-Object {
+    ($_.TaskName -like "Hydra-Live-*" -or $_.TaskName -like "Hydra-Oms-*") -and $_.State -eq "Running"
+})
+if ($running.Count -gt 0) { throw "Wait for all Hydra tasks to finish before registration" }
+
 if (-not (Test-Path -LiteralPath (Join-Path $InspectionDirectory "tasks.json") -PathType Leaf)) {
-    throw "Export the current tasks first with Inspect-HydraTasks.ps1 -OutputDirectory $InspectionDirectory"
+    throw "Export the current tasks first with Inspect-V713SharedOms.ps1 -OutputDirectory $InspectionDirectory"
 }
 $runner = "C:\hydra-live\scripts\Run-HydraOms.ps1"
 if (-not (Test-Path -LiteralPath $runner -PathType Leaf)) { throw "OMS runner is missing: $runner" }
@@ -33,15 +47,15 @@ $items = @(
     @{ Name = "Hydra-Oms-Intraday";     Args = "-Command intraday";  Hour = 9;  Minute = 15; LimitMinutes = 2;   RestartCount = 0; RepeatMinutes = 1; RepeatHours = 5.75 }
 )
 $legacyTasks = @(Get-ScheduledTask -TaskName "Hydra-Live-*" -ErrorAction SilentlyContinue)
-if ($legacyTasks.Count -gt 0 -and -not $DisableLegacyTasks) {
+if ($legacyTasks.Count -gt 0 -and -not $DisableLegacyTasks -and -not $StageOnly) {
     throw "Legacy Hydra-Live tasks exist ($($legacyTasks.Count)). Rerun with -DisableLegacyTasks; two schedules must never run together."
 }
-$legacyEnabledBefore = @{}
-foreach ($legacy in $legacyTasks) { $legacyEnabledBefore[$legacy.TaskName] = $legacy.State -ne "Disabled" }
 $registeredNames = @()
 try {
-    # Renamed to Hydra-Oms-Intraday (it also takes the status snapshots); never leave the old one behind.
-    Get-ScheduledTask -TaskName "Hydra-Oms-Manual" -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
+    # Preserve the old task as evidence. Staging does not change its state.
+    if (-not $StageOnly) {
+        Get-ScheduledTask -TaskName "Hydra-Oms-Manual" -ErrorAction SilentlyContinue | Disable-ScheduledTask | Out-Null
+    }
     foreach ($item in $items) {
         # Restart only the read-only steps; a restarted sell/buy/cancel could act twice.
         $action = New-ScheduledTaskAction -Execute "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$runner`" $($item.Args)"
@@ -69,20 +83,22 @@ try {
         }
         $registeredNames += $item.Name
     }
-    if ($DisableLegacyTasks) {
-        $legacyTasks | Disable-ScheduledTask | Out-Null
+    if (-not $StageOnly) {
+        if ($DisableLegacyTasks) {
+            $legacyTasks | Disable-ScheduledTask | Out-Null
+        }
+        $registeredNames | ForEach-Object { Enable-ScheduledTask -TaskName $_ | Out-Null }
+        $notEnabled = @($registeredNames | Where-Object { (Get-ScheduledTask -TaskName $_).State -eq "Disabled" })
+        if ($notEnabled) { throw "Not every OMS task was enabled: $notEnabled" }
     }
-    $registeredNames | ForEach-Object { Enable-ScheduledTask -TaskName $_ | Out-Null }
-    $notEnabled = @($registeredNames | Where-Object { (Get-ScheduledTask -TaskName $_).State -eq "Disabled" })
-    if ($notEnabled) { throw "Not every OMS task was enabled: $notEnabled" }
 }
 catch {
     $registeredNames | ForEach-Object { Disable-ScheduledTask -TaskName $_ -ErrorAction SilentlyContinue | Out-Null }
-    foreach ($legacy in $legacyTasks) {
-        if ($legacyEnabledBefore[$legacy.TaskName]) {
-            Enable-ScheduledTask -TaskName $legacy.TaskName -ErrorAction SilentlyContinue | Out-Null
-        }
-    }
     throw
 }
-Write-Output "OMS tasks enabled: $($registeredNames -join ', ')"
+if ($StageOnly) {
+    Write-Output "OMS tasks staged disabled: $($registeredNames -join ', '); legacy task states unchanged"
+}
+else {
+    Write-Output "OMS tasks enabled: $($registeredNames -join ', ')"
+}

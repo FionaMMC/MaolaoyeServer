@@ -43,6 +43,35 @@ logs, API key and Windows Task Scheduler names.
 Copy `.env.example` into a private secret-management mechanism. The package does
 not auto-load `.env`; Windows tasks must inject environment variables explicitly.
 
+## Shared account OMS profile
+
+`HYDRA_LIVE_EXECUTION_PROFILE=shared_oms` selects the account-wide v2 plan bundle.
+Each strategy needs a server grant with an account fingerprint, immutable content
+hash, instrument rules, its own cash/positions/sellable quantities and a short
+execution lease. Keep the legacy nine-ETF environment whitelist unchanged:
+approved stock symbols come from server grants, not an environment expansion.
+The default profile remains `hydra`. Neither profile change nor installation
+enables trading or creates tasks.
+
+The shared executor retains a single account lock and reserves UNKNOWN outcomes
+across orders and restarts. `HOLD` beside `oms-agent.db` stops all strategies;
+`HOLD.<instance_id>` stops one. Both scheduled and dashboard orders use the
+configuration trading/risk gates. Current broker price ticks and price bands are
+checked before shared live orders, without treating a closed exchange as a
+suspension. After-close anchors preserve source timestamps; if the last tick is
+older than the close, only an exact-day cached unadjusted daily close may replace
+it. The agent does not download market history.
+
+Cached shared plans require an unexpired same-day lease. EOD upcoming plans are
+previews; the morning PRE step must refresh their authority. Preserve the actual
+`oms-agent.db`, HOLD files and `oms-spool` during backups and recovery, alongside
+the legacy state database. The portable install gate below uses synthetic data
+only and never imports `xtquant` or contacts the server:
+
+```powershell
+python -m live_client.oms_offline_acceptance
+```
+
 ## Command sequence
 
 From the `v2.3` directory with `PYTHONPATH` pointing to that directory:

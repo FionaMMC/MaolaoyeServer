@@ -6,6 +6,8 @@ must never be projected back before that observation. Older snapshots survive.
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import math
+import hashlib
+import re
 
 from sqlalchemy import select
 from app.models import InstanceState, PerfSnapshot, PerfValuation
@@ -15,7 +17,7 @@ from app.services.perf import PerfService
 from app.services.daily_risk import DailyRiskSnapshotService
 
 
-def materialize_live_performance(sf, store, instance_id, *, now=None, backfill=False):
+def materialize_live_performance(sf, store, instance_id, *, now=None, backfill=False, raw_price_evidence=None):
     now = now or datetime.now(ZoneInfo("Asia/Shanghai"))
     now = now.astimezone(ZoneInfo("Asia/Shanghai"))
     today = now.strftime("%Y%m%d")
@@ -33,6 +35,9 @@ def materialize_live_performance(sf, store, instance_id, *, now=None, backfill=F
         if state is None or state.execution_domain != "live" or state.ledger_mode != "attributed":
             raise ValueError("live performance requires an attributed live instance")
         observation = (state.last_update, float(state.virtual_cash), dict(state.virtual_positions or {}))
+        metadata = dict(state.strategy_state or {})
+        require_raw = bool(metadata.get("require_raw_valuation")) or "v713" in instance_id.lower()
+        evidence = raw_price_evidence or metadata.get("valuation_price_evidence") or {}
     updated = datetime.fromisoformat(observation[0].replace("Z", "+00:00"))
     if updated.tzinfo is None:
         raise ValueError("ledger update must include timezone")
@@ -43,13 +48,36 @@ def materialize_live_performance(sf, store, instance_id, *, now=None, backfill=F
     positions = {s: int(q) for s, q in observation[2].items() if q}
     # Filesystem I/O must finish before acquiring SQLite's write lock.
     marks = {}
+    raw_frames = {}
+    evidence_errors = []
     for symbol in positions:
-        frame = store.read("etfs", symbol)
-        if frame.empty:
-            frame = store.read("stocks", symbol)
+        if require_raw:
+            proof = evidence.get(symbol) or {}
+            category = proof.get("category", "")
+            if (proof.get("adjustment") != "none" or not proof.get("source")
+                    or not re.fullmatch(r"[a-zA-Z0-9_-]+", category)
+                    or not re.fullmatch(r"[0-9a-f]{64}", str(proof.get("sha256", "")))):
+                evidence_errors.append(symbol)
+                continue
+            path = store._file(category, symbol)
+            if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != proof["sha256"]:
+                evidence_errors.append(symbol)
+                continue
+            frame = store.read(category, symbol)
+            # Check again after the read; a producer may have replaced the file.
+            if hashlib.sha256(path.read_bytes()).hexdigest() != proof["sha256"]:
+                evidence_errors.append(symbol)
+                continue
+            raw_frames[symbol] = frame
+        else:
+            frame = store.read("etfs", symbol)
+            if frame.empty:
+                frame = store.read("stocks", symbol)
         marks[symbol] = {} if frame.empty else {
             str(int(row.trade_date)): float(row.close) for row in frame.itertuples()
         }
+    if evidence_errors:
+        return {"written": 0, "status": "WAITING_RAW_PRICE_EVIDENCE", "symbols": sorted(evidence_errors)}
     with sf() as session:
         begin_ledger_transaction(session, "live", None)
         current = session.get(InstanceState, instance_id)
@@ -77,7 +105,10 @@ def materialize_live_performance(sf, store, instance_id, *, now=None, backfill=F
             written.append(date)
         session.commit()
     if written:
-        DailyRiskSnapshotService(sf, store).rebuild(instance_id=instance_id,
+        class VerifiedPriceStore:
+            def read(self, category, symbol, *args, **kwargs):
+                return raw_frames[symbol].copy() if symbol in raw_frames else store.read(category, symbol, *args, **kwargs)
+        DailyRiskSnapshotService(sf, VerifiedPriceStore() if require_raw else store).rebuild(instance_id=instance_id,
             execution_domain="live", start_date=written[0], end_date=written[-1])
     return {"status": "VALUED" if written else "WAITING_PRICE_OR_LEDGER",
             "written": len(written), "dates": written, "missing_price_dates": missing_dates,

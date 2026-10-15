@@ -321,6 +321,7 @@ class _Config:
         self.state_db = root / "state.db"
         self.server_base_url, self.api_key, self.execution_domain = "http://server", "key", "live"
         self.account_alias, self.expected_account_sha256 = ALIAS, "a" * 64
+        self.task_prefix, self.execution_profile = "HydraTest", "hydra"
 
     @classmethod
     def from_env(cls):
@@ -381,3 +382,12 @@ def test_task_schedule_fits_the_lock_waits_and_the_trading_windows():
     assert lock_by("Hydra-Oms-Sell-1456") < WINDOWS["SELL"][1]
     assert lock_by("Hydra-Oms-Cancel-1455") < CANCEL_DEADLINE
     assert tasks["Hydra-Oms-Intraday"]["start"] == INTRADAY_WINDOW[0] and LOCK_WAIT_SECONDS["intraday"] == 0
+
+
+def test_snapshot_reports_actual_simulated_broker_frozen_cash(tmp_path):
+    plans = {(D2,'BUY'):_plan(D2,'BUY',[dict(BUY,quantity=100,limit_price=2.15)],FROZEN,seq=2)}
+    agent, exchange, server, _ = _setup(tmp_path,plans,at=(D2,'091505'))
+    agent.execute(D2,'BUY')
+    agent.snapshot('ADHOC')
+    assert server.snapshots[-1]['frozen_cash'] == exchange.asset()['frozen_cash']
+    assert server.snapshots[-1]['frozen_cash'] == pytest.approx(220.)

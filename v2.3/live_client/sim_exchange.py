@@ -108,10 +108,16 @@ class SimExchange:
     """
 
     def __init__(self, bars: dict[tuple[str, str], dict], *, cash: float, positions: dict[str, int],
-                 participation: float = .01, slip_bps: float = 5., remark_limit: int = 24):
+                 participation: float = .01, slip_bps: float = 5., remark_limit: int = 24,
+                 instrument_specs: dict[str, dict] | None = None):
         """``bars`` maps (YYYYMMDD, symbol) to a daily bar with open, high,
         low, close, volume (lots of 100 shares) and optional suspendFlag."""
         self.bars = dict(bars)
+        self.instrument_specs = {symbol: dict(spec) for symbol, spec in (instrument_specs or {}).items()}
+        for spec in self.instrument_specs.values():
+            if (float(spec.get("price_tick", 0)) <= 0 or int(spec.get("buy_lot", 0)) <= 0
+                    or int(spec.get("sell_lot", 0)) <= 0):
+                raise ValueError("invalid simulation instrument tick/lot")
         self.participation = float(participation)
         self.slip_bps = float(slip_bps)
         self.remark_limit = int(remark_limit)
@@ -171,6 +177,29 @@ class SimExchange:
         self.time = hhmmss
 
     # -- matching ----------------------------------------------------------
+    def _spec(self, symbol):
+        return self.instrument_specs.get(symbol)
+
+    def _tick(self, symbol):
+        return float((self._spec(symbol) or {}).get("price_tick", TICK))
+
+    def _fees(self, symbol, notional, side):
+        if not notional:
+            return 0.
+        spec = self._spec(symbol)
+        if spec is None:
+            return fee(notional)
+        return (max(float(spec.get("min_commission", 5)), notional * float(spec.get("commission_rate", .0001)))
+                + notional * float(spec.get("transfer_fee_rate", 0))
+                + (notional * float(spec.get("stamp_duty_sell", 0)) if side == "SELL" else 0.))
+
+    def _remaining_cash(self, order):
+        if self._spec(order.symbol) is None:
+            return _frozen_cash(order.remaining, order.price)
+        notional = order.remaining * order.price
+        return notional + max(0., self._fees(order.symbol, order.traded_amount + notional, "BUY")
+                               - self._fees(order.symbol, order.traded_amount, "BUY"))
+
     def _bar(self, symbol: str) -> dict | None:
         return self.bars.get((self.date, symbol))
 
@@ -192,8 +221,9 @@ class SimExchange:
             elif event == TOUCH:
                 if order.entered >= TOUCH:
                     continue
-                touched = (float(bar["low"]) < order.price - TICK / 2 if order.side == "BUY"
-                           else float(bar["high"]) > order.price + TICK / 2)
+                tick = self._tick(order.symbol)
+                touched = (float(bar["low"]) < order.price - tick / 2 if order.side == "BUY"
+                           else float(bar["high"]) > order.price + tick / 2)
                 price = order.price if touched else None
             else:
                 price = self._auction_price(order, float(bar["close"]))
@@ -201,10 +231,11 @@ class SimExchange:
                 self._fill(order, price, bar)
 
     def _auction_price(self, order: _Order, reference: float) -> float | None:
+        tick = self._tick(order.symbol)
         if order.side == "BUY":
-            price = _buy_price(reference, self.slip_bps)
+            price = round(math.ceil(reference * (1 + self.slip_bps / 1e4) / tick - 1e-8) * tick, 10)
             return price if price - order.price <= 1e-8 else None
-        price = _sell_price(reference, self.slip_bps)
+        price = round(math.floor(reference * (1 - self.slip_bps / 1e4) / tick + 1e-8) * tick, 10)
         return price if order.price - price <= 1e-8 else None
 
     def _fill(self, order: _Order, price: float, bar: dict) -> None:
@@ -212,15 +243,20 @@ class SimExchange:
         capacity = int(float(bar["volume"]) * 100 * self.participation)
         quantity = min(order.remaining, capacity - self._capacity_used.get(key, 0))
         if quantity < order.remaining:
-            quantity = quantity // LOT * LOT  # partial fills come in whole lots
+            lot = int((self._spec(order.symbol) or {}).get("buy_lot" if order.side == "BUY" else "sell_lot", LOT))
+            quantity = quantity // lot * lot
         if quantity <= 0:
             return
         self._capacity_used[key] = self._capacity_used.get(key, 0) + quantity
         amount = quantity * price
-        cost = fee(amount)
+        spec = self._spec(order.symbol)
+        cost = (self._fees(order.symbol, order.traded_amount + amount, order.side)
+                - self._fees(order.symbol, order.traded_amount, order.side)) if spec else fee(amount)
         if order.side == "BUY":
             self.cash -= amount + cost
             self._positions[order.symbol] = self._positions.get(order.symbol, 0) + quantity
+            if spec is not None and not spec.get("t_plus_one", True):
+                self._sellable[order.symbol] = self._sellable.get(order.symbol, 0) + quantity
         else:
             self.cash += amount - cost
             self._positions[order.symbol] -= quantity
@@ -249,7 +285,7 @@ class SimExchange:
         else:
             order.status, order.status_msg = 55, STATUS_MSG[55]
             if order.side == "BUY":
-                order.frozen_cash = _frozen_cash(order.remaining, order.price)
+                order.frozen_cash = self._remaining_cash(order)
             else:
                 order.frozen_shares = order.remaining
 
@@ -277,22 +313,29 @@ class SimExchange:
         if side not in ("BUY", "SELL") or isinstance(quantity, bool) or int(quantity) != quantity:
             return -1
         quantity, price = int(quantity), float(price)
+        spec = self._spec(symbol) or {}
+        tick = self._tick(symbol)
         if (quantity <= 0 or not math.isfinite(price) or price <= 0
-                or abs(price / TICK - round(price / TICK)) > 1e-6):
+                or abs(price / tick - round(price / tick)) > 1e-6):
+            return -1
+        if ((spec.get("up_limit") is not None and price > float(spec["up_limit"]))
+                or (spec.get("down_limit") is not None and price < float(spec["down_limit"]))):
             return -1
         frozen_cash, frozen_shares = 0., 0
         if side == "BUY":
-            if quantity % LOT:
+            if quantity % int(spec.get("buy_lot", LOT)) or quantity < int(spec.get("min_buy_quantity", LOT)):
                 return -1
-            frozen_cash = _frozen_cash(quantity, price)
+            frozen_cash = quantity * price + self._fees(symbol, quantity * price, "BUY")
             if frozen_cash > self._available_cash() + 1e-9:
                 return -1
         else:
             can_use = self._can_use(symbol)
-            if quantity > can_use or (quantity % LOT and quantity % LOT != can_use % LOT):
+            lot = int(spec.get("sell_lot", LOT))
+            odd_allowed = (quantity == can_use and spec.get("odd_lot_sell_all", True)) if spec else quantity % lot == can_use % lot
+            if quantity > can_use or (quantity % lot and not odd_allowed):
                 return -1
             frozen_shares = quantity
-        order = _Order(self._next_order_id, symbol, side, quantity, round(price, 3),
+        order = _Order(self._next_order_id, symbol, side, quantity, round(price, 10),
                        str(remark)[:self.remark_limit], strategy_name, self.time,
                        int(self.now().timestamp()), frozen_cash=frozen_cash,
                        frozen_shares=frozen_shares)
@@ -372,7 +415,17 @@ class SimExchange:
         mark = self._mark(symbol)
         if not mark:
             return None
-        return {"last_price": mark, "is_trading": self._tradable(self._bar(symbol))}
+        if self._tradable(self._bar(symbol)) and self.time >= OPEN_AUCTION:
+            stamp = self.date + (CLOSE_AUCTION if self.time >= CLOSE_AUCTION else OPEN_AUCTION)
+        else:
+            history = self._closes.get(symbol, [])
+            index = bisect.bisect_left(history, (self.date or "",))
+            stamp = history[index - 1][0] + CLOSE_AUCTION
+        source = datetime.strptime(stamp, "%Y%m%d%H%M%S").replace(tzinfo=CHINA_TIMEZONE)
+        return {"last_price": mark, "is_trading": self._tradable(self._bar(symbol)) and self._entry_open(),
+                "source_time": source.isoformat(),
+                "market_status": "CLOSED" if not self._entry_open() else "OPEN", "status_source": "simulated_exchange",
+                "price_source": "raw_tick", "adjustment": "none"}
 
 
 class SimQMTGateway:
@@ -409,6 +462,7 @@ class SimQMTGateway:
         return AccountSnapshot(
             account_id=self.account_id,
             available_cash=asset["cash"],
+            frozen_cash=asset["frozen_cash"],
             total_asset=asset["total_asset"],
             positions={s: p["volume"] for s, p in positions.items()},
             sellable_positions={s: p["can_use_volume"] for s, p in positions.items()
@@ -416,7 +470,7 @@ class SimQMTGateway:
             position_market_values={s: p["market_value"] for s, p in positions.items()},
         )
 
-    def quotes(self, symbols: list[str]) -> dict[str, dict]:
+    def quotes(self, symbols: list[str], *, as_of: datetime | None = None) -> dict[str, dict]:
         self._broker_call()
         result = {}
         for symbol in symbols:
@@ -424,6 +478,16 @@ class SimQMTGateway:
             if quote is not None:
                 result[symbol] = quote
         return result
+
+    def execution_rules(self, symbol: str) -> dict:
+        self._broker_call()
+        spec = self.exchange._spec(symbol) or {}
+        bar = self.exchange._bar(symbol) or {}
+        upper, lower = spec.get("up_limit", bar.get("up_limit")), spec.get("down_limit", bar.get("down_limit"))
+        if upper is None or lower is None:
+            raise RuntimeError("simulation needs explicit current-day price bands")
+        return {"price_tick": self.exchange._tick(symbol), "up_limit": float(upper), "down_limit": float(lower),
+                "source_time": self.exchange.now().isoformat()}
 
     def day_orders(self) -> list[BrokerOrderSnapshot]:
         self._broker_call()

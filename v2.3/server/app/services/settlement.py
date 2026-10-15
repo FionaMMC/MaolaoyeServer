@@ -95,6 +95,26 @@ class SettlementService:
         )
         return commission + duty
 
+    def order_fees(self, session, order: Order, gross: float) -> float:
+        """Use the approved security specification, never a target-id heuristic.
+
+        Legacy paper stock orders keep their existing model. Live/target orders
+        without a specification may only use the audited Hydra ETF universe.
+        Unknown instruments remain unprojected until their metadata is supplied.
+        """
+        from app.settings import HYDRA_LIVE_EXECUTABLE_SYMBOLS
+        from app.oms.instruments import estimate_fees
+        from app.services.order_instruments import explicit_order_instrument
+
+        spec = explicit_order_instrument(session, order)
+        if spec is not None:
+            return float(estimate_fees(spec, gross, order.direction))
+        if order.symbol in HYDRA_LIVE_EXECUTABLE_SYMBOLS:
+            return self._calc_fees(gross, order.direction, hydra_etf=True)
+        if order.execution_domain == "paper" and order.target_id is None:
+            return self._calc_fees(gross, order.direction)
+        raise ValueError("INSTRUMENT_FEE_SPEC_MISSING")
+
     def settle(
         self,
         trade_date: str,
@@ -243,22 +263,12 @@ class SettlementService:
                 delta_price = (
                     delta_notional / delta_qty if delta_qty > 0 else result.filled_price
                 )
-                previous_fees = (
-                    self._calc_fees(
-                        previous_notional,
-                        order.direction,
-                        hydra_etf=order.target_id is not None,
-                    )
-                    if previous_qty > 0 else 0.0
-                )
-                cumulative_fees = (
-                    self._calc_fees(
-                        cumulative_notional,
-                        order.direction,
-                        hydra_etf=order.target_id is not None,
-                    )
-                    if result.filled_quantity > 0 else 0.0
-                )
+                try:
+                    previous_fees = self.order_fees(session, order, previous_notional) if previous_qty > 0 else 0.0
+                    cumulative_fees = self.order_fees(session, order, cumulative_notional) if result.filled_quantity > 0 else 0.0
+                except ValueError as exc:
+                    rejected_observations[order.order_id] = str(exc)
+                    continue
                 delta_fees = max(0.0, cumulative_fees - previous_fees)
 
                 # 写 trades 表
@@ -413,7 +423,7 @@ class SettlementService:
     ) -> None:
         # 取该 order 的所有 (signal_id, signal_quantity)
         mappings = session.execute(
-            select(OrderSignalMap).where(OrderSignalMap.order_id == order.order_id)
+            select(OrderSignalMap).where(OrderSignalMap.order_id == order.order_id).order_by(OrderSignalMap.signal_id)
         ).scalars().all()
         if not mappings:
             logger.warning(

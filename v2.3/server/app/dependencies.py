@@ -188,7 +188,8 @@ def get_oms_cycle_service(
         min_commission=settings.stock_min_commission,
         stamp_duty_sell=settings.stock_stamp_duty_sell,
     )
-    return CycleService(sf, OrderLedger(sf, settlement), ReconcileService(session_factory=sf))
+    return CycleService(sf, OrderLedger(sf, settlement), ReconcileService(session_factory=sf),
+                        account_fingerprint=settings.live_qmt_account_sha256)
 
 
 def get_oms_manual_service(

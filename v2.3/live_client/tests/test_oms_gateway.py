@@ -173,7 +173,7 @@ def test_day_trades_refuses_an_unmappable_direction():
         _gateway(Trader()).day_trades(timeout_seconds=1)
 
 
-def test_quotes_reuse_market_quote_and_omit_symbols_without_a_valid_quote():
+def test_eod_quotes_preserve_last_price_without_a_book_and_keep_raw_trading_status():
     now_ms = int(datetime(2026, 10, 8, 15, 0, 3, tzinfo=CST).timestamp() * 1000)
 
     class Data:
@@ -191,8 +191,14 @@ def test_quotes_reuse_market_quote_and_omit_symbols_without_a_valid_quote():
                     "IsTrading": symbol == "510300.SH"}
 
     quotes = _gateway(RecordingTrader(), xtdata=Data()).quotes(
-        ["510300.SH", "513100.SH", "159915.SZ"])
-    assert quotes == {"510300.SH": {"last_price": 4.621, "is_trading": True}}
+        ["510300.SH", "513100.SH", "159915.SZ"], as_of=datetime(2026, 10, 8, 15, 5, tzinfo=CST))
+    assert set(quotes) == {"510300.SH", "513100.SH"}
+    assert quotes["510300.SH"]["last_price"] == 4.621
+    assert quotes["510300.SH"]["is_trading"] is True
+    assert quotes["513100.SH"]["last_price"] == 2.196
+    assert quotes["513100.SH"]["is_trading"] is False
+    assert datetime.fromisoformat(quotes["513100.SH"]["source_time"]).timestamp() == now_ms / 1000
+    assert quotes["513100.SH"]["status_source"] == "instrument_detail.IsTrading"
 
 
 def _mock(tmp_path, **payload) -> MockQMTGateway:
@@ -227,3 +233,87 @@ def test_mock_gateway_trades_and_quotes_come_from_the_payload(tmp_path):
     assert gateway.quotes(["510300.SH", "513100.SH"]) == {
         "510300.SH": {"last_price": 4.621, "is_trading": True}}
     assert _mock(tmp_path, day_trades=[trade], trades_hang=True).day_trades() is None
+
+
+def test_quote_without_status_remains_unknown_and_preserves_raw_closed_market_code():
+    class Data:
+        @staticmethod
+        def get_full_tick(symbols):
+            return {'000001.SZ': {'lastPrice': 10., 'bidPrice': [0], 'askPrice': [0],
+                                  'time': 1791442800000, 'openInt': 12}}
+        @staticmethod
+        def get_instrument_detail(symbol):
+            return {}
+    quote = _gateway(RecordingTrader(), xtdata=Data()).quotes(['000001.SZ'], as_of=datetime(2026,10,8,15,5,tzinfo=CST))['000001.SZ']
+    assert quote['is_trading'] is None
+    assert quote['market_status'] == '12'
+    assert quote['status_source'] == 'unknown'
+
+
+def test_after_close_stale_tick_uses_only_exact_day_cached_unadjusted_close():
+    import pandas as pd
+    now = datetime(2026,10,8,15,5,tzinfo=CST)
+    class Data:
+        calls = []
+        daily_index = '20261008'
+        @staticmethod
+        def get_full_tick(symbols):
+            return {'000001.SZ': {'lastPrice':9., 'time':int(now.replace(hour=10).timestamp()*1000), 'openInt':12}}
+        @staticmethod
+        def get_instrument_detail(symbol):
+            return {'IsTrading':False}
+        def get_market_data_ex(self, fields, symbols, period, start, end, **kwargs):
+            self.calls.append((fields,symbols,period,start,end,kwargs))
+            return {'000001.SZ':pd.DataFrame({'close':[10.]},index=[self.daily_index])}
+    data = Data()
+    gateway = _gateway(RecordingTrader(),xtdata=data)
+    quote = gateway.quotes(['000001.SZ'],as_of=now)['000001.SZ']
+    assert quote['last_price'] == 10.
+    assert quote['source_time'] == now.replace(minute=0).isoformat()
+    assert quote['price_source'] == 'raw_daily_close' and quote['adjustment'] == 'none'
+    assert quote['is_trading'] is False
+    assert data.calls == [(['close'],['000001.SZ'],'1d','20261008','20261008',{'dividend_type':'none','fill_data':False})]
+    data.daily_index = '20261007'
+    assert gateway.quotes(['000001.SZ'],as_of=now) == {}
+
+
+def test_execution_rules_dont_require_bid_ask_or_trading_status():
+    now = datetime(2026,10,8,9,15,tzinfo=CST)
+    class Data:
+        @staticmethod
+        def get_full_tick(symbols):
+            return {'000001.SZ':{'time':int(now.timestamp()*1000),'bidPrice':[0],'askPrice':[0]}}
+        @staticmethod
+        def get_instrument_detail(symbol):
+            return {'PriceTick':.01,'UpStopPrice':11.,'DownStopPrice':9.,'IsTrading':False}
+    rules = _gateway(RecordingTrader(),xtdata=Data()).execution_rules('000001.SZ')
+    assert (rules['price_tick'],rules['up_limit'],rules['down_limit']) == (.01,11.,9.)
+    assert datetime.fromisoformat(rules['source_time']).timestamp() == now.timestamp()
+
+
+@pytest.mark.parametrize('fields,expected', [({},None),({'frozen_cash':None},None),
+                                            ({'frozen_cash':0},0.),({'frozen_cash':1234.56},1234.56)])
+def test_asset_frozen_cash_is_observed_without_fabricating_missing_values(fields, expected):
+    class Trader:
+        def query_stock_asset(self, account):
+            return SimpleNamespace(account_id='LIVE_ACCOUNT_FOR_TEST',cash=1000.,total_asset=9000.,**fields)
+        def query_stock_positions(self, account):
+            return []
+    gateway = _gateway(Trader())
+    gateway.cfg = SimpleNamespace(account_id='LIVE_ACCOUNT_FOR_TEST')
+    snapshot = gateway.account_snapshot()
+    assert snapshot.available_cash == 1000.
+    assert snapshot.frozen_cash == expected
+
+
+@pytest.mark.parametrize('bad', [-1,float('nan'),float('inf'),True,'invalid'])
+def test_invalid_observed_frozen_cash_refuses_the_snapshot(bad):
+    class Trader:
+        def query_stock_asset(self, account):
+            return SimpleNamespace(account_id='LIVE_ACCOUNT_FOR_TEST',cash=1000.,total_asset=9000.,frozen_cash=bad)
+        def query_stock_positions(self, account):
+            return []
+    gateway = _gateway(Trader())
+    gateway.cfg = SimpleNamespace(account_id='LIVE_ACCOUNT_FOR_TEST')
+    with pytest.raises(RuntimeError,match='frozen_cash'):
+        gateway.account_snapshot()

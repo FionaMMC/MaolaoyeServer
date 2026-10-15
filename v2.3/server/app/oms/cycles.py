@@ -19,8 +19,11 @@ from app.models import InstanceState
 from app.oms.ledger import OPEN_QMT_STATUSES as OPEN_BROKER_STATUSES, OrderLedger
 from app.oms.models import (OmsBrokerSnapshot, OmsCycle, OmsOrder, OmsReconciliation, OmsSession,
                             OmsTargetVersion)
-from app.oms.planner import Policy, Session, lot_target, plan_buy_session, plan_sell_session, session_schedule
-from app.oms.schemas import PlanOrder, PlanOut, SnapshotIn
+from app.oms.planner import (Policy, Session, lot_target, plan_buy_session, plan_sell_session,
+                             session_schedule, policy_from_dict, policy_to_dict, get_instrument as instrument)
+from app.oms.schemas import PlanOrder, PlanOut, SnapshotIn, plan_content_sha256
+from app.oms.account import instance_is_enabled, strategy_resources
+from app.oms.instruments import instrument_to_dict
 from app.services.ledger_transaction import begin_ledger_transaction
 
 logger = logging.getLogger(__name__)
@@ -51,22 +54,47 @@ def earliest_sell_day(now: str) -> str:
 
 
 class CycleService:
-    def __init__(self, session_factory, ledger: OrderLedger, reconcile, policy: Policy = Policy()):
+    def __init__(self, session_factory, ledger: OrderLedger, reconcile, policy: Policy = Policy(),
+                 account_fingerprint: str = ""):
         self.session_factory = session_factory
         self.ledger = ledger
         self.reconcile = reconcile
         self.policy = policy
+        self.account_fingerprint = account_fingerprint
 
     # ── publishing ────────────────────────────────────────────────────────
     def publish_target(self, *, instance_id: str, account_alias: str, signal_date: str, weights: dict,
-                       signal_closes: dict, calendar: list, source_sha256: str, now: str) -> dict:
+                       signal_closes: dict, calendar: list, source_sha256: str, now: str,
+                       policy: Policy | dict | None = None, metadata: dict | None = None,
+                       provenance: dict | None = None, earliest_execution_date: str | None = None) -> dict:
+        policy = policy_from_dict(policy) if isinstance(policy, dict) else (policy or self.policy)
+        if not weights or any(not math.isfinite(float(w)) or float(w) < 0 for w in weights.values()):
+            raise ValueError("target weights must be finite, non-negative and nonempty")
+        if abs(sum(float(w) for w in weights.values()) - 1.0) > 1e-6:
+            raise ValueError("target weights must sum to one")
         with self.session_factory() as session:
             begin_ledger_transaction(session, "live", account_alias)
-            if self._open_cycle(session, account_alias) is not None:
-                raise CycleConflict(f"open cycle exists for {account_alias}")
             inst = session.get(InstanceState, instance_id)
             if inst is None or inst.execution_domain != "live" or inst.account_alias != account_alias:
                 raise ValueError(f"unknown live instance {instance_id} for {account_alias}")
+            version_id = "tv_" + _sha({"instance": instance_id, "signal": signal_date, "weights": weights,
+                                       "source": source_sha256})[:24]
+            previous = session.get(OmsTargetVersion, version_id)
+            if previous is not None:
+                prior_cycle = session.execute(select(OmsCycle).where(
+                    OmsCycle.target_version_id == version_id)).scalar_one()
+                if (previous.weights != weights or previous.signal_closes != signal_closes
+                        or _sha(prior_cycle.policy) != _sha(policy_to_dict(policy))):
+                    raise CycleConflict("target id already exists with different prices or policy")
+                return self._publication(session, prior_cycle)
+            if self._open_cycle(session, account_alias, instance_id) is not None:
+                raise CycleConflict(f"open cycle exists for {instance_id}")
+            if policy.strategy_id == "v713":
+                monthly = session.execute(select(OmsTargetVersion).where(
+                    OmsTargetVersion.instance_id == instance_id,
+                    OmsTargetVersion.signal_date == signal_date)).scalars().all()
+                if monthly:
+                    raise CycleConflict("V713 monthly allocation is already frozen; a different allocation needs review")
             positions = {s: int(q) for s, q in (inst.virtual_positions or {}).items() if int(q)}
             # Not-yet-listed or suspended symbols carry no close; they may only appear with zero weight.
             signal_closes = {s: float(p) for s, p in signal_closes.items()
@@ -77,14 +105,26 @@ class CycleService:
                 raise ValueError(f"signal closes missing for {missing}")
             cash = float(inst.virtual_cash)
             nav = cash + sum(q * float(signal_closes[s]) for s, q in positions.items())
-            frozen = lot_target(nav, weights, signal_closes, self.policy)
+            if not math.isfinite(nav) or nav <= 0:
+                raise ValueError("strategy NAV must be positive")
+            frozen = lot_target(nav, weights, signal_closes, policy)
+            for symbol in positions:
+                frozen.setdefault(symbol, 0)
+            # Every security remains managed until its position and outstanding responsibility end.
+            specs = {symbol: instrument_to_dict(instrument(symbol, policy)) for symbol, qty in frozen.items()
+                     if qty > 0 or positions.get(symbol, 0) > 0}
             # Published late (the runbook fallback), the cycle starts at the next pair still ahead.
-            schedule = session_schedule(calendar, signal_date, self.policy.window,
-                                        earliest_sell=earliest_sell_day(now))
-            lot_gap = sum(max(0., (1 - self.policy.reserve) * w - frozen[s] * signal_closes.get(s, 0.) / nav)
+            schedule = session_schedule(calendar, signal_date, policy.window,
+                                        earliest_sell=max(earliest_sell_day(now), earliest_execution_date or ""))
+            lot_gap = sum(max(0., (1 - policy.reserve) * w - frozen[s] * signal_closes.get(s, 0.) / nav)
                           for s, w in weights.items())
-            version_id = "tv_" + _sha({"instance": instance_id, "signal": signal_date, "weights": weights,
-                                       "source": source_sha256})[:24]
+            state = dict(inst.strategy_state or {})
+            state["oms_instruments"] = {**state.get("oms_instruments", {}), **specs}
+            state["oms_policy"] = policy_to_dict(policy)
+            if provenance is not None or metadata is not None:
+                state["oms_target_metadata"] = dict(provenance or metadata)
+            inst.strategy_state = state
+            inst.owned_symbols = sorted(set(inst.owned_symbols or ()) | set(frozen))
             for older in session.execute(select(OmsTargetVersion).where(
                     OmsTargetVersion.instance_id == instance_id, OmsTargetVersion.status == "ACTIVE")).scalars():
                 older.status = "SUPERSEDED"
@@ -94,7 +134,7 @@ class CycleService:
                                          source_sha256=source_sha256, status="ACTIVE", created_at=now))
             cycle_no = (session.execute(select(func.max(OmsCycle.cycle_no))).scalar() or 0) + 1
             cycle = OmsCycle(cycle_id=f"C{cycle_no:05d}", cycle_no=cycle_no, target_version_id=version_id,
-                             account_alias=account_alias, instance_id=instance_id, policy=asdict(self.policy),
+                             account_alias=account_alias, instance_id=instance_id, policy=policy_to_dict(policy),
                              nav_at_signal=nav, frozen_target=frozen,
                              sell_anchor={s: signal_closes[s] for s in frozen if s in signal_closes},
                              buy_anchor=None,
@@ -111,6 +151,19 @@ class CycleService:
             return {"cycle_id": cycle.cycle_id, "target_version_id": version_id, "status": cycle.status,
                     "nav": nav, "lot_gap": lot_gap, "schedule": cycle.schedule, "shares": shares,
                     "first_session": first}
+
+    @staticmethod
+    def _publication(session, cycle: OmsCycle) -> dict:
+        target = session.get(OmsTargetVersion, cycle.target_version_id)
+        inst = session.get(InstanceState, cycle.instance_id)
+        positions = inst.virtual_positions or {}
+        return {"cycle_id": cycle.cycle_id, "target_version_id": cycle.target_version_id,
+                "status": cycle.status, "nav": cycle.nav_at_signal, "lot_gap": cycle.lot_gap,
+                "schedule": cycle.schedule, "already_published": True,
+                "shares": [{"symbol": symbol, "weight": target.weights.get(symbol, 0.0),
+                            "close": target.signal_closes.get(symbol), "target": quantity,
+                            "held": positions.get(symbol, 0), "delta": quantity - positions.get(symbol, 0)}
+                           for symbol, quantity in sorted(cycle.frozen_target.items())]}
 
     def approve(self, cycle_id: str, approver: str, now: str) -> None:
         with self.session_factory() as session:
@@ -147,18 +200,21 @@ class CycleService:
                   "planned_sessions": [], "cycle_status": None}
         with self.session_factory() as session:
             begin_ledger_transaction(session, "live", alias)
-            cycle = self._open_cycle(session, alias)
-            session.add(OmsReconciliation(snapshot_id=snapshot_id, cycle_id=cycle.cycle_id if cycle else None,
-                                          passed=passed, discrepancies=discrepancies, created_at=now))
-            if cycle is None:
-                session.commit()
-                return result
-            if not passed and snap.kind in ("PRE", "EOD") and cycle.status == "ACTIVE":
-                cycle.status = "HELD"
-                logger.error("oms cycle %s HELD: %s", cycle.cycle_id, discrepancies)
-            if passed and end_of_day and cycle.status == "ACTIVE":
-                result["planned_sessions"] = self._advance(session, cycle, snap, snapshot_id, now)
-            result["cycle_status"] = cycle.status
+            cycles = self._open_cycles(session, alias)
+            result["cycle_statuses"] = {}
+            for cycle in cycles or [None]:
+                session.add(OmsReconciliation(snapshot_id=snapshot_id, cycle_id=cycle.cycle_id if cycle else None,
+                                              passed=passed, discrepancies=discrepancies, created_at=now))
+                if cycle is None:
+                    continue
+                if not passed and snap.kind in ("PRE", "EOD") and cycle.status == "ACTIVE":
+                    cycle.status = "HELD"
+                    logger.error("oms cycle %s HELD: %s", cycle.cycle_id, discrepancies)
+                if passed and end_of_day and cycle.status == "ACTIVE":
+                    result["planned_sessions"] += self._advance(session, cycle, snap, snapshot_id, now)
+                result["cycle_statuses"][cycle.instance_id] = cycle.status
+            if len(cycles) == 1:
+                result["cycle_status"] = cycles[0].status
             session.commit()
         return result
 
@@ -166,8 +222,9 @@ class CycleService:
         found = []
         with self.session_factory() as session:
             owned = set()
-            for inst in session.execute(select(InstanceState).where(
-                    InstanceState.execution_domain == "live", InstanceState.account_alias == snap.account_alias)).scalars():
+            instances = session.execute(select(InstanceState).where(
+                    InstanceState.execution_domain == "live", InstanceState.account_alias == snap.account_alias)).scalars().all()
+            for inst in instances:
                 owned |= set(inst.owned_symbols or ())
         for order in observed["external"]:
             if order["open"] and order["symbol"] in owned:
@@ -182,12 +239,16 @@ class CycleService:
         frozen = sum(rest * 1.001 + 5.0 for rest in ((o.quantity - o.traded_volume) * o.price for o in snap.orders
                                                       if o.side == "BUY" and o.status in OPEN_BROKER_STATUSES)
                      if rest > 0)
+        if snap.frozen_cash is not None:
+            frozen = float(snap.frozen_cash)
+        elif len(instances) > 1 and any(o.side == "BUY" and o.status in OPEN_BROKER_STATUSES for o in snap.orders):
+            found.append({"type": "FROZEN_CASH_UNOBSERVED"})
         comparable_cash = float(snap.available_cash) + frozen
         recon = self.reconcile.reconcile_total(snap.positions, comparable_cash, snap.taken_at.isoformat(),
                                                cash_tolerance=0.0, execution_domain="live",
                                                account_alias=snap.account_alias)
         found += [{"type": "POSITION_MISMATCH", **m} for m in recon.mismatches]
-        if not recon.cash_ok and snap.kind in ("PRE", "EOD"):
+        if not recon.cash_ok:
             found.append({"type": "CASH_SHORTFALL", "ledger_cash": recon.ledger_cash_total,
                           "broker_cash": recon.qmt_cash})
         return found
@@ -209,6 +270,20 @@ class CycleService:
                 return []
             wanted = [s for s, q in cycle.frozen_target.items() if int(q) > 0]
             missing = [s for s in wanted if s not in snap.quotes]
+            if policy_from_dict(cycle.policy).require_instrument_specs:
+                for symbol in wanted:
+                    quote = snap.quotes.get(symbol)
+                    try:
+                        source = datetime.fromisoformat(quote.source_time).astimezone(CHINA)
+                        if (datetime.fromisoformat(quote.source_time).utcoffset() is None
+                                or source.strftime("%Y%m%d") != snap.trade_date
+                                or source.time() < time(15, 0)
+                                or quote.adjustment != "none"
+                                or quote.price_source not in {"raw_tick", "raw_daily_close"}
+                                or source > snap.taken_at.astimezone(CHINA)):
+                            missing.append(symbol)
+                    except (AttributeError, TypeError, ValueError):
+                        missing.append(symbol)
             if missing:
                 cycle.status = "HELD"
                 logger.error("oms cycle %s HELD: closing quotes missing for %s", cycle.cycle_id, missing)
@@ -223,7 +298,8 @@ class CycleService:
         inst = session.get(InstanceState, cycle.instance_id)
         positions = {s: int(q) for s, q in (inst.virtual_positions or {}).items() if int(q)}
         cash = min(float(inst.virtual_cash), float(snap.available_cash))
-        tradable = {s for s, q in snap.quotes.items() if q.is_trading}
+        # A closing-session status says nothing about next day's suspension.
+        tradable = set(cycle.frozen_target)
         planned = []
         for spec in remaining:
             if spec.trade_date != next_day:
@@ -238,13 +314,14 @@ class CycleService:
 
     def _plan_session(self, session, cycle: OmsCycle, spec: Session, *, positions, sellable, cash, tradable,
                       basis, now) -> dict:
+        policy = policy_from_dict(cycle.policy)
         if spec.phase == "SELL":
             orders, deferrals = plan_sell_session(target=cycle.frozen_target, positions=positions, sellable=sellable,
                                                   sell_anchor=cycle.sell_anchor, attempt=spec.sell_attempt,
-                                                  policy=self.policy)
+                                                  policy=policy)
         else:
             orders, deferrals = plan_buy_session(target=cycle.frozen_target, positions=positions, cash=cash,
-                                                 buy_anchor=cycle.buy_anchor, tradable=tradable, policy=self.policy)
+                                                 buy_anchor=cycle.buy_anchor, tradable=tradable, policy=policy)
         plan_sha = _sha([[o.symbol, o.side, o.quantity, round(o.limit_price, 3)] for o in orders]
                         + [cycle.cycle_id, spec.seq])
         row = OmsSession(session_id=f"{cycle.cycle_id}:{spec.seq}", cycle_id=cycle.cycle_id, seq=spec.seq,
@@ -267,25 +344,112 @@ class CycleService:
             cycle.report = {"cycle_id": cycle.cycle_id, "close_reason": reason, "error": "REPORT_FAILED"}
 
     # ── read side ─────────────────────────────────────────────────────────
-    def plan_for(self, account_alias: str, trade_date: str, phase: str, *, executable_flag: bool) -> PlanOut:
+    def plan_for(self, account_alias: str, trade_date: str, phase: str, *, executable_flag: bool,
+                 instance_id: str | None = None, wire_version: int = 1, now: str | None = None) -> PlanOut:
         with self.session_factory() as session:
-            row = session.execute(select(OmsSession, OmsCycle).join(OmsCycle, OmsCycle.cycle_id == OmsSession.cycle_id)
-                                  .where(OmsCycle.account_alias == account_alias,
-                                         OmsCycle.status.in_(OPEN_STATUSES),
-                                         OmsSession.trade_date == trade_date, OmsSession.phase == phase)
-                                  .order_by(OmsSession.seq.desc())).first()
-            if row is None:
+            begin_ledger_transaction(session, "live", account_alias)
+            query = select(OmsSession, OmsCycle).join(OmsCycle, OmsCycle.cycle_id == OmsSession.cycle_id).where(
+                OmsCycle.account_alias == account_alias, OmsCycle.status.in_(OPEN_STATUSES),
+                OmsSession.trade_date == trade_date, OmsSession.phase == phase)
+            if instance_id is not None:
+                query = query.where(OmsCycle.instance_id == instance_id)
+            rows = session.execute(query.order_by(OmsCycle.cycle_no, OmsSession.seq)).all()
+            if not rows:
                 raise LookupError(f"no {phase} session on {trade_date} for {account_alias}")
-            oms_session, cycle = row
+            if len(rows) != 1:
+                raise ValueError("multiple strategy plans: use /plans or specify instance_id")
+            oms_session, cycle = rows[0]
             orders = session.execute(select(OmsOrder).where(OmsOrder.session_id == oms_session.session_id)
                                      .order_by(OmsOrder.client_order_id)).scalars().all()
-            return PlanOut(account_alias=account_alias, cycle_id=cycle.cycle_id, session_id=oms_session.session_id,
+            inst = session.get(InstanceState, cycle.instance_id)
+            plan = PlanOut(account_alias=account_alias, instance_id=cycle.instance_id,
+                           cycle_id=cycle.cycle_id, session_id=oms_session.session_id,
                            trade_date=trade_date, phase=phase,
                            executable=bool(executable_flag and cycle.status == "ACTIVE"
-                                           and oms_session.status == "PLANNED"),
+                                           and oms_session.status == "PLANNED" and instance_is_enabled(inst)),
                            plan_sha256=oms_session.plan_sha256, frozen_target=cycle.frozen_target,
                            orders=[PlanOrder(client_order_id=o.client_order_id, symbol=o.symbol, side=o.side,
                                              quantity=o.quantity, limit_price=o.limit_price) for o in orders])
+            if wire_version >= 2:
+                return self._grant(session, plan, inst, cycle.policy, orders, now=now)
+            # A legacy executor has no strategy resource contract and must never
+            # trade a shared account, even if this particular phase has one plan.
+            count = session.execute(select(func.count()).select_from(InstanceState).where(
+                InstanceState.execution_domain == "live", InstanceState.account_alias == account_alias)).scalar_one()
+            if count > 1:
+                plan.executable = False
+            return plan
+
+    def _grant(self, session, plan: PlanOut, inst: InstanceState, policy: dict, orders: list[OmsOrder],
+               *, now: str | None = None) -> PlanOut:
+        local = datetime.fromisoformat(now).astimezone(CHINA) if now else datetime.now(CHINA)
+        frozen_policy = policy_to_dict(policy_from_dict(policy))
+        from app.settings import HYDRA_LIVE_EXECUTABLE_SYMBOLS
+        needed = {symbol for symbol, qty in plan.frozen_target.items()
+                  if qty > 0 or symbol in policy.get("instruments", {}) or symbol in HYDRA_LIVE_EXECUTABLE_SYMBOLS}
+        needed |= {order.symbol for order in orders}
+        specs = {symbol: instrument_to_dict(instrument(symbol, policy_from_dict(policy))) for symbol in needed}
+        windows = frozen_policy.get("execution_windows", {})
+        end_time = (windows.get(plan.phase) or ["09:30:00", "14:55:00"])[1]
+        valid_until = datetime.strptime(plan.trade_date + " " + end_time, "%Y%m%d %H:%M:%S").replace(tzinfo=CHINA)
+        lease = min(local + timedelta(minutes=20), valid_until)
+        frozen_policy["reference_prices"] = {order.symbol: float(order.reference_price) for order in orders}
+        plan.schema_version = 2
+        plan.policy = frozen_policy
+        plan.instrument_specs = specs
+        plan.allowed_symbols = sorted(specs)
+        plan.valid_until = valid_until.isoformat()
+        plan.account_fingerprint = self.account_fingerprint
+        plan.issued_at = local.isoformat()
+        plan.lease_expires_at = lease.isoformat()
+        for key, value in strategy_resources(session, inst, plan.trade_date,
+                exclude={order.client_order_id for order in orders}).items():
+            setattr(plan, key, value)
+        latest = session.execute(select(OmsBrokerSnapshot).where(
+            OmsBrokerSnapshot.account_alias == plan.account_alias,
+            OmsBrokerSnapshot.trade_date == plan.trade_date,
+        ).order_by(OmsBrokerSnapshot.taken_at.desc())).scalars().first()
+        fresh = False
+        if latest is not None:
+            taken = datetime.fromisoformat(latest.taken_at).astimezone(CHINA)
+            fresh = 0 <= (local - taken).total_seconds() <= 1800
+            recon_rows = session.execute(select(OmsReconciliation).where(
+                OmsReconciliation.snapshot_id == latest.snapshot_id)).scalars().all()
+            fresh = fresh and bool(recon_rows) and all(row.passed for row in recon_rows)
+        plan.executable = bool(plan.executable and instance_is_enabled(inst) and self.account_fingerprint
+                               and local.strftime("%Y%m%d") == plan.trade_date and fresh and local <= lease)
+        plan.plan_sha256 = plan_content_sha256(plan.model_dump(mode="json"))
+        return plan
+
+    def plans_for(self, account_alias: str, trade_date: str, phase: str, *, executable_flag: bool,
+                  now: str | None = None) -> dict:
+        with self.session_factory() as session:
+            ids = session.execute(select(OmsCycle.instance_id).join(
+                OmsSession, OmsSession.cycle_id == OmsCycle.cycle_id).where(
+                OmsCycle.account_alias == account_alias, OmsCycle.status.in_(OPEN_STATUSES),
+                OmsSession.trade_date == trade_date, OmsSession.phase == phase,
+            ).order_by(OmsCycle.instance_id)).scalars().all()
+        plans = [self.plan_for(account_alias, trade_date, phase, executable_flag=executable_flag,
+                              instance_id=instance_id, wire_version=2, now=now).model_dump(mode="json")
+                 for instance_id in ids]
+        return {"schema_version": 2, "account_alias": account_alias, "plans": plans,
+                "symbols": self.universe(account_alias)["symbols"]}
+
+    def universe(self, account_alias: str) -> dict:
+        symbols: set[str] = set()
+        instances = []
+        with self.session_factory() as session:
+            for inst in session.execute(select(InstanceState).where(
+                    InstanceState.execution_domain == "live", InstanceState.account_alias == account_alias)).scalars():
+                state = inst.strategy_state or {}
+                managed = set(inst.owned_symbols or ()) | set(inst.virtual_positions or {})
+                symbols |= managed
+                instances.append({"instance_id": inst.instance_id, "enabled": instance_is_enabled(inst),
+                                  "symbols": sorted(managed), "accounting_hold": state.get("accounting_hold")})
+            for cycle in self._open_cycles(session, account_alias):
+                symbols |= set(cycle.frozen_target)
+        return {"schema_version": 2, "account_alias": account_alias, "symbols": sorted(symbols),
+                "instances": instances}
 
     def report(self, cycle_id: str) -> dict:
         with self.session_factory() as session:
@@ -311,13 +475,19 @@ class CycleService:
         for order in orders:
             last_by_symbol[(order.symbol, order.side)] = order
         unfinished = {}
-        for symbol, target in cycle.frozen_target.items():
+        deferrals = {}
+        for row in session.execute(select(OmsSession).where(OmsSession.cycle_id == cycle.cycle_id)
+                                   .order_by(OmsSession.seq)).scalars():
+            for deferred in row.deferrals or []:
+                deferrals[(deferred["symbol"], deferred["side"])] = deferred["reason"]
+        for symbol in set(cycle.frozen_target) | set(positions):
+            target = cycle.frozen_target.get(symbol, 0)
             gap = int(target) - positions.get(symbol, 0)
             if gap == 0:
                 continue
             side = "BUY" if gap > 0 else "SELL"
             last = last_by_symbol.get((symbol, side))
-            reason = last.state if last is not None else "NO_ORDER"
+            reason = last.state if last is not None else deferrals.get((symbol, side), "NO_ORDER")
             unfinished[symbol] = {"side": side, "shares": abs(gap), "value": abs(gap) * prices[symbol],
                                   "reason": reason}
         drift = [{"client_order_id": o.client_order_id, "symbol": o.symbol, "side": o.side,
@@ -328,11 +498,19 @@ class CycleService:
                 "exec_overweight": sum(v["value"] for v in unfinished.values() if v["side"] == "SELL") / nav if nav else 0.,
                 "unfinished": unfinished, "price_drift_bps": drift, "nav": nav}
 
-    def status(self, account_alias: str) -> dict:
+    def status(self, account_alias: str, instance_id: str | None = None) -> dict:
         with self.session_factory() as session:
-            cycle = self._open_cycle(session, account_alias) or session.execute(
-                select(OmsCycle).where(OmsCycle.account_alias == account_alias)
-                .order_by(OmsCycle.cycle_no.desc())).scalars().first()
+            if instance_id is None:
+                instances = session.execute(select(InstanceState.instance_id).where(
+                    InstanceState.execution_domain == "live", InstanceState.account_alias == account_alias)).scalars().all()
+                if len(instances) > 1:
+                    return {"cycle": None, "strategies": [
+                        {"instance_id": identity, **self.status(account_alias, identity)} for identity in instances]}
+            query = select(OmsCycle).where(OmsCycle.account_alias == account_alias)
+            if instance_id is not None:
+                query = query.where(OmsCycle.instance_id == instance_id)
+            cycle = query.order_by(OmsCycle.cycle_no.desc())
+            cycle = session.execute(cycle).scalars().first()
             if cycle is None:
                 return {"cycle": None}
             sessions = session.execute(select(OmsSession).where(OmsSession.cycle_id == cycle.cycle_id)
@@ -341,7 +519,8 @@ class CycleService:
                                      .order_by(OmsOrder.client_order_id)).scalars().all()
             recon = session.execute(select(OmsReconciliation).where(OmsReconciliation.cycle_id == cycle.cycle_id)
                                     .order_by(OmsReconciliation.id.desc())).scalars().first()
-            return {"cycle": {"cycle_id": cycle.cycle_id, "status": cycle.status, "frozen_target": cycle.frozen_target,
+            return {"cycle": {"cycle_id": cycle.cycle_id, "instance_id": cycle.instance_id,
+                              "status": cycle.status, "frozen_target": cycle.frozen_target,
                               "lot_gap": cycle.lot_gap, "schedule": cycle.schedule},
                     "sessions": [{"session_id": s.session_id, "trade_date": s.trade_date, "phase": s.phase,
                                   "status": s.status, "deferrals": s.deferrals} for s in sessions],
@@ -352,6 +531,15 @@ class CycleService:
                     {"passed": recon.passed, "discrepancies": recon.discrepancies, "created_at": recon.created_at}}
 
     @staticmethod
-    def _open_cycle(session, account_alias: str) -> OmsCycle | None:
-        return session.execute(select(OmsCycle).where(OmsCycle.account_alias == account_alias,
-                                                      OmsCycle.status.in_(OPEN_STATUSES))).scalars().first()
+    def _open_cycles(session, account_alias: str, instance_id: str | None = None) -> list[OmsCycle]:
+        query = select(OmsCycle).where(OmsCycle.account_alias == account_alias, OmsCycle.status.in_(OPEN_STATUSES))
+        if instance_id is not None:
+            query = query.where(OmsCycle.instance_id == instance_id)
+        return session.execute(query.order_by(OmsCycle.cycle_no)).scalars().all()
+
+    @staticmethod
+    def _open_cycle(session, account_alias: str, instance_id: str | None = None) -> OmsCycle | None:
+        rows = CycleService._open_cycles(session, account_alias, instance_id)
+        if len(rows) > 1:
+            raise CycleConflict("multiple strategy cycles; instance_id is required")
+        return rows[0] if rows else None

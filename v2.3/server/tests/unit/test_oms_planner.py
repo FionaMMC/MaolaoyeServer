@@ -33,14 +33,18 @@ def test_sell_session_caps_at_sellable_and_uses_attempt_band():
     assert deferrals[0].quantity == 500
 
 
-def test_buy_session_allocates_cash_and_skips_untradable():
+def test_next_day_buy_does_not_inherit_previous_close_trading_flag():
     orders, deferrals = plan_buy_session(
         target={"513100.SH": 1000, "159915.SZ": 400}, positions={}, cash=1500.0,
         buy_anchor={"513100.SH": 2.196, "159915.SZ": 3.330}, tradable={"513100.SH"}, policy=P)
-    assert [o.symbol for o in orders] == ["513100.SH"]
-    assert orders[0].quantity == 600 and orders[0].limit_price == 2.228
+    assert {o.symbol for o in orders} == {"513100.SH", "159915.SZ"}
     reasons = {(d.symbol, d.reason) for d in deferrals}
-    assert ("159915.SZ", "SUSPENDED") in reasons and ("513100.SH", "CASH") in reasons
+    assert all(reason != "SUSPENDED" for _, reason in reasons)
+    assert ("513100.SH", "CASH") in reasons
+    same, _ = plan_buy_session(
+        target={"513100.SH": 1000, "159915.SZ": 400}, positions={}, cash=1500.0,
+        buy_anchor={"513100.SH": 2.196, "159915.SZ": 3.330}, tradable=set(), policy=P)
+    assert same == orders
 
 
 def test_october_schedule_matches_design_table():
