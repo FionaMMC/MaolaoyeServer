@@ -21,6 +21,19 @@ QMT_FIX_PRICE = 11
 OMS_STRATEGY_NAME = "hydra_oms"
 
 
+def _observed_frozen_cash(value: Any) -> float | None:
+    """XtAsset.frozen_cash is authoritative when present; unavailable stays None."""
+    if value is None:
+        return None
+    try:
+        amount = float(value)
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError("QMT frozen_cash is not a valid amount") from exc
+    if isinstance(value, bool) or not math.isfinite(amount) or amount < 0:
+        raise RuntimeError("QMT frozen_cash must be finite and nonnegative")
+    return amount
+
+
 @dataclass(frozen=True)
 class AccountSnapshot:
     account_id: str
@@ -29,6 +42,8 @@ class AccountSnapshot:
     positions: dict[str, int]
     sellable_positions: dict[str, int]
     position_market_values: dict[str, float] = field(default_factory=dict)
+    # None means the broker did not expose this fact; never estimate it from orders.
+    frozen_cash: float | None = None
 
 
 @dataclass(frozen=True)
@@ -265,6 +280,7 @@ class MockQMTGateway:
         return AccountSnapshot(
             account_id=account_id,
             available_cash=float(self.payload.get("available_cash", 0)),
+            frozen_cash=_observed_frozen_cash(self.payload.get("frozen_cash")),
             total_asset=float(
                 self.payload.get("total_asset", self.payload.get("available_cash", 0))
             ),
@@ -404,7 +420,7 @@ class MockQMTGateway:
             return None
         return [dict(row) for row in self.payload.get("day_trades", [])]
 
-    def quotes(self, symbols: list[str]) -> dict[str, dict]:
+    def quotes(self, symbols: list[str], *, as_of: datetime | None = None) -> dict[str, dict]:
         configured = dict(self.payload.get("quotes", {}))
         return {
             symbol: {
@@ -514,6 +530,7 @@ class XtQMTGateway:
             cash = getattr(asset, "m_dCash", None)
         if cash is None:
             raise RuntimeError("QMT asset 缺少可用资金字段")
+        frozen_cash = _observed_frozen_cash(getattr(asset, "frozen_cash", None))
         mapped = {}
         sellable = {}
         market_values = {}
@@ -544,7 +561,7 @@ class XtQMTGateway:
             raise RuntimeError("QMT asset 缺少总资产字段")
         return AccountSnapshot(
             account_id, float(cash), float(total_asset), mapped, sellable,
-            market_values,
+            market_values, frozen_cash=frozen_cash,
         )
 
     def market_quote(self, symbol: str) -> MarketQuote:
@@ -592,6 +609,23 @@ class XtQMTGateway:
         if orders is None:
             raise RuntimeError("QMT 可撤委托查询返回空值，无法区分失败与空列表")
         return [_broker_order_snapshot(order) for order in orders]
+
+    def execution_rules(self, symbol: str) -> dict:
+        """Read current instrument bands without requiring a nonempty order book."""
+        if self.xtdata is None:
+            raise RuntimeError("QMT 尚未连接")
+        detail = self.xtdata.get_instrument_detail(symbol)
+        if not isinstance(detail, dict):
+            raise RuntimeError(f"QMT instrument rules missing: {symbol}")
+        tick = _first_positive(detail.get("PriceTick"))
+        upper, lower = _first_positive(detail.get("UpStopPrice")), _first_positive(detail.get("DownStopPrice"))
+        if tick is None or upper is None or lower is None or lower > upper:
+            raise RuntimeError(f"QMT instrument tick/price bands invalid: {symbol}")
+        raw = (self.xtdata.get_full_tick([symbol]) or {}).get(symbol) or {}
+        source_time = None
+        if _first_present(raw, "time", "timetag") is not None:
+            source_time = _tick_time(_first_present(raw, "time", "timetag")).isoformat()
+        return {"price_tick": tick, "up_limit": upper, "down_limit": lower, "source_time": source_time}
 
     def orders_by_remark(self, remark: str) -> list[BrokerOrderSnapshot]:
         if self.trader is None or self.account is None:
@@ -1127,16 +1161,62 @@ class XtQMTGateway:
         sides = {self.xtconstant.STOCK_BUY: "BUY", self.xtconstant.STOCK_SELL: "SELL"}
         return [oms_trade_row(raw, sides) for raw in rows]
 
-    def quotes(self, symbols: list[str]) -> dict[str, dict]:
-        """Last price and trading flag per symbol; symbols without a valid
-        quote are omitted so the server sees a missing anchor, not a guess."""
+    def quotes(self, symbols: list[str], *, as_of: datetime | None = None) -> dict[str, dict]:
+        """Collect valuation anchors independently of a live order book.
+
+        Empty bid/ask after close does not invalidate the last trade. Preserve
+        broker status as evidence; closed-session status is not a suspension rule.
+        """
         if self.xtdata is None:
             raise RuntimeError("QMT 尚未连接")
+        now = (as_of or datetime.now(CHINA_TIMEZONE)).astimezone(CHINA_TIMEZONE)
         result = {}
+        ticks = self.xtdata.get_full_tick(symbols) or {}
         for symbol in symbols:
+            tick = ticks.get(symbol) or {}
+            last = _first_positive(_first_present(tick, "lastPrice", "last_price"))
+            source = None
             try:
-                quote = self.market_quote(symbol)
+                source = _tick_time(_first_present(tick, "time", "timetag")).astimezone(CHINA_TIMEZONE)
             except RuntimeError:
+                pass
+            price_source = "raw_tick"
+            close = now.replace(hour=15, minute=0, second=0, microsecond=0)
+            if now >= close and (last is None or source is None or not close <= source <= now):
+                # Cached raw daily data only: never initiate a market-data download.
+                try:
+                    day = now.strftime("%Y%m%d")
+                    frame = (self.xtdata.get_market_data_ex(["close"], [symbol], "1d", day, day,
+                             dividend_type="none", fill_data=False) or {}).get(symbol)
+                    if frame is None or len(frame) != 1:
+                        continue
+                    index = frame.index[0]
+                    if hasattr(index, "strftime"):
+                        bar_day = index.strftime("%Y%m%d")
+                    else:
+                        text = str(index)
+                        if len(text) in (8, 14) and text.isdigit():
+                            bar_day = text[:8]
+                        else:
+                            bar_day = _tick_time(index).astimezone(CHINA_TIMEZONE).strftime("%Y%m%d")
+                    if bar_day != day:
+                        continue
+                    last = _first_positive(frame.iloc[0]["close"])
+                    source, price_source = close, "raw_daily_close"
+                except Exception:
+                    continue
+            if last is None or source is None:
                 continue
-            result[symbol] = {"last_price": quote.last_price, "is_trading": quote.is_trading}
+            try:
+                detail = self.xtdata.get_instrument_detail(symbol) or {}
+            except Exception:
+                detail = {}
+            has_status = detail.get("IsTrading") is not None
+            result[symbol] = {
+                "last_price": last, "source_time": source.isoformat(),
+                "price_source": price_source, "adjustment": "none",
+                "is_trading": bool(detail["IsTrading"]) if has_status else None,
+                "market_status": str(tick["openInt"]) if tick.get("openInt") is not None else None,
+                "status_source": "instrument_detail.IsTrading" if has_status else "unknown",
+            }
         return result

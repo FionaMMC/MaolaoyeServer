@@ -1,0 +1,46 @@
+{
+  "stage": "READY_FOR_WINDOWS_QMT_ACCEPTANCE",
+  "source_commit": "bcdfd166faf13281c535d514c73d809570231ac9",
+  "source_sha256": "e8c520e5b9da3957ca31927ade58ce0aefb40f2bb83d49c8c25fb965ac276eab",
+  "local_server": {
+    "tests": 965,
+    "errors": 0,
+    "failures": 0,
+    "skipped": 1,
+    "passed": 964
+  },
+  "local_client": {
+    "tests": 266,
+    "errors": 0,
+    "failures": 0,
+    "skipped": 0,
+    "passed": 266
+  },
+  "remote_server": {
+    "tests": 965,
+    "errors": 0,
+    "failures": 0,
+    "skipped": 1,
+    "passed": 964
+  },
+  "remote_client": {
+    "tests": 266,
+    "errors": 0,
+    "failures": 0,
+    "skipped": 0,
+    "passed": 266
+  },
+  "remote_final_integration_safety": {
+    "tests": 11,
+    "errors": 0,
+    "failures": 0,
+    "skipped": 0,
+    "passed": 11
+  },
+  "schema_copy_verified": true,
+  "production_services_changed": false,
+  "real_broker_orders": 0,
+  "windows_native_acceptance": "PENDING_EXTERNAL",
+  "qmt_real_field_acceptance": "PENDING_EXTERNAL",
+  "approved_policy_and_opening_allocation": "PENDING_OPERATOR_INPUT"
+}

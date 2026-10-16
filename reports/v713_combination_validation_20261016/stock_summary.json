@@ -1,0 +1,371 @@
+{
+  "status": "COMPLETED_INDEPENDENT_RECONSTRUCTION_NOT_EXACT_OCT11_REPRODUCTION",
+  "command": [
+    "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/v713_combination_validation_stock.py",
+    "--source",
+    "/opt/qmt-refresh/releases/small_cap_peer-88c2cb1-roe-pit-nullfix-20260809",
+    "--data",
+    "/opt/qmt-refresh/v79/data",
+    "--output",
+    "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock"
+  ],
+  "script_sha256": "7f0138e6a432fd65759311752e97c0a269c3b890083bd477eece78787bb683f5",
+  "source_files": [
+    {
+      "source": "/opt/qmt-refresh/releases/small_cap_peer-88c2cb1-roe-pit-nullfix-20260809/common.py",
+      "copied_to": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/source/common.py",
+      "bytes": 20242,
+      "sha256": "d35dab4b3921658269242bc3b1c5222bea82f8e89ed4167aa9414fa3ad76535b",
+      "copy_sha256": "d35dab4b3921658269242bc3b1c5222bea82f8e89ed4167aa9414fa3ad76535b"
+    },
+    {
+      "source": "/opt/qmt-refresh/releases/small_cap_peer-88c2cb1-roe-pit-nullfix-20260809/cache_meta.json",
+      "copied_to": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/source/cache_meta.json",
+      "bytes": 382,
+      "sha256": "cf2d882042178391d5ac82adb2e9805d149a42831acca829d65f2f3566afcd85",
+      "copy_sha256": "cf2d882042178391d5ac82adb2e9805d149a42831acca829d65f2f3566afcd85"
+    },
+    {
+      "source": "/opt/qmt-refresh/releases/small_cap_peer-88c2cb1-roe-pit-nullfix-20260809/price_cache.npy",
+      "copied_to": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/source/price_cache.npy",
+      "bytes": 72567560,
+      "sha256": "7f3886cf60a08346aaa8f2b8e5e3028008839bd04d16bef7c7a228b0917a17b3",
+      "copy_sha256": "7f3886cf60a08346aaa8f2b8e5e3028008839bd04d16bef7c7a228b0917a17b3"
+    },
+    {
+      "source": "/opt/qmt-refresh/releases/small_cap_peer-88c2cb1-roe-pit-nullfix-20260809/raw_price_cache.npy",
+      "copied_to": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/source/raw_price_cache.npy",
+      "bytes": 72567560,
+      "sha256": "7dadd231c55b10ef1f2c8cb35bedad908909538ac228692c4a566f6bf93e0e5e",
+      "copy_sha256": "7dadd231c55b10ef1f2c8cb35bedad908909538ac228692c4a566f6bf93e0e5e"
+    },
+    {
+      "source": "/opt/qmt-refresh/releases/small_cap_peer-88c2cb1-roe-pit-nullfix-20260809/roe_cache.npy",
+      "copied_to": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/source/roe_cache.npy",
+      "bytes": 3116792,
+      "sha256": "7b5aedb4aad1cc51145ff866b24bb3eb2005c4f924d0ee93a6efe8fc35deb708",
+      "copy_sha256": "7b5aedb4aad1cc51145ff866b24bb3eb2005c4f924d0ee93a6efe8fc35deb708"
+    },
+    {
+      "source": "/opt/qmt-refresh/releases/small_cap_peer-88c2cb1-roe-pit-nullfix-20260809/shares_cache_pit.npy",
+      "copied_to": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/source/shares_cache_pit.npy",
+      "bytes": 6233456,
+      "sha256": "7e008fd7d1661cd00651ff5106d00a9fa519a9a744ff8028acbe4b77304ce25d",
+      "copy_sha256": "7e008fd7d1661cd00651ff5106d00a9fa519a9a744ff8028acbe4b77304ce25d"
+    },
+    {
+      "source": "/opt/qmt-refresh/releases/small_cap_peer-88c2cb1-roe-pit-nullfix-20260809/st_mask_cache_pit.npy",
+      "copied_to": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/source/st_mask_cache_pit.npy",
+      "bytes": 18141986,
+      "sha256": "d64ba48866a7dba0acf294efd10f435592a0c71b3f3b6852065187ec8c3c5ec5",
+      "copy_sha256": "d64ba48866a7dba0acf294efd10f435592a0c71b3f3b6852065187ec8c3c5ec5"
+    },
+    {
+      "source": "/opt/qmt-refresh/releases/small_cap_peer-88c2cb1-roe-pit-nullfix-20260809/suspend_cache.npy",
+      "copied_to": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/source/suspend_cache.npy",
+      "bytes": 18141986,
+      "sha256": "7692741b808034deb31a40d96a26a27e5a3608e2939cfab0ce74170dc70649e4",
+      "copy_sha256": "7692741b808034deb31a40d96a26a27e5a3608e2939cfab0ce74170dc70649e4"
+    },
+    {
+      "source": "/opt/qmt-refresh/releases/small_cap_peer-88c2cb1-roe-pit-nullfix-20260809/volume_cache.npy",
+      "copied_to": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/source/volume_cache.npy",
+      "bytes": 72567560,
+      "sha256": "78022327364c5d5e1a50a78881c476f7daaf3c69af32b95500974bc40f744af7",
+      "copy_sha256": "78022327364c5d5e1a50a78881c476f7daaf3c69af32b95500974bc40f744af7"
+    },
+    {
+      "source": "/opt/qmt-refresh/releases/small_cap_peer-88c2cb1-roe-pit-nullfix-20260809/round4/v7.13/baseline.py",
+      "copied_to": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/source/round4/v7.13/baseline.py",
+      "bytes": 8443,
+      "sha256": "79a37aa563fe13a2f7311db973e50b3c8b08153a4b70563ded7bba7a13bf707a",
+      "copy_sha256": "79a37aa563fe13a2f7311db973e50b3c8b08153a4b70563ded7bba7a13bf707a"
+    },
+    {
+      "source": "/opt/qmt-refresh/releases/small_cap_peer-88c2cb1-roe-pit-nullfix-20260809/round4/v7.13/execution.py",
+      "copied_to": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/source/round4/v7.13/execution.py",
+      "bytes": 8842,
+      "sha256": "8809ff7ccaf6944558a5479f85e28e516b92b91af2d6535cb4d1437e7f4709b3",
+      "copy_sha256": "8809ff7ccaf6944558a5479f85e28e516b92b91af2d6535cb4d1437e7f4709b3"
+    }
+  ],
+  "data_root": "/opt/qmt-refresh/v79/data",
+  "source_release": "/opt/qmt-refresh/releases/small_cap_peer-88c2cb1-roe-pit-nullfix-20260809",
+  "output_directory": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock",
+  "used_input_files": [
+    {
+      "path": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/source/price_cache.npy",
+      "bytes": 72567560,
+      "sha256": "7f3886cf60a08346aaa8f2b8e5e3028008839bd04d16bef7c7a228b0917a17b3"
+    },
+    {
+      "path": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/source/raw_price_cache.npy",
+      "bytes": 72567560,
+      "sha256": "7dadd231c55b10ef1f2c8cb35bedad908909538ac228692c4a566f6bf93e0e5e"
+    },
+    {
+      "path": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/source/roe_cache.npy",
+      "bytes": 3116792,
+      "sha256": "7b5aedb4aad1cc51145ff866b24bb3eb2005c4f924d0ee93a6efe8fc35deb708"
+    },
+    {
+      "path": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/source/shares_cache_pit.npy",
+      "bytes": 6233456,
+      "sha256": "7e008fd7d1661cd00651ff5106d00a9fa519a9a744ff8028acbe4b77304ce25d"
+    },
+    {
+      "path": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/source/st_mask_cache_pit.npy",
+      "bytes": 18141986,
+      "sha256": "d64ba48866a7dba0acf294efd10f435592a0c71b3f3b6852065187ec8c3c5ec5"
+    },
+    {
+      "path": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/source/suspend_cache.npy",
+      "bytes": 18141986,
+      "sha256": "7692741b808034deb31a40d96a26a27e5a3608e2939cfab0ce74170dc70649e4"
+    },
+    {
+      "path": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/source/volume_cache.npy",
+      "bytes": 72567560,
+      "sha256": "78022327364c5d5e1a50a78881c476f7daaf3c69af32b95500974bc40f744af7"
+    },
+    {
+      "path": "/opt/qmt-refresh/v79/data/market/daily/indexes/000852.SH.parquet",
+      "sha256": "92d999209dbfb55c7f8054ecff9e4154369c2754b233d40dea0355d0b3d2424b"
+    }
+  ],
+  "source_strategy_commit_label": "88c2cb1050c7391ce84a9d524a9884dfefaf3ef4 plus ROE PIT null patch; file hashes authoritative",
+  "periods": 125,
+  "range": [
+    "2016-01-29",
+    "2026-06-30"
+  ],
+  "selection_aum": 1000000,
+  "universe_size": 5526,
+  "calendar_range": [
+    "2013-04-01",
+    "2026-10-08"
+  ],
+  "missing_price_months": 1,
+  "missing_stock_months": 2,
+  "oct11_report_missing_months": 36,
+  "oct11_report_missing_stock_months": 46,
+  "fresh": [
+    {
+      "capital": 100000,
+      "cases": 125,
+      "weight_deviation_median": 0.06488365473747251,
+      "weight_deviation_p90": 0.1543589559173584,
+      "coverage_median": 0.9344609548106338,
+      "held_50_count": 75,
+      "minimum_held_count": 42
+    },
+    {
+      "capital": 200000,
+      "cases": 125,
+      "weight_deviation_median": 0.030841334712505334,
+      "weight_deviation_p90": 0.0518142353963852,
+      "coverage_median": 0.9688471366540351,
+      "held_50_count": 111,
+      "minimum_held_count": 49
+    },
+    {
+      "capital": 400000,
+      "cases": 125,
+      "weight_deviation_median": 0.014694648838043216,
+      "weight_deviation_p90": 0.021374517625808706,
+      "coverage_median": 0.985156920365613,
+      "held_50_count": 125,
+      "minimum_held_count": 50
+    },
+    {
+      "capital": 1000000,
+      "cases": 125,
+      "weight_deviation_median": 0.005775905076980594,
+      "weight_deviation_p90": 0.007861752189064028,
+      "coverage_median": 0.9941657524474945,
+      "held_50_count": 125,
+      "minimum_held_count": 50
+    }
+  ],
+  "rolling": [
+    {
+      "capital": 100000,
+      "scenario": "minimum_5",
+      "windows": 114,
+      "relative_nav_deviation_median": -0.04283813524134439,
+      "relative_nav_deviation_worst": -0.06650724986554979,
+      "tracking_error_median": 0.009872120759652134,
+      "clean_windows": 112
+    },
+    {
+      "capital": 100000,
+      "scenario": "no_fees",
+      "windows": 114,
+      "relative_nav_deviation_median": -0.007369682327223903,
+      "relative_nav_deviation_worst": -0.0383655512984824,
+      "tracking_error_median": 0.008356301548757456,
+      "clean_windows": 112
+    },
+    {
+      "capital": 100000,
+      "scenario": "proportional",
+      "windows": 114,
+      "relative_nav_deviation_median": -0.01200720060635968,
+      "relative_nav_deviation_worst": -0.0422741644837058,
+      "tracking_error_median": 0.008636915149920397,
+      "clean_windows": 112
+    },
+    {
+      "capital": 200000,
+      "scenario": "minimum_5",
+      "windows": 114,
+      "relative_nav_deviation_median": -0.0224808631646084,
+      "relative_nav_deviation_worst": -0.034306465722639845,
+      "tracking_error_median": 0.0037988650948747784,
+      "clean_windows": 112
+    },
+    {
+      "capital": 200000,
+      "scenario": "no_fees",
+      "windows": 114,
+      "relative_nav_deviation_median": -0.002895296912794054,
+      "relative_nav_deviation_worst": -0.015977416599085248,
+      "tracking_error_median": 0.0035464937659296855,
+      "clean_windows": 112
+    },
+    {
+      "capital": 200000,
+      "scenario": "proportional",
+      "windows": 114,
+      "relative_nav_deviation_median": -0.0073840084450959576,
+      "relative_nav_deviation_worst": -0.0197675331920093,
+      "tracking_error_median": 0.003644315935606909,
+      "clean_windows": 112
+    },
+    {
+      "capital": 400000,
+      "scenario": "minimum_5",
+      "windows": 114,
+      "relative_nav_deviation_median": -0.01421398639376098,
+      "relative_nav_deviation_worst": -0.01979184032929071,
+      "tracking_error_median": 0.002004872711806438,
+      "clean_windows": 112
+    },
+    {
+      "capital": 400000,
+      "scenario": "no_fees",
+      "windows": 114,
+      "relative_nav_deviation_median": -0.0036322236017253817,
+      "relative_nav_deviation_worst": -0.010768969556113506,
+      "tracking_error_median": 0.0016419302330427025,
+      "clean_windows": 112
+    },
+    {
+      "capital": 400000,
+      "scenario": "proportional",
+      "windows": 114,
+      "relative_nav_deviation_median": -0.007564305802903959,
+      "relative_nav_deviation_worst": -0.013704001657646736,
+      "tracking_error_median": 0.001870251522760308,
+      "clean_windows": 112
+    },
+    {
+      "capital": 1000000,
+      "scenario": "minimum_5",
+      "windows": 114,
+      "relative_nav_deviation_median": -0.00928545128746483,
+      "relative_nav_deviation_worst": -0.01272888407901862,
+      "tracking_error_median": 0.0010582332471131,
+      "clean_windows": 112
+    },
+    {
+      "capital": 1000000,
+      "scenario": "no_fees",
+      "windows": 114,
+      "relative_nav_deviation_median": -0.0031676924514186244,
+      "relative_nav_deviation_worst": -0.008346986009817092,
+      "tracking_error_median": 0.0007182167855246991,
+      "clean_windows": 112
+    },
+    {
+      "capital": 1000000,
+      "scenario": "proportional",
+      "windows": 114,
+      "relative_nav_deviation_median": -0.0073429375760903914,
+      "relative_nav_deviation_worst": -0.01141558148242483,
+      "tracking_error_median": 0.0011030272596772093,
+      "clean_windows": 112
+    }
+  ],
+  "remote_artifacts": [
+    {
+      "path": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/continuous_monthly_paths.parquet",
+      "sha256": "f2e22b63e4880b706664009af6d3989b341513c468275913fe50e778067c7ece",
+      "bytes": 75035
+    },
+    {
+      "path": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/fresh_sizing.parquet",
+      "sha256": "92f48de8c77e750d5af12b078c26d665de91d3d0dc7991c1613421d2b9447d97",
+      "bytes": 20602
+    },
+    {
+      "path": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/monthly_panel.parquet",
+      "sha256": "dfab376e2668ed416bc0d676689e610e3ac3feb1e3727880389dfcc76b71927d",
+      "bytes": 12595
+    },
+    {
+      "path": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/rolling_metrics.parquet",
+      "sha256": "c3193099ede508061eaf2a3fc712a556b127977b1cd0ae1e0ae3bb377c075011",
+      "bytes": 41766
+    }
+  ],
+  "assumptions": {
+    "cash": 0.01,
+    "commission_rate": 0.0002,
+    "minimum_commission_scenarios": [
+      0,
+      5
+    ],
+    "actual_broker_fees_confirmed": false,
+    "rounding": "nearest legal initial holding; budget trim minimizes increase in absolute target-value error per released yuan; no refill",
+    "star_lot": "688 min200 thereafter1; other symbols100, historical constant sensitivity convention",
+    "transaction_costs": "economic holding-value changes, not actual legal share delta orders; fees deducted with >=1% postfee cash",
+    "valuation": "adjusted-price return with last valid adjusted price for missing endpoints",
+    "cash_weight_location": "1% inside continuous stock sleeve; not a 1% reserve on the complete V713 blend"
+  },
+  "limitations": [
+    "Oct11 original experiment scripts/frozen input hashes/outputs not located on searched qmt paths or local code; allocator differs and no exact numerical reproduction asserted",
+    "Current remote source caches are dated October; Oct11 frozen hashes unavailable, including ROE/shares matrices; historical input equivalence unverified",
+    "Forward-filled prices permit valuation only, not evidence of sellability; missing holdings assumed rebalanceable",
+    "Adjusted-return economic-value ledger does not model cash dividends, split/share events or exact legal delta orders",
+    "No transfer fee, live slippage, order book/limit queue, suspensions at execution, T+1, broker rejection, settlement or execution capacity model",
+    "50-name universe chosen at fixed 1M selection parameter; no claim of unbiased delisted-universe completeness",
+    "114 overlapping annual windows are not independent samples",
+    "No market data downloaded locally; no production writes, orders, or deployment",
+    "Month-end model uses same-close sizing; signal publication and real execution timing are not reconstructed",
+    "Different missing-price counts/clean-window counts versus Oct11 are input differences, not an established data-quality improvement; cache preprocessing and delisted completeness unresolved."
+  ],
+  "assertions": {
+    "fresh_cases": 500,
+    "all_fresh_capital_conserved": true,
+    "all_fresh_cash_at_least_1pct": true,
+    "all_paths_nonnegative_cash_and_fee_conservation": true
+  },
+  "original_sources_unchanged_after_run": true,
+  "calendar_artifact": {
+    "path": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/trading_calendar.json",
+    "sha256": "4ff05af525d0b032cef53afb68656ae440ad9e9eede259e308601fbe9a7190d5",
+    "source": "/opt/qmt-refresh/v79/data/market/daily/indexes/000852.SH.parquet",
+    "dates": 3283
+  },
+  "endpoint_data_quality": {
+    "raw_missing_stock_months": 2,
+    "raw_missing_months": 1,
+    "adjusted_missing_stock_months": 2,
+    "adjusted_missing_months": 1,
+    "note": "Current matrices, not Oct11 frozen inputs; finite raw cache values do not establish quote freshness or executable prices."
+  },
+  "postprocess_commands": [
+    "Remote python: export same-source CSI1000 sorted trading calendar; count finite raw/adjusted endpoint quotes using same source load_pool order and isolated matrices. No second load_inputs."
+  ]
+}

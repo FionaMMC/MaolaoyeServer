@@ -1,0 +1,188 @@
+{
+  "metadata": {
+    "created_at_utc": "2026-10-16T11:27:02.370146+00:00",
+    "script": {
+      "path": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/hydra/v713_combination_validation_hydra.py",
+      "sha256": "606be76a96511a7ba3353b6a66f6af82a6a0fa2893d24c69e0cce1912bb0324e",
+      "bytes": 15538
+    },
+    "stock_panel": {
+      "path": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/monthly_panel.parquet",
+      "sha256": "dfab376e2668ed416bc0d676689e610e3ac3feb1e3727880389dfcc76b71927d",
+      "bytes": 12595
+    },
+    "stock_trading_calendar": {
+      "path": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/trading_calendar.json",
+      "sha256": "4ff05af525d0b032cef53afb68656ae440ad9e9eede259e308601fbe9a7190d5",
+      "bytes": 45962
+    },
+    "original_forward_rate_proxy": {
+      "path": "/opt/qmt-refresh/releases/permenant_portfolio-66985a1/v48/output_forward_rate_bond/daily_returns.parquet",
+      "sha256": "f01690e74ccc2c999c2ff3e21d9a78043c1c0352631401ae21a79db7a9becf1f",
+      "bytes": 31113,
+      "rows": 1602,
+      "start": "2019-12-06",
+      "end": "2026-07-17"
+    },
+    "rb_66985_research_ledger": {
+      "path": "/opt/qmt-refresh/releases/permenant_portfolio-66985a1/v48/execution_ledgers/v48.1-RB-66985a1/daily_returns.parquet",
+      "sha256": "ad9101326935ed09c068db66d05c4e5ea39e73aea204e8d008471ed92e246547",
+      "bytes": 46500,
+      "rows": 1607,
+      "start": "2019-12-06",
+      "end": "2026-07-24"
+    },
+    "rb_manifest": {
+      "path": "/opt/qmt-refresh/releases/permenant_portfolio-66985a1/v48/execution_ledgers/v48.1-RB-66985a1/manifest.json",
+      "sha256": "8902e217ab1faad478ece3fee20a4ff57e5beaeb6b8e5898f5f2c5d9b7b82ded",
+      "bytes": 744
+    },
+    "rb_execution_assumptions": {
+      "strategy_version": "v48.1-RB",
+      "status": "shadow_execution_audit",
+      "execution_rule": "decision_close_then_next_trading_day_open",
+      "price_source": "raw_tushare_fund_daily",
+      "dividend_source": "tushare_fund_div_cash",
+      "lot_rounding": "not_applied_in_research_ledger",
+      "buy_cost_bps": 1.0,
+      "sell_cost_bps": 1.0,
+      "weight_source_sha256": "d4e988c3425c4d63879cd72d6e422a316ae187ff1b4aa6cccf7abeb55747e6d5"
+    },
+    "base_weights": {
+      "path": "/opt/qmt-refresh/releases/permenant_portfolio-66985a1/v48/output/asset_weights.parquet",
+      "sha256": "ec80dfcab7293a9161d8ee8a78cbb60298c1a8942f6d9767e14a70b846fa8725",
+      "bytes": 13646
+    },
+    "rb_weights": {
+      "path": "/opt/qmt-refresh/releases/permenant_portfolio-66985a1/v48/output_v481_rb/asset_weights.parquet",
+      "sha256": "d4e988c3425c4d63879cd72d6e422a316ae187ff1b4aa6cccf7abeb55747e6d5",
+      "bytes": 13752
+    },
+    "research_only": true,
+    "actual_live_nav": false,
+    "periods_per_year": 12,
+    "comparison_basis": "Identical stock returns, original states and complete daily calendars; different Hydra research proxies",
+    "known_at_semantics": "Research month-end information assumption, not proof of executable closing-price orders",
+    "stock_return_semantics": "Original gross TOP50 return; stock_net_proxy_return separately subtracts original stock turnover cost; no lot execution added",
+    "stock_carry_valuation_return_semantics": "Separate stock audit sensitivity preserving held names and carrying prior adjusted marks when a period-end quote is missing",
+    "baseline_cost_difference": "Original baseline subtracts stock turnover cost even in AUX_HYDRA; unit-leg combination scales stock cost by stock sleeve weight",
+    "original_hydra_caveat": "Synthetic bond-index monthly returns spread over daily returns; not an executable ETF account NAV",
+    "rb_caveat": "Old 66985 research ledger, not authenticated current aa6 live model or broker NAV; fractional positions and next-open assumptions",
+    "interpretation": "Demonstrates non-equivalence, not an isolated causal RB effect or a strategy-selection performance contest",
+    "coverage_rule": "Both period boundaries observed in both series; daily dates in (start,end] equal each other and the independently exported stock calendar; no zero filling; internal gaps rejected"
+  },
+  "current_targets": {
+    "observed_at_utc": "2026-10-16T11:27:02.371215+00:00",
+    "v713_main": {
+      "path": "/opt/qmt-server/v2.3/server/plugins/v713/data/v713_target_latest.parquet",
+      "sha256": "3ba9b08baac59a810fc36d765e641dc58134e09eea2db9d5260b8b864bd29047",
+      "bytes": 5324,
+      "sidecar": {
+        "path": "/opt/qmt-server/v2.3/server/plugins/v713/data/v713_target_latest.json",
+        "sha256": "a8c36bd7cf2d791a5b65ff90580acf9779678b0e7eaa2db72db8478d8fc29482",
+        "bytes": 402,
+        "metadata": {
+          "sleeve": "T1_5050",
+          "hydra_weights_sha256": "8435571e691741c10049626367cbd5999cfb5b577f4a3f40a21eade57c568f3c",
+          "basket_sha256": "2964152696efef36f38064f1568205980898f65b5be797ec26b184026b8fb0cf",
+          "decision_date": "20261009",
+          "strategy_version": "v7.13-base",
+          "as_of_date": "20260930"
+        }
+      }
+    },
+    "v713_hydra_child": {
+      "path": "/opt/qmt-refresh/releases/permenant_portfolio-66985a1/v48/output_forward_rate_bond/v713_hydra_latest.parquet",
+      "sha256": "8435571e691741c10049626367cbd5999cfb5b577f4a3f40a21eade57c568f3c",
+      "bytes": 4372,
+      "sidecar": {
+        "path": "/opt/qmt-refresh/releases/permenant_portfolio-66985a1/v48/output_forward_rate_bond/v713_hydra_latest.json",
+        "sha256": "f0db4f437f2f7a2ecd4dbc476cf55ddd77636a00ea455784952ccd4d40291bc3",
+        "bytes": 933,
+        "metadata": {
+          "publisher_source_commit": "c492531440cdd84b60d2c4ae281235f292bd31da",
+          "generated_at_utc": "2026-07-25T03:10:03.291670+00:00",
+          "strategy_version": "v48-forward-rate-bond-walkforward",
+          "training_label_end": "20260630",
+          "asset_weights_sha256": "ec80dfcab7293a9161d8ee8a78cbb60298c1a8942f6d9767e14a70b846fa8725",
+          "signal_anchor_date": "20260630",
+          "selected_duration_etf": "511160.SH",
+          "as_of_date": "20260630",
+          "selected_duration_bucket": "1-3Y",
+          "training_audit_sha256": "3792e4d7855a1155448f64c3bdf048591443f5494e696b489b6e99bb9480b19e",
+          "signals_sha256": "419133d8ccd103992d9f1d700211a4339a8bf2b21d0c6bc403bb1878ea3c3d63"
+        }
+      }
+    },
+    "independent_hydra_oms": {
+      "instance_id": "live_hydra_v481_rb",
+      "signal_date": "20260930",
+      "source_sha256": "69e53a9d6f6722b590fade36523cd830c0019313324fb541451d6fafb5a203b5",
+      "created_at": "2026-10-07T22:03:49+08:00",
+      "etf_symbols": [
+        "159915.SZ",
+        "159930.SZ",
+        "159981.SZ",
+        "159985.SZ",
+        "510300.SH",
+        "511260.SH",
+        "513100.SH",
+        "513500.SH",
+        "518880.SH"
+      ],
+      "model_commit_authenticated_from_target": false
+    },
+    "perf_snapshot_coverage_only": [
+      {
+        "instance_id": "live_hydra_v481_rb",
+        "execution_domain": "live",
+        "rows": 19,
+        "start": "20260914",
+        "end": "20261016"
+      },
+      {
+        "instance_id": "paper_v79_v713_relay",
+        "execution_domain": "paper",
+        "rows": 47,
+        "start": "20260725",
+        "end": "20261008"
+      }
+    ],
+    "instance_ledger_classification_only": [
+      {
+        "instance_id": "live_hydra_v481_rb",
+        "execution_domain": "live",
+        "ledger_mode": "attributed"
+      },
+      {
+        "instance_id": "paper_v79_v713_relay",
+        "execution_domain": "paper",
+        "ledger_mode": "attributed"
+      }
+    ],
+    "v713_live_attributed_instance_count": 0,
+    "v713_live_snapshot_rows": 0,
+    "v713_oms_target_rows": 0,
+    "coverage_name_scope": "V713 instances whose server instance_id contains v713; unrelated external accounts are not surveyed",
+    "performance_coverage_caution": "Snapshot existence is not authenticated broker NAV. No account values, cash flows, holdings, or live NAV series were read. No actual two-leg performance is inferred."
+  },
+  "common_months": 78,
+  "start": "2019-12-31",
+  "end": "2026-06-30",
+  "state_counts": {
+    "TOP50": 46,
+    "T1_5050": 29,
+    "AUX_HYDRA": 3
+  },
+  "stock_input_months": 125,
+  "excluded_months": 47,
+  "exclusion_reasons": {
+    "boundary_outside_observed_daily_calendar": 47
+  },
+  "hydra_return_nonidentical_months": 78,
+  "hydra_mean_abs_monthly_difference_bps": 42.57933417539657,
+  "hydra_max_abs_monthly_difference_bps": 153.01756241417164,
+  "same_state_combination_nonidentical_months": 32,
+  "same_state_combination_max_abs_monthly_difference_bps": 127.30319346569097,
+  "remote_period_panel": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/hydra/monthly_panel.json"
+}

@@ -326,8 +326,11 @@ def test_sim_gateway_mirrors_the_xt_gateway_surface():
         gateway.cancel_order(order.order_id)  # closing auction: no cancels
 
     ex.set_clock(D1, "150500")
-    assert gateway.quotes(["510300.SH", "159915.SZ"]) == {
-        "510300.SH": {"last_price": 4.621, "is_trading": True}}
+    quotes = gateway.quotes(["510300.SH", "159915.SZ"])
+    assert set(quotes) == {"510300.SH"}
+    assert quotes["510300.SH"]["last_price"] == 4.621
+    assert quotes["510300.SH"]["is_trading"] is False
+    assert quotes["510300.SH"]["market_status"] == "CLOSED"
     [trade] = gateway.day_trades()
     assert (trade["side"], trade["quantity"], trade["price"], trade["remark"]) == (
         "SELL", 1500, 4.618, "H000010101")
@@ -350,3 +353,47 @@ def test_sim_gateway_mirrors_the_xt_gateway_surface():
                                     limit_price=4.5, remark="H000010301")
     assert rejected.status == "REJECTED"
     assert gateway.day_orders() == []
+
+
+def test_explicit_stock_rules_tick_minimum_tax_cumulative_fee_and_t1():
+    stock = '000001.SZ'
+    spec = dict(asset_type='stock', price_tick=.01, buy_lot=100, min_buy_quantity=100,
+                sell_lot=100, odd_lot_sell_all=True, t_plus_one=True, commission_rate=.0003,
+                min_commission=5., stamp_duty_sell=.0005, transfer_fee_rate=.00001,
+                up_limit=11., down_limit=9.)
+    bars = {(D1,stock):dict(open=10., high=10.5, low=9.5, close=10., volume=1000),
+            (D2,stock):dict(open=10., high=10.5, low=9.5, close=10., volume=1000)}
+    ex = SimExchange(bars, cash=10000, positions={}, slip_bps=0, participation=1,
+                     instrument_specs={stock:spec})
+    ex.set_clock(D1,'091505')
+    assert ex.order_stock(stock,'BUY',100,10.001,'bad-tick') == -1
+    assert ex.order_stock(stock,'BUY',100,11.01,'bad-band') == -1
+    oid = ex.order_stock(stock,'BUY',200,10.,'stock')
+    order = ex._orders[0]
+    # Two separately received fills incur one minimum commission for this order.
+    ex._fill(order,10.,dict(volume=100))
+    assert order.traded_volume == 200  # high participation, all filled
+    assert ex.cash == pytest.approx(7994.98)
+    assert ex._can_use(stock) == 0
+    ex.set_clock(D2,'091505')
+    assert ex._can_use(stock) == 200
+    ex.order_stock(stock,'SELL',200,10.,'sell')
+    ex.set_clock(D2,'092500')
+    assert ex.cash == pytest.approx(9988.96)  # sell adds 2000 minus commission5, tax1, transfer.02
+
+
+def test_explicit_stock_partial_fills_charge_one_minimum_commission():
+    stock = '000001.SZ'
+    spec = dict(price_tick=.01, buy_lot=100, min_buy_quantity=100, sell_lot=100,
+                t_plus_one=True, commission_rate=.0003, min_commission=5., transfer_fee_rate=.00001)
+    bars = {(D1,stock):dict(open=10., high=11., low=9., close=10., volume=100)}
+    ex = SimExchange(bars,cash=10000,positions={},slip_bps=0,participation=.01,instrument_specs={stock:spec})
+    ex.set_clock(D1,'091505')
+    ex.order_stock(stock,'BUY',200,10.,'partial')
+    ex.set_clock(D1,'092500')
+    assert ex._orders[0].traded_volume == 100
+    ex.participation = .02
+    ex.set_clock(D1,'145500')
+    assert ex._orders[0].traded_volume == 200
+    assert sum(t['commission'] for t in ex.trades()) == pytest.approx(5.02)
+    assert ex.cash == pytest.approx(7994.98)

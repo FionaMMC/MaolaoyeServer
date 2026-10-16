@@ -1,0 +1,64 @@
+{
+  "verified_at_utc": "2026-10-16T11:35:25.864465+00:00",
+  "status": "PASS",
+  "scope": "Research validation only; no production deployment, funding, strategy change or orders",
+  "production_feature_baseline": "bcdfd166faf13281c535d514c73d809570231ac9",
+  "production_code_unchanged_from_feature_baseline": true,
+  "local_and_remote_tests_same_coverage": {
+    "local_tests.xml": {
+      "tests": 65,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 0
+    },
+    "remote_tests.xml": {
+      "tests": 65,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 0
+    }
+  },
+  "remote_environment": {
+    "python": "3.11.15",
+    "pandas": "3.0.2",
+    "numpy": "2.4.4"
+  },
+  "independent_remote_hash_checks": 35,
+  "original_local_untracked_files_preserved": 94,
+  "fresh_stock_sizing_cases": 500,
+  "overlapping_stock_annual_scenarios": 1368,
+  "stock_periods": 125,
+  "common_composite_months": 78,
+  "composite_scenarios": 11,
+  "final_remote_panel_sha256": "dba37a2797e1c40805321ae24d0cfe6b6c637bccb030e881d0159170df0361a3",
+  "max_abs_baseline_gross_return_error": 3.95516952522712e-16,
+  "max_self_financing_error_over_initial_capital": 2.3283064365386965e-15,
+  "report_calendar_command_verified": true,
+  "raw_data_returned_locally": false,
+  "exact_oct11_reproduction": false,
+  "actual_live_composite_return_measured": false,
+  "local_files": {
+    "tools/test_v713_combination_validation.py": "8e57758ec473f9bc74ada09ba724858f868b573ba8547af42e4886987370aab2",
+    "tools/test_v713_combination_validation_hydra.py": "7fa0675a231d490bcd1593cb653de73b991208704608c8190398c644b572bebf",
+    "tools/test_v713_combination_validation_stock.py": "6e62aa6251a074028dbfd6bc45402ec1efb7405647403ef83412f25f40d7987c",
+    "tools/v713_combination_validation.py": "63fa7d7c01f01379fd0032a2d557a6ebd47d857e080d6676980e0c6f9b5f0b9a",
+    "tools/v713_combination_validation_hydra.py": "606be76a96511a7ba3353b6a66f6af82a6a0fa2893d24c69e0cce1912bb0324e",
+    "tools/v713_combination_validation_stock.py": "7f0138e6a432fd65759311752e97c0a269c3b890083bd477eece78787bb683f5",
+    "reports/v713_combination_validation_20261016/REPORT.md": "64326a8aa848e6dfa9aea966d39c3554344429b8fda7d2e1346e9d4b17141f84",
+    "reports/v713_combination_validation_20261016/VALIDATION_DESIGN.json": "d0ec77e1c430a8347251770e7da610e788b4b1cfb211478d4649a2f75f449f18",
+    "reports/v713_combination_validation_20261016/combination_summary.json": "e51ea6ba41ce265b810622d501bf9eaaccb2dc4eba6270d06ebb7066f668ef3c",
+    "reports/v713_combination_validation_20261016/hydra_summary.json": "68f4ad1904bd1ccd6b8b3b7874c3a3edc477a1412e47ea8df4754f88ca9273ea",
+    "reports/v713_combination_validation_20261016/local_tests.xml": "278614e6ebbd34c2601349f3da4da4d7fd151f1905b048f6210a5f719f286b29",
+    "reports/v713_combination_validation_20261016/remote_evidence_verification.json": "47e40e4916d672aedc438bf9275b97c41a89dafb26df2bae9adba6bb92569814",
+    "reports/v713_combination_validation_20261016/remote_tests.xml": "f956ae50e57600d793b000abb2bef791b8874953ef9f75dca66e74901335d654",
+    "reports/v713_combination_validation_20261016/stock_summary.json": "a502ee644b4e40d8a54eb86775be1bf891231e1935bc0ddd56f39a72c490a2fc"
+  },
+  "local_test_command": "PYTHONDONTWRITEBYTECODE=1 venv/bin/python -m pytest tools/test_v713_combination_validation.py tools/test_v713_combination_validation_hydra.py tools/test_v713_combination_validation_stock.py -o addopts='' -q -p no:cacheprovider",
+  "limitations": [
+    "Old RB research ledger is not authenticated current live Hydra",
+    "Monthly timing is not executable closing-price fill evidence",
+    "Cash/fee/lot/corporate-action assumptions need execution validation",
+    "Original Oct11 frozen inputs and experiment code unavailable",
+    "Overlapping annual windows do not support independent-sample inference"
+  ]
+}

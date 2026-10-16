@@ -35,6 +35,8 @@ _EVENT_STATE = {"SUBMIT_STARTED": S.SUBMITTING, "ACKED": S.ACKED,
 
 def client_order_id(cycle_no: int, seq: int, leg: int) -> str:
     """Ten characters, so a 24-character QMT remark can never truncate it."""
+    if not (0 < cycle_no <= 99999 and 0 < seq <= 99 and 0 < leg <= 99):
+        raise ValueError("cycle/session/leg exceeds the QMT order-id namespace")
     return f"H{cycle_no:05d}{seq:02d}{leg:02d}"
 
 
@@ -138,6 +140,13 @@ class OrderLedger:
                                      "side": broker.side, "status": broker.status, "remark": remark,
                                      "open": broker.status in OPEN_QMT_STATUSES})
                     continue
+                if (broker.symbol != order.symbol or broker.side != order.side
+                        or broker.quantity > order.quantity or broker.traded_volume > broker.quantity
+                        or abs(broker.price - order.limit_price) > 1e-8):
+                    conflicts.append({"client_order_id": order.client_order_id,
+                                      "reason": "BROKER_ORDER_IDENTITY_MISMATCH",
+                                      "broker_order_id": broker.broker_order_id})
+                    continue
                 if order.broker_order_id is None:
                     order.broker_order_id = broker.broker_order_id
                 elif order.broker_order_id != broker.broker_order_id:
@@ -181,6 +190,9 @@ class OrderLedger:
                     order = session.execute(select(OmsOrder).where(
                         OmsOrder.account_alias == account_alias,
                         OmsOrder.broker_order_id == trade.broker_order_id)).scalar_one_or_none()
+                if order is not None and (order.account_alias != account_alias or order.symbol != trade.symbol
+                                          or order.side != trade.side):
+                    raise ValueError("trade identity does not match its attributed order")
                 session.add(OmsFill(account_alias=account_alias, broker_trade_id=trade.broker_trade_id,
                                     client_order_id=order.client_order_id if order is not None else None,
                                     symbol=trade.symbol, side=trade.side, quantity=trade.quantity,
@@ -211,10 +223,16 @@ class OrderLedger:
                     if state in (S.PLANNED, S.SUBMITTING, S.UNKNOWN):
                         order.state = transition(state, S.NOT_SUBMITTED).value
                         order.updated_at = stamp
+                        order.last_observed_at = stamp
                         finalized.append(order.client_order_id)
                     else:
                         anomalies.append({"client_order_id": order.client_order_id,
                                           "reason": "MISSING_FROM_BROKER_DAY_LIST"})
+                    continue
+                if (broker.symbol != order.symbol or broker.side != order.side
+                        or broker.quantity > order.quantity or abs(broker.price - order.limit_price) > 1e-8):
+                    anomalies.append({"client_order_id": order.client_order_id,
+                                      "reason": "BROKER_ORDER_IDENTITY_MISMATCH"})
                     continue
                 observed = classify_qmt(broker.status, max(order.filled_qty, broker.traded_volume), order.quantity)
                 if observed is S.UNKNOWN:

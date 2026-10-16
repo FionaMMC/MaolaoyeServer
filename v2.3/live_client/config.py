@@ -99,6 +99,8 @@ class LiveClientConfig:
     paper_client_colocated: bool = True
     execution_cost_reserve_bps: float = 10.0
     execution_min_commission: float = 5.0
+    # shared_oms obtains its stock authority from signed server plans, never an env wildcard.
+    execution_profile: str = "hydra"
 
     @classmethod
     def from_env(cls) -> "LiveClientConfig":
@@ -195,6 +197,7 @@ class LiveClientConfig:
             execution_min_commission=_nonnegative_float(
                 "HYDRA_LIVE_EXECUTION_MIN_COMMISSION", 5.0,
             ),
+            execution_profile=os.environ.get("HYDRA_LIVE_EXECUTION_PROFILE", "hydra").strip().lower(),
         )
         cfg.validate_startup()
         return cfg
@@ -224,6 +227,8 @@ class LiveClientConfig:
             raise ValueError("同机部署必须配置 paper account denylist")
         if self.paper_client_colocated and self.account_id in paper_ids:
             raise ValueError("live account 出现在 paper account denylist")
+        if self.execution_profile not in {"hydra", "shared_oms"}:
+            raise ValueError("HYDRA_LIVE_EXECUTION_PROFILE must be hydra/shared_oms")
         if self.allowed_symbols != HYDRA_LIVE_EXECUTABLE_SYMBOLS:
             raise ValueError("Hydra live 白名单必须恰好是已批准的 9 只 ETF")
         if self.risk_mode not in {"disabled", "static", "auto"}:

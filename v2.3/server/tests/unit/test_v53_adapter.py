@@ -210,7 +210,7 @@ def _make_bundle_in_tmp_dir(tmp_path, bundle_end_date: str = "2024-03-31"):
     } for k in ETF_KEYS]).to_parquet(v53dir / "data" / "etf_meta.parquet", index=False)
 
     # config.yaml — copy real one for completeness
-    real_cfg = Path("plugins/v53/config.yaml").resolve()
+    real_cfg = Path(__file__).resolve().parents[2] / "plugins/v53/config.yaml"
     shutil.copy(real_cfg, v53dir / "config.yaml")
     pd.DataFrame(columns=["code", "ex_date", "cash"]).to_parquet(
         v53dir / "data" / "etf_divid.parquet", index=False)

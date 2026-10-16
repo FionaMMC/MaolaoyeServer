@@ -35,7 +35,8 @@ def _table(rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _preview(sf, policy, *, instance, account, signal_date, weights, closes, calendar, now) -> dict:
+def _preview(sf, policy, *, instance, account, signal_date, weights, closes, calendar, now,
+             earliest_execution_date=None) -> dict:
     """What publish would freeze, computed read-only."""
     import math
     from app.models import InstanceState
@@ -44,13 +45,15 @@ def _preview(sf, policy, *, instance, account, signal_date, weights, closes, cal
     closes = {s: float(p) for s, p in closes.items() if p is not None and math.isfinite(float(p)) and float(p) > 0}
     with sf() as session:
         inst = session.get(InstanceState, instance)
-        if inst is None or inst.account_alias != account:
+        if inst is None or inst.account_alias != account or inst.execution_domain != "live":
             raise SystemExit(f"unknown instance {instance} for {account}")
         positions = {s: int(q) for s, q in (inst.virtual_positions or {}).items() if int(q)}
         cash = float(inst.virtual_cash)
     nav = cash + sum(q * closes[s] for s, q in positions.items())
-    frozen = lot_target(nav, weights, closes, policy)
-    schedule = session_schedule(calendar, signal_date, policy.window, earliest_sell=earliest_sell_day(now))
+    complete_weights = {s: 0. for s in positions} | weights
+    frozen = lot_target(nav, complete_weights, closes, policy)
+    earliest = max(earliest_sell_day(now), earliest_execution_date or "")
+    schedule = session_schedule(calendar, signal_date, policy.window, earliest_sell=earliest)
     sells, deferrals = plan_sell_session(target=frozen, positions=positions, sellable=positions, sell_anchor=closes,
                                          attempt=0, policy=policy)
     rows = [{"symbol": s, "weight": float(weights.get(s, 0.)), "close": closes.get(s), "target": frozen.get(s, 0),
@@ -67,8 +70,14 @@ def main(argv=None, *, session_factory=None, settings=None) -> int:
     for name in ("--instance", "--account", "--signal-date", "--weights", "--closes", "--calendar", "--source-sha256"):
         p.add_argument(name, required=True)
     p.add_argument("--apply", action="store_true")
+    p.add_argument("--policy", help="explicit versioned policy JSON; V713 must use publish-v713")
     p.add_argument("--now", default=None, help="rehearsal/replay only: publish as if at this zoned ISO time; "
                                                "a past schedule is never executed (the agent refuses other dates)")
+    v = sub.add_parser("publish-v713", help="validate a monthly V713 basket and preview its attributed-account plan")
+    for name in ("--instance", "--account", "--basket", "--policy", "--closes", "--calendar"):
+        v.add_argument(name, required=True)
+    v.add_argument("--apply", action="store_true")
+    v.add_argument("--now", default=None, help="zoned ISO publication time for an isolated rehearsal")
     a = sub.add_parser("approve")
     a.add_argument("--cycle-id", required=True)
     a.add_argument("--approver", required=True)
@@ -82,32 +91,56 @@ def main(argv=None, *, session_factory=None, settings=None) -> int:
     s.add_argument("--account", required=True)
     args = parser.parse_args(argv)
 
-    from app.db import make_engine, make_session_factory, init_db
+    from app.db import make_engine, make_session_factory
     from app.dependencies import get_oms_cycle_service
     from app.settings import get_settings
     settings = settings or get_settings()
     if session_factory is None:
         engine = make_engine(settings.db_url)
-        init_db(engine)
+        # Publishing is not a schema migration. In particular dry-run must never
+        # create tables or an empty SQLite database at a mistyped location.
+        if engine.url.get_backend_name() == "sqlite" and engine.url.database not in (None, "", ":memory:"):
+            if not Path(engine.url.database).is_file():
+                raise SystemExit("OMS database does not exist; initialize the isolated environment separately")
         session_factory = make_session_factory(engine)
     service = get_oms_cycle_service(session_factory, settings)
 
-    if args.command == "publish":
-        weights = json.loads(Path(args.weights).read_text(encoding="utf-8"))
+    if args.command in ("publish", "publish-v713"):
+        from app.oms.planner import policy_from_dict, policy_to_dict
+
         closes = json.loads(Path(args.closes).read_text(encoding="utf-8"))
         calendar = json.loads(Path(args.calendar).read_text(encoding="utf-8"))
         now = args.now or _now()
-        preview = _preview(session_factory, service.policy, instance=args.instance, account=args.account,
-                           signal_date=args.signal_date, weights=weights, closes=closes, calendar=calendar, now=now)
+        if args.command == "publish-v713":
+            from app.models import InstanceState
+            from app.oms.v713 import build_publication
+            with session_factory() as session:
+                instance = session.get(InstanceState, args.instance)
+                if instance is None or instance.execution_domain != "live" or instance.account_alias != args.account:
+                    raise SystemExit("V713 publication requires the initialized live instance for this account")
+                held = [s for s, q in (instance.virtual_positions or {}).items() if q]
+            payload = build_publication(args.basket, closes=closes, calendar=calendar,
+                                        policy_payload=json.loads(Path(args.policy).read_text(encoding="utf-8")),
+                                        now=now, held_symbols=held)
+        else:
+            policy = policy_from_dict(json.loads(Path(args.policy).read_text(encoding="utf-8"))) if args.policy else service.policy
+            if policy.strategy_id == "v713":
+                raise SystemExit("use publish-v713 for V713 basket validation and monthly provenance")
+            payload = {"weights": json.loads(Path(args.weights).read_text(encoding="utf-8")),
+                       "signal_closes": closes, "calendar": calendar, "signal_date": args.signal_date,
+                       "source_sha256": args.source_sha256, "policy": policy, "now": now}
+        preview = _preview(session_factory, payload["policy"], instance=args.instance, account=args.account,
+                           signal_date=payload["signal_date"], weights=payload["weights"], closes=closes,
+                           calendar=calendar, now=now, earliest_execution_date=payload.get("earliest_execution_date"))
         print(_table(preview["shares"]))
         print(json.dumps({k: preview[k] for k in ("nav", "cash", "schedule", "first_session_sells", "deferrals")},
+                         ensure_ascii=False, indent=2))
+        print(json.dumps({"policy": policy_to_dict(payload["policy"]), "provenance": payload.get("provenance")},
                          ensure_ascii=False, indent=2))
         if not args.apply:
             print("DRY RUN: nothing written. Re-run with --apply to create the cycle (status PENDING_APPROVAL).")
             return 0
-        out = service.publish_target(instance_id=args.instance, account_alias=args.account,
-                                     signal_date=args.signal_date, weights=weights, signal_closes=closes,
-                                     calendar=calendar, source_sha256=args.source_sha256, now=now)
+        out = service.publish_target(instance_id=args.instance, account_alias=args.account, **payload)
         print(json.dumps({k: out[k] for k in ("cycle_id", "status", "target_version_id", "lot_gap")}, indent=2))
         return 0
 

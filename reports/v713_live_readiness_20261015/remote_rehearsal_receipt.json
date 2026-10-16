@@ -1,0 +1,17 @@
+{
+  "passed": true,
+  "broker": "synthetic",
+  "production_database_accessed": false,
+  "production_services_changed": false,
+  "orders_submitted_to_real_broker": 0,
+  "checks": [
+    {
+      "scenario": "test_stock_rotation_shared_etf_and_full_window_match_broker",
+      "passed": true
+    },
+    {
+      "scenario": "test_lost_submit_response_restart_does_not_duplicate_stock_sale",
+      "passed": true
+    }
+  ]
+}

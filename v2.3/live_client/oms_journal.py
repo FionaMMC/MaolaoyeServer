@@ -13,6 +13,7 @@ transaction on a fresh connection:
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import sqlite3
 import uuid
@@ -40,6 +41,16 @@ _NEXT = {
 }
 _PLAN_KEYS = ("plan_sha256", "session_id", "cycle_id", "trade_date", "phase", "orders")
 _ORDER_KEYS = ("client_order_id", "symbol", "side", "quantity", "limit_price")
+PLAN_HASH_FIELDS = ("schema_version", "account_alias", "instance_id", "cycle_id", "session_id",
+                    "trade_date", "phase", "frozen_target", "orders", "policy", "instrument_specs",
+                    "allowed_symbols", "valid_until", "account_fingerprint")
+_MUTABLE = {"executable", "strategy_cash", "strategy_positions", "strategy_sellable", "issued_at", "lease_expires_at",
+            "server_reserved_order_ids", "server_accounted_fill_quantities", "server_terminal_orders"}
+
+
+def plan_content_sha256(plan: dict) -> str:
+    """V2 server/client contract. Missing authority fields cannot be silently defaulted."""
+    return hashlib.sha256(_canonical({key: plan[key] for key in PLAN_HASH_FIELDS}).encode("utf-8")).hexdigest()
 
 
 class JournalConflict(RuntimeError):
@@ -47,7 +58,7 @@ class JournalConflict(RuntimeError):
 
 
 def _canonical(value) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
 
 
 def _validated_plan(plan: dict) -> dict:
@@ -62,6 +73,13 @@ def _validated_plan(plan: dict) -> dict:
         raise ValueError("计划缺少 plan_sha256 或 session_id")
     if not isinstance(plan["orders"], list):
         raise ValueError("计划 orders 必须是列表")
+    if plan.get("schema_version", 1) == 2:
+        if plan_content_sha256(plan) != plan["plan_sha256"]:
+            raise JournalConflict("plan content hash mismatch")
+        for field in ("valid_until", "lease_expires_at"):
+            value = datetime.fromisoformat(plan[field])
+            if value.utcoffset() is None:
+                raise ValueError(f"{field} requires a timezone")
     seen = set()
     for order in plan["orders"]:
         missing = [key for key in _ORDER_KEYS if key not in order]
@@ -77,7 +95,8 @@ def _validated_plan(plan: dict) -> dict:
 
 def _frozen_part(plan: dict) -> str:
     """Everything the server signs or identifies; ``executable`` is status."""
-    return _canonical({key: value for key, value in plan.items() if key != "executable"})
+    mutable = _MUTABLE if plan.get("schema_version", 1) == 2 else {"executable"}
+    return _canonical({key: value for key, value in plan.items() if key not in mutable})
 
 
 class OmsJournal:
@@ -156,7 +175,19 @@ class OmsJournal:
                     acked_at TEXT
                 );
                 CREATE INDEX IF NOT EXISTS ix_outbox_pending ON outbox(acked_at, seq);
+                CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS submissions (
+                    client_order_id TEXT PRIMARY KEY, instance_id TEXT NOT NULL,
+                    trade_date TEXT NOT NULL, symbol TEXT NOT NULL, side TEXT NOT NULL,
+                    quantity INTEGER NOT NULL, limit_price REAL NOT NULL, reserve_cash REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS terminal_proofs (
+                    client_order_id TEXT PRIMARY KEY, proof_json TEXT NOT NULL, recorded_at TEXT NOT NULL
+                );
             """)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(plans)")}
+            if "runtime_json" not in columns:
+                conn.execute("ALTER TABLE plans ADD COLUMN runtime_json TEXT NOT NULL DEFAULT '{}'")
         finally:
             conn.close()
 
@@ -170,6 +201,7 @@ class OmsJournal:
         plan = _validated_plan(plan)
         frozen = _frozen_part(plan)
         executable = 1 if plan.get("executable") is True else 0
+        runtime = _canonical({k: v for k, v in plan.items() if k in _MUTABLE and k != "executable"}) if plan.get("schema_version") == 2 else "{}"
         now = self._now()
         with self._tx() as conn:
             same_hash = conn.execute(
@@ -182,8 +214,8 @@ class OmsJournal:
                         f"plan_sha256 {plan['plan_sha256']} 已缓存不同内容，拒绝覆盖"
                     )
                 conn.execute(
-                    "UPDATE plans SET executable = ?, refreshed_at = ? WHERE plan_sha256 = ?",
-                    (executable, now, plan["plan_sha256"]),
+                    "UPDATE plans SET executable = ?, refreshed_at = ?, runtime_json = ? WHERE plan_sha256 = ?",
+                    (executable, now, runtime, plan["plan_sha256"]),
                 )
                 return
             same_session = conn.execute(
@@ -204,9 +236,9 @@ class OmsJournal:
                         f"订单号 {order['client_order_id']} 已属于计划 {owner['plan_sha256']}"
                     )
             conn.execute(
-                "INSERT INTO plans VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO plans VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (plan["plan_sha256"], plan["session_id"], plan["trade_date"], plan["phase"],
-                 frozen, executable, now, now),
+                 frozen, executable, now, now, runtime),
             )
             conn.executemany(
                 "INSERT INTO plan_orders VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -215,18 +247,81 @@ class OmsJournal:
                  for o in plan["orders"]],
             )
 
-    def plan(self, trade_date: str, phase: str) -> dict | None:
+    def plan(self, trade_date: str, phase: str, instance_id: str | None = None) -> dict | None:
         """Most recently cached plan for the day and phase, with the latest
         ``executable`` answer seen from the server."""
         with self._tx() as conn:
-            row = conn.execute(
-                "SELECT frozen_json, executable FROM plans WHERE trade_date = ? AND phase = ? "
-                "ORDER BY rowid DESC LIMIT 1",
+            rows = conn.execute(
+                "SELECT frozen_json, executable, runtime_json FROM plans WHERE trade_date = ? AND phase = ? "
+                "ORDER BY rowid DESC",
                 (trade_date, phase),
-            ).fetchone()
-        if row is None:
-            return None
-        return {**json.loads(row["frozen_json"]), "executable": bool(row["executable"])}
+            ).fetchall()
+        for row in rows:
+            plan = {**json.loads(row["frozen_json"]), **json.loads(row["runtime_json"]), "executable": bool(row["executable"])}
+            if instance_id is None or plan.get("instance_id") == instance_id:
+                return plan
+        return None
+
+    def bind(self, *, account_alias: str, execution_domain: str, account_fingerprint: str, client_id: str) -> None:
+        binding = _canonical(dict(account_alias=account_alias, execution_domain=execution_domain,
+                                  account_fingerprint=account_fingerprint, client_id=client_id))
+        with self._tx() as conn:
+            row = conn.execute("SELECT value FROM metadata WHERE key='binding'").fetchone()
+            if row is not None and row[0] != binding:
+                raise JournalConflict("journal belongs to another account/domain/client")
+            conn.execute("INSERT OR IGNORE INTO metadata VALUES ('binding', ?)", (binding,))
+
+    def cache_bundle(self, trade_date: str, phase: str, plans: list[dict]) -> None:
+        # Validate the whole bundle before any plan becomes eligible offline.
+        seen = set()
+        for plan in plans:
+            _validated_plan(plan)
+            if (plan["trade_date"], plan["phase"]) != (trade_date, phase) or plan["instance_id"] in seen:
+                raise JournalConflict("bundle date/phase/instance mismatch")
+            seen.add(plan["instance_id"])
+        for plan in plans:
+            self.cache_plan(plan)
+        with self._tx() as conn:
+            conn.execute("INSERT OR REPLACE INTO metadata VALUES (?, ?)",
+                         (f"bundle:{trade_date}:{phase}", _canonical([p["plan_sha256"] for p in plans])))
+
+    def plans(self, trade_date: str, phase: str) -> list[dict]:
+        with self._tx() as conn:
+            row = conn.execute("SELECT value FROM metadata WHERE key=?", (f"bundle:{trade_date}:{phase}",)).fetchone()
+            if row is None:
+                return []
+            result = []
+            for sha in json.loads(row[0]):
+                p = conn.execute("SELECT frozen_json, runtime_json, executable FROM plans WHERE plan_sha256=?", (sha,)).fetchone()
+                if p:
+                    result.append({**json.loads(p[0]), **json.loads(p[1]), "executable": bool(p[2])})
+            return result
+
+    def submissions(self) -> list[dict]:
+        with self._tx() as conn:
+            return [dict(row) for row in conn.execute("SELECT s.*, i.state FROM submissions s JOIN intents i USING(client_order_id)")]
+
+    def terminal_proof(self, client_order_id: str) -> dict | None:
+        with self._tx() as conn:
+            row = conn.execute("SELECT proof_json FROM terminal_proofs WHERE client_order_id=?", (client_order_id,)).fetchone()
+            return json.loads(row[0]) if row else None
+
+    def record_terminal_proof(self, client_order_id: str, proof: dict) -> None:
+        """Keep authoritative projected terminal evidence without erasing a submit claim."""
+        if proof.get("state") not in {"FILLED", "CANCELLED", "REJECTED", "EXPIRED_DAY", "NOT_SUBMITTED"}:
+            raise JournalConflict("nonterminal server proof")
+        filled, projected = proof.get("filled_qty"), proof.get("projected_qty")
+        if type(filled) is not int or type(projected) is not int or filled < 0 or filled != projected:
+            raise JournalConflict("terminal proof has unprojected fills")
+        stamp = datetime.fromisoformat(proof["last_observed_at"])
+        if stamp.utcoffset() is None:
+            raise JournalConflict("terminal proof needs a zoned observation")
+        with self._tx() as conn:
+            row = conn.execute("SELECT quantity, trade_date FROM submissions WHERE client_order_id=?", (client_order_id,)).fetchone()
+            if row is None or filled > row[0] or proof.get("trade_date") != row[1]:
+                raise JournalConflict("terminal proof order mismatch")
+            conn.execute("INSERT OR IGNORE INTO terminal_proofs VALUES (?, ?, ?)",
+                         (client_order_id, _canonical(proof), self._now()))
 
     @staticmethod
     def _intent_row(conn: sqlite3.Connection, client_order_id: str) -> dict | None:
@@ -246,7 +341,7 @@ class OmsJournal:
             return self._intent_row(conn, client_order_id)
 
     def mark(self, client_order_id: str, state: str, broker_order_id: str | None,
-             detail: str | None) -> dict:
+             detail: str | None, *, submission: dict | None = None) -> dict:
         """Record an intent change and its outbox event atomically.
 
         SUBMITTING must be marked before the broker call and can be taken
@@ -276,6 +371,13 @@ class OmsJournal:
                 return current
             if state not in _NEXT[current_state]:
                 raise JournalConflict(f"{client_order_id}: {current_state} -> {state} 不允许")
+            if submission is not None:
+                if state != "SUBMITTING":
+                    raise ValueError("reservation must be written before submit")
+                conn.execute("INSERT INTO submissions VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                             (client_order_id, submission["instance_id"], submission["trade_date"],
+                              submission["symbol"], submission["side"], int(submission["quantity"]),
+                              float(submission["limit_price"]), float(submission["reserve_cash"])))
             event_id = uuid.uuid4().hex
             if current is None:
                 conn.execute(
@@ -314,6 +416,12 @@ class OmsJournal:
                 [(now, event_id) for event_id in event_ids],
             )
 
-    def hold_flag(self) -> bool:
+    def hold_flag(self, instance_id: str | None = None) -> bool:
         """Local emergency switch: a file named HOLD next to the journal."""
-        return (self.path.parent / "HOLD").exists()
+        if (self.path.parent / "HOLD").exists():
+            return True
+        if instance_id is not None:
+            if not re.fullmatch(r"[A-Za-z0-9_-]+", instance_id):
+                raise ValueError("invalid instance identity")
+            return (self.path.parent / f"HOLD.{instance_id}").exists()
+        return False

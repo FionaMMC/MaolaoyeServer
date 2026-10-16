@@ -15,9 +15,9 @@ def _snapshot(**changes):
     return body
 
 
-def test_snapshot_accepts_valid_payload_and_defaults_trading():
+def test_snapshot_accepts_valid_payload_and_preserves_unknown_trading_status():
     snap = SnapshotIn.model_validate(_snapshot())
-    assert snap.quotes["510300.SH"].is_trading is True
+    assert snap.quotes["510300.SH"].is_trading is None
     assert snap.trades is None
 
 

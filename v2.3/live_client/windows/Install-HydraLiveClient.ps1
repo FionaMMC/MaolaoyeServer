@@ -124,6 +124,10 @@ for path in root.rglob("*.py"):
         if ($LASTEXITCODE -ne 0) {
             throw "Offline-submit acceptance failed"
         }
+        & $PythonExe -m live_client.oms_offline_acceptance
+        if ($LASTEXITCODE -ne 0) {
+            throw "Shared-OMS offline acceptance failed"
+        }
     }
     finally {
         $env:PYTHONPATH = $previousPythonPath
@@ -140,6 +144,7 @@ $sourceRunner = Join-Path $sourcePackage "windows\Run-HydraLive.ps1"
 foreach ($required in @(
     (Join-Path $sourcePackage "cli.py"),
     (Join-Path $sourcePackage "offline_acceptance.py"),
+    (Join-Path $sourcePackage "oms_offline_acceptance.py"),
     $sourceRunner
 )) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
@@ -156,17 +161,43 @@ if (-not (Test-Path -LiteralPath $EnvFile -PathType Leaf)) {
     throw "Private Hydra env file must exist before install: $EnvFile"
 }
 
+function Assert-HydraTasksStopped {
+    # Installation never enables, disables, or stops a scheduled task. The operator
+    # must quiesce both generations first; a running order cannot be rolled back.
+    $activeTasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object {
+        ($_.TaskName -like "Hydra-Live-*" -or $_.TaskName -like "Hydra-Oms-*") -and
+        ($_.State -ne "Disabled")
+    })
+    if ($activeTasks.Count -gt 0) {
+        throw "Disable Hydra-Live/OMS tasks and wait for running tasks to finish before installing"
+    }
+}
+Assert-HydraTasksStopped
+
 $git = Get-Command git -ErrorAction SilentlyContinue
+$sourceIsGit = $false
+if ($git) {
+    # ZIP deliveries deliberately omit .git. Having git.exe on the host must not
+    # make an otherwise valid archive install fail its worktree-only dirty check.
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $gitProbe = @(& $git.Source -C $SourceRoot rev-parse --is-inside-work-tree 2>&1)
+        $gitProbeExitCode = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $previousErrorActionPreference }
+    $sourceIsGit = $gitProbeExitCode -eq 0 -and ($gitProbe -join "").Trim() -eq "true"
+}
 if (-not $SourceCommit) {
-    if (-not $git) {
-        throw "Git is unavailable; provide the full 40-character -SourceCommit"
+    if (-not $sourceIsGit) {
+        throw "Archive installs require the full 40-character -SourceCommit from RELEASE_MANIFEST.json"
     }
     $SourceCommit = (& $git.Source -C $SourceRoot rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0 -or $SourceCommit -notmatch "^[0-9a-f]{40}$") {
         throw "Cannot resolve a full source commit"
     }
 }
-if ($git) {
+if ($sourceIsGit) {
     $dirty = & $git.Source -C $SourceRoot status --porcelain -- live_client
     if ($LASTEXITCODE -ne 0) {
         throw "Cannot verify Hydra source worktree"
@@ -256,8 +287,39 @@ $runtimeScriptNames = @(
     "Register-HydraLiveOperationsTasks.ps1",
     "Run-HydraOms.ps1",
     "Register-HydraOmsTasks.ps1",
+    "Inspect-V713SharedOms.ps1",
+    "Run-V713OmsAcceptance.ps1",
     "hydra_live_market_backup.py"
 )
+$stateDb = Get-HydraEnvValue -Path $EnvFile -Name "HYDRA_LIVE_STATE_DB"
+$userdata = Get-HydraEnvValue -Path $EnvFile -Name "HYDRA_LIVE_QMT_USERDATA_DIR"
+$fingerprint = Get-HydraEnvValue -Path $EnvFile -Name "HYDRA_LIVE_EXPECTED_ACCOUNT_SHA256"
+if (-not [IO.Path]::IsPathRooted($stateDb) -or -not [IO.Path]::IsPathRooted($userdata)) {
+    throw "State DB and QMT userdata must be absolute private paths"
+}
+$account = Get-HydraEnvValue -Path $EnvFile -Name "HYDRA_LIVE_QMT_ACCOUNT_ID"
+$sha = [Security.Cryptography.SHA256]::Create()
+try {
+    $actualFingerprint = [BitConverter]::ToString(
+        $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($account))
+    ).Replace("-", "").ToLowerInvariant()
+}
+finally { $sha.Dispose(); $account = $null }
+if ($fingerprint -cnotmatch "^[0-9a-f]{64}$" -or $fingerprint -cne $actualFingerprint) {
+    throw "Private account fingerprint mismatch"
+}
+# This is the same byte-range lock used by execution_queue.account_submission_lock.
+# Hold it across the backup and pointer swap, including config doctor/rollback.
+$lockRoot = Join-Path $userdata "hydra_execution_locks"
+New-Item -ItemType Directory -Path $lockRoot -Force | Out-Null
+$accountLock = [IO.File]::Open((Join-Path $lockRoot "$fingerprint.lock"),
+    [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
+$accountLocked = $false
+try {
+    if ($accountLock.Length -eq 0) { $accountLock.SetLength(1) }
+    $accountLock.Lock(0, 1)
+    $accountLocked = $true
+    Assert-HydraTasksStopped
 $existingRuntimeScripts = @{}
 if ($hadPointer) {
     $oldPointer = Get-Content -LiteralPath $activePointer -Raw -Encoding UTF8
@@ -285,37 +347,90 @@ foreach ($name in $runtimeScriptNames) {
     }
 }
 
-$stateDb = Get-HydraEnvValue -Path $EnvFile -Name "HYDRA_LIVE_STATE_DB"
-if (-not [IO.Path]::IsPathRooted($stateDb)) {
-    throw "HYDRA_LIVE_STATE_DB must be an absolute private path"
-}
-if (Test-Path -LiteralPath $stateDb -PathType Leaf) {
-    $stateBackup = Join-Path $backup "hydra-live-state-before-upgrade.db"
     $backupScript = @'
+import hashlib
+import json
 import pathlib
+import shutil
 import sqlite3
 import sys
-source_path = pathlib.Path(sys.argv[1]).resolve()
-backup_path = pathlib.Path(sys.argv[2])
-source = sqlite3.connect(source_path.as_uri() + "?mode=ro", uri=True)
-destination = sqlite3.connect(backup_path)
-try:
-    source.backup(destination)
-    check = destination.execute("PRAGMA quick_check").fetchone()
-    if check != ("ok",):
-        raise RuntimeError(f"SQLite backup quick_check failed: {check}")
-finally:
-    destination.close()
-    source.close()
+state_path, backup_path = map(pathlib.Path, sys.argv[1:3])
+fingerprint = sys.argv[3]
+private_values = {}
+for raw in pathlib.Path(sys.argv[4]).read_text(encoding="utf-8-sig").splitlines():
+    line = raw.strip()
+    if not line or line.startswith("#"):
+        continue
+    key, value = line.split("=", 1)
+    if key in private_values:
+        raise RuntimeError("Duplicate private config key")
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1]
+    private_values[key] = value
+expected_binding = {"account_alias": private_values["HYDRA_LIVE_ACCOUNT_ALIAS"],
+                    "execution_domain": private_values["HYDRA_LIVE_EXECUTION_DOMAIN"],
+                    "account_fingerprint": fingerprint,
+                    "client_id": private_values["HYDRA_LIVE_TASK_PREFIX"]}
+manifest = {"account_fingerprint": fingerprint, "databases": {}, "files": {}}
+for source_path, name in ((state_path, "hydra-live-state-before-upgrade.db"),
+                          (state_path.with_name("oms-agent.db"), "oms-agent-before-upgrade.db")):
+    if not source_path.exists():
+        manifest["databases"][name] = {"present": False}
+        continue
+    source = sqlite3.connect(source_path.resolve().as_uri() + "?mode=ro", uri=True)
+    destination = sqlite3.connect(backup_path / name)
+    try:
+        source.execute("PRAGMA query_only=ON")
+        source.backup(destination)
+        if destination.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
+            raise RuntimeError("SQLite backup integrity failure")
+        info = {"present": True, "quick_check": "ok"}
+        if name.startswith("oms-agent"):
+            tables = {row[0] for row in destination.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            binding = destination.execute("SELECT value FROM metadata WHERE key='binding'").fetchone() if "metadata" in tables else None
+            info["binding_present"] = bool(binding)
+            if binding:
+                value = json.loads(binding[0])
+                if value != expected_binding:
+                    raise RuntimeError("Journal account binding mismatch")
+                info["binding_sha256"] = hashlib.sha256(binding[0].encode()).hexdigest()
+        manifest["databases"][name] = info
+    finally:
+        destination.close()
+        source.close()
+# Quiesced tasks + account lock make the two DB snapshots, pending delivery spool,
+# and global/per-instance HOLD evidence one recoverable bundle. Never restore
+# these automatically: an external broker fill cannot be undone by file rollback.
+for source_path in sorted(state_path.parent.iterdir()) if state_path.parent.exists() else []:
+    if source_path.name == "oms-spool" or source_path.name == "HOLD" or source_path.name.startswith(("HOLD-", "HOLD.")):
+        if source_path.is_symlink() or (source_path.is_dir() and any(p.is_symlink() for p in source_path.rglob("*"))):
+            raise RuntimeError("Refusing linked runtime backup source")
+        target = backup_path / "oms-runtime" / source_path.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source_path.is_dir():
+            shutil.copytree(source_path, target)
+        else:
+            shutil.copy2(source_path, target)
+for path in sorted(backup_path.rglob("*")):
+    if path.is_file():
+        manifest["files"][path.relative_to(backup_path).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+(backup_path / "runtime-backup.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 '@
-    $backupScript | & $PythonExe - $stateDb $stateBackup
-    if ($LASTEXITCODE -ne 0) {
-        throw "Hydra SQLite backup failed before activation"
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $backupOutput = $backupScript | & $PythonExe - $stateDb $backup $fingerprint $EnvFile 2>&1
+        $backupExitCode = $LASTEXITCODE
     }
-}
+    finally { $ErrorActionPreference = $previousErrorActionPreference }
+    if ($backupExitCode -ne 0) {
+        throw "Hydra runtime backup failed before activation; state and pointer were not restored or changed"
+    }
 
 $runnerTemporary = "$installedRunner.new"
 $pointerTemporary = "$activePointer.new"
+try {
 Copy-Item -LiteralPath (Join-Path $releaseRoot "live_client\windows\Run-HydraLive.ps1") `
     -Destination $runnerTemporary
 Move-Item -LiteralPath $runnerTemporary -Destination $installedRunner -Force
@@ -329,7 +444,6 @@ foreach ($name in $runtimeScriptNames) {
     Copy-Item -LiteralPath $source -Destination (Join-Path $scriptsRoot $name) -Force
 }
 
-try {
     & $installedRunner -Command doctor -InstallRoot $InstallRoot `
         -EnvFile $EnvFile -PythonExe $PythonExe
 }
@@ -345,6 +459,9 @@ catch {
         Copy-Item -LiteralPath (Join-Path $backup "Run-HydraLive.ps1") `
             -Destination $installedRunner -Force
     }
+    else {
+        Remove-Item -LiteralPath $installedRunner -Force -ErrorAction SilentlyContinue
+    }
     foreach ($name in $runtimeScriptNames) {
         $installed = Join-Path $scriptsRoot $name
         if ($existingRuntimeScripts[$name]) {
@@ -354,7 +471,7 @@ catch {
             Remove-Item -LiteralPath $installed -Force -ErrorAction SilentlyContinue
         }
     }
-    throw "Local config doctor failed; active release was rolled back: $($_.Exception.Message)"
+    throw "Activation failed; code pointer/scripts were rolled back. Runtime DB/spool/HOLD evidence was not restored. Tasks remain disabled."
 }
 
 @{
@@ -365,7 +482,13 @@ catch {
     state_preserved = $true
     backup_root = $backup
     offline_acceptance = "PASS"
+    oms_offline_acceptance = "PASS"
     local_doctor = "PASS"
     tasks_modified = $false
     runtime_scripts_installed = $true
 } | ConvertTo-Json
+}
+finally {
+    if ($accountLocked) { $accountLock.Unlock(0, 1) }
+    $accountLock.Dispose()
+}
