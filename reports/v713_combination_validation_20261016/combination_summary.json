@@ -1,0 +1,544 @@
+{
+  "cases": {
+    "original_monthly": {
+      "periods": 78,
+      "cumulative_return": 7.021473932423243,
+      "cagr_period_based": 0.37757745662867803,
+      "period_end_max_drawdown": -0.09895230955600276,
+      "annualized_period_volatility": 0.19713971145231252,
+      "periods_per_year": 12,
+      "start": "2019-12-31",
+      "end": "2026-06-30",
+      "final_nav": 3208589.572969297,
+      "state_counts": {
+        "TOP50": 46,
+        "T1_5050": 29,
+        "AUX_HYDRA": 3
+      },
+      "rebalance": "monthly",
+      "switch_bps": 0,
+      "fill_fraction": 1.0,
+      "lag_periods": 0,
+      "outer_cash_weight": 0.0,
+      "initial_capital": 400000.0,
+      "gross_overlay_turnover_over_initial_capital": 121.48928032262266,
+      "overlay_cost_over_initial_capital": 0.0,
+      "sum_gross_overlay_turnover_over_period_start_nav": 28.027463397456643,
+      "sum_overlay_cost_over_period_start_nav": 0.0,
+      "max_self_financing_error_over_initial_capital": 1.1641532182693482e-15,
+      "min_cash_weight": 0.0
+    },
+    "original_state_only": {
+      "periods": 78,
+      "cumulative_return": 6.973464450755237,
+      "cagr_period_based": 0.3763057765020372,
+      "period_end_max_drawdown": -0.09698547460841811,
+      "annualized_period_volatility": 0.19672778501459287,
+      "periods_per_year": 12,
+      "start": "2019-12-31",
+      "end": "2026-06-30",
+      "final_nav": 3189385.7803020948,
+      "state_counts": {
+        "TOP50": 46,
+        "T1_5050": 29,
+        "AUX_HYDRA": 3
+      },
+      "rebalance": "state_only",
+      "switch_bps": 0,
+      "fill_fraction": 1.0,
+      "lag_periods": 0,
+      "outer_cash_weight": 0.0,
+      "initial_capital": 400000.0,
+      "gross_overlay_turnover_over_initial_capital": 119.93632320560567,
+      "overlay_cost_over_initial_capital": 0.0,
+      "sum_gross_overlay_turnover_over_period_start_nav": 27.674150601074434,
+      "sum_overlay_cost_over_period_start_nav": 0.0,
+      "max_self_financing_error_over_initial_capital": 5.820766091346741e-16,
+      "min_cash_weight": 0.0
+    },
+    "fixed_5050_monthly": {
+      "periods": 78,
+      "cumulative_return": 3.016912604931302,
+      "cagr_period_based": 0.23852997095375406,
+      "period_end_max_drawdown": -0.09895230955600298,
+      "annualized_period_volatility": 0.12750836580035155,
+      "periods_per_year": 12,
+      "start": "2019-12-31",
+      "end": "2026-06-30",
+      "final_nav": 1606765.0419725208,
+      "state_counts": {
+        "TOP50": 46,
+        "T1_5050": 29,
+        "AUX_HYDRA": 3
+      },
+      "rebalance": "monthly",
+      "switch_bps": 0,
+      "fill_fraction": 1.0,
+      "lag_periods": 0,
+      "outer_cash_weight": 0.0,
+      "initial_capital": 400000.0,
+      "gross_overlay_turnover_over_initial_capital": 5.0110006541251675,
+      "overlay_cost_over_initial_capital": 0.0,
+      "sum_gross_overlay_turnover_over_period_start_nav": 2.1869470852617003,
+      "sum_overlay_cost_over_period_start_nav": 0.0,
+      "max_self_financing_error_over_initial_capital": 5.820766091346741e-16,
+      "min_cash_weight": 0.0
+    },
+    "reference_200k": {
+      "periods": 78,
+      "cumulative_return": 7.021473932423243,
+      "cagr_period_based": 0.37757745662867803,
+      "period_end_max_drawdown": -0.09895230955600276,
+      "annualized_period_volatility": 0.19713971145231252,
+      "periods_per_year": 12,
+      "start": "2019-12-31",
+      "end": "2026-06-30",
+      "final_nav": 1604294.7864846485,
+      "state_counts": {
+        "TOP50": 46,
+        "T1_5050": 29,
+        "AUX_HYDRA": 3
+      },
+      "rebalance": "monthly",
+      "switch_bps": 0,
+      "fill_fraction": 1.0,
+      "lag_periods": 0,
+      "outer_cash_weight": 0.0,
+      "initial_capital": 200000.0,
+      "gross_overlay_turnover_over_initial_capital": 121.48928032262266,
+      "overlay_cost_over_initial_capital": 0.0,
+      "sum_gross_overlay_turnover_over_period_start_nav": 28.027463397456643,
+      "sum_overlay_cost_over_period_start_nav": 0.0,
+      "max_self_financing_error_over_initial_capital": 1.1641532182693482e-15,
+      "min_cash_weight": 0.0
+    },
+    "overlay_5bps": {
+      "periods": 78,
+      "cumulative_return": 6.909971583312386,
+      "cagr_period_based": 0.3746139831762192,
+      "period_end_max_drawdown": -0.09951506998565329,
+      "annualized_period_volatility": 0.19709971066638846,
+      "periods_per_year": 12,
+      "start": "2019-12-31",
+      "end": "2026-06-30",
+      "final_nav": 3163988.633324954,
+      "state_counts": {
+        "TOP50": 46,
+        "T1_5050": 29,
+        "AUX_HYDRA": 3
+      },
+      "rebalance": "monthly",
+      "switch_bps": 5,
+      "fill_fraction": 1.0,
+      "lag_periods": 0,
+      "outer_cash_weight": 0.0,
+      "initial_capital": 400000.0,
+      "gross_overlay_turnover_over_initial_capital": 120.36927162677786,
+      "overlay_cost_over_initial_capital": 0.06018463581338893,
+      "sum_gross_overlay_turnover_over_period_start_nav": 28.013039551998496,
+      "sum_overlay_cost_over_period_start_nav": 0.014006519775999246,
+      "max_self_financing_error_over_initial_capital": 1.1641532182693482e-15,
+      "min_cash_weight": -8.767314343775558e-17
+    },
+    "overlay_20bps": {
+      "periods": 78,
+      "cumulative_return": 6.584914435516379,
+      "cagr_period_based": 0.3657683007688879,
+      "period_end_max_drawdown": -0.10119702160546551,
+      "annualized_period_volatility": 0.19700939150395905,
+      "periods_per_year": 12,
+      "start": "2019-12-31",
+      "end": "2026-06-30",
+      "final_nav": 3033965.7742065517,
+      "state_counts": {
+        "TOP50": 46,
+        "T1_5050": 29,
+        "AUX_HYDRA": 3
+      },
+      "rebalance": "monthly",
+      "switch_bps": 20,
+      "fill_fraction": 1.0,
+      "lag_periods": 0,
+      "outer_cash_weight": 0.0,
+      "initial_capital": 400000.0,
+      "gross_overlay_turnover_over_initial_capital": 117.08641260110589,
+      "overlay_cost_over_initial_capital": 0.23417282520221183,
+      "sum_gross_overlay_turnover_over_period_start_nav": 27.972520061482253,
+      "sum_overlay_cost_over_period_start_nav": 0.0559450401229645,
+      "max_self_financing_error_over_initial_capital": 1.1641532182693482e-15,
+      "min_cash_weight": -1.7732926941361654e-16
+    },
+    "overlay_50bps": {
+      "periods": 78,
+      "cumulative_return": 5.975280097215162,
+      "cagr_period_based": 0.3482757259297171,
+      "period_end_max_drawdown": -0.10453264911037496,
+      "annualized_period_volatility": 0.1969611133961789,
+      "periods_per_year": 12,
+      "start": "2019-12-31",
+      "end": "2026-06-30",
+      "final_nav": 2790112.0388860647,
+      "state_counts": {
+        "TOP50": 46,
+        "T1_5050": 29,
+        "AUX_HYDRA": 3
+      },
+      "rebalance": "monthly",
+      "switch_bps": 50,
+      "fill_fraction": 1.0,
+      "lag_periods": 0,
+      "outer_cash_weight": 0.0,
+      "initial_capital": 400000.0,
+      "gross_overlay_turnover_over_initial_capital": 110.8357143695906,
+      "overlay_cost_over_initial_capital": 0.554178571847953,
+      "sum_gross_overlay_turnover_over_period_start_nav": 27.89241554341455,
+      "sum_overlay_cost_over_period_start_nav": 0.13946207771707284,
+      "max_self_financing_error_over_initial_capital": 1.1641532182693482e-15,
+      "min_cash_weight": -8.919546928850808e-17
+    },
+    "one_month_signal_lag": {
+      "periods": 78,
+      "cumulative_return": 4.418521326080669,
+      "cagr_period_based": 0.29689476279447424,
+      "period_end_max_drawdown": -0.21307292753193463,
+      "annualized_period_volatility": 0.21320012083590661,
+      "periods_per_year": 12,
+      "start": "2019-12-31",
+      "end": "2026-06-30",
+      "final_nav": 2167408.5304322676,
+      "state_counts": {
+        "TOP50": 46,
+        "T1_5050": 29,
+        "AUX_HYDRA": 3
+      },
+      "rebalance": "monthly",
+      "switch_bps": 0,
+      "fill_fraction": 1.0,
+      "lag_periods": 1,
+      "outer_cash_weight": 0.0,
+      "initial_capital": 400000.0,
+      "gross_overlay_turnover_over_initial_capital": 93.13242239359558,
+      "overlay_cost_over_initial_capital": 0.0,
+      "sum_gross_overlay_turnover_over_period_start_nav": 26.22025497600284,
+      "sum_overlay_cost_over_period_start_nav": 0.0,
+      "max_self_financing_error_over_initial_capital": 1.1641532182693482e-15,
+      "min_cash_weight": 0.0
+    },
+    "half_fill_each_month": {
+      "periods": 78,
+      "cumulative_return": 5.801837234976827,
+      "cagr_period_based": 0.34306287314613204,
+      "period_end_max_drawdown": -0.12984746365699962,
+      "annualized_period_volatility": 0.19536592829975694,
+      "periods_per_year": 12,
+      "start": "2019-12-31",
+      "end": "2026-06-30",
+      "final_nav": 2720734.893990731,
+      "state_counts": {
+        "TOP50": 46,
+        "T1_5050": 29,
+        "AUX_HYDRA": 3
+      },
+      "rebalance": "monthly",
+      "switch_bps": 0,
+      "fill_fraction": 0.5,
+      "lag_periods": 0,
+      "outer_cash_weight": 0.0,
+      "initial_capital": 400000.0,
+      "gross_overlay_turnover_over_initial_capital": 61.857744602678174,
+      "overlay_cost_over_initial_capital": 0.0,
+      "sum_gross_overlay_turnover_over_period_start_nav": 16.83965713886833,
+      "sum_overlay_cost_over_period_start_nav": 0.0,
+      "max_self_financing_error_over_initial_capital": 1.1641532182693482e-15,
+      "min_cash_weight": 0.0
+    },
+    "rb_monthly": {
+      "periods": 78,
+      "cumulative_return": 6.7922937007431585,
+      "cagr_period_based": 0.37144778992144456,
+      "period_end_max_drawdown": -0.1091094792076126,
+      "annualized_period_volatility": 0.19784541471874956,
+      "periods_per_year": 12,
+      "start": "2019-12-31",
+      "end": "2026-06-30",
+      "final_nav": 3116917.4802972632,
+      "state_counts": {
+        "TOP50": 46,
+        "T1_5050": 29,
+        "AUX_HYDRA": 3
+      },
+      "rebalance": "monthly",
+      "switch_bps": 0,
+      "fill_fraction": 1.0,
+      "lag_periods": 0,
+      "outer_cash_weight": 0.0,
+      "initial_capital": 400000.0,
+      "gross_overlay_turnover_over_initial_capital": 117.6673397598337,
+      "overlay_cost_over_initial_capital": 0.0,
+      "sum_gross_overlay_turnover_over_period_start_nav": 28.020296512421563,
+      "sum_overlay_cost_over_period_start_nav": 0.0,
+      "max_self_financing_error_over_initial_capital": 2.3283064365386965e-15,
+      "min_cash_weight": 0.0
+    },
+    "stock_net_proxy_monthly": {
+      "periods": 78,
+      "cumulative_return": 6.90017884681716,
+      "cagr_period_based": 0.37435202971908166,
+      "period_end_max_drawdown": -0.09904478453820109,
+      "annualized_period_volatility": 0.19708562462393178,
+      "periods_per_year": 12,
+      "start": "2019-12-31",
+      "end": "2026-06-30",
+      "final_nav": 3160071.538726864,
+      "state_counts": {
+        "TOP50": 46,
+        "T1_5050": 29,
+        "AUX_HYDRA": 3
+      },
+      "rebalance": "monthly",
+      "switch_bps": 0,
+      "fill_fraction": 1.0,
+      "lag_periods": 0,
+      "outer_cash_weight": 0.0,
+      "initial_capital": 400000.0,
+      "gross_overlay_turnover_over_initial_capital": 120.05657470653216,
+      "overlay_cost_over_initial_capital": 0.0,
+      "sum_gross_overlay_turnover_over_period_start_nav": 28.02882414625676,
+      "sum_overlay_cost_over_period_start_nav": 0.0,
+      "max_self_financing_error_over_initial_capital": 1.1641532182693482e-15,
+      "min_cash_weight": 0.0
+    }
+  },
+  "vs_original_monthly": {
+    "original_state_only": {
+      "relative_terminal_nav": -0.005985119701498953,
+      "cumulative_return_pp_difference": -0.04800948166800634,
+      "annualized_period_tracking_error": 0.004514889400436443,
+      "max_abs_period_return_difference": 0.010575788481550497
+    },
+    "fixed_5050_monthly": {
+      "relative_terminal_nav": -0.49923011172613574,
+      "cumulative_return_pp_difference": -4.004561327491941,
+      "annualized_period_tracking_error": 0.09440530974888563,
+      "max_abs_period_return_difference": 0.09479269909135102
+    },
+    "reference_200k": {
+      "relative_terminal_nav": 0.0,
+      "cumulative_return_pp_difference": 0.0,
+      "annualized_period_tracking_error": 0.0,
+      "max_abs_period_return_difference": 0.0
+    },
+    "overlay_5bps": {
+      "relative_terminal_nav": -0.013900481389107155,
+      "cumulative_return_pp_difference": -0.11150234911085732,
+      "annualized_period_tracking_error": 0.0009776673418818791,
+      "max_abs_period_return_difference": 0.0010750041765787977
+    },
+    "overlay_20bps": {
+      "relative_terminal_nav": -0.054423850352771974,
+      "cumulative_return_pp_difference": -0.436559496906864,
+      "annualized_period_tracking_error": 0.0039039321683239565,
+      "max_abs_period_return_difference": 0.004293579555556981
+    },
+    "overlay_50bps": {
+      "relative_terminal_nav": -0.13042413950624554,
+      "cumulative_return_pp_difference": -1.046193835208081,
+      "annualized_period_tracking_error": 0.009726236974047398,
+      "max_abs_period_return_difference": 0.01070190725041864
+    },
+    "one_month_signal_lag": {
+      "relative_terminal_nav": -0.3244980446575154,
+      "cumulative_return_pp_difference": -2.6029526063425736,
+      "annualized_period_tracking_error": 0.08901854064426384,
+      "max_abs_period_return_difference": 0.12227553616379594
+    },
+    "half_fill_each_month": {
+      "relative_terminal_nav": -0.15204645776090808,
+      "cumulative_return_pp_difference": -1.2196366974464157,
+      "annualized_period_tracking_error": 0.03788830515305111,
+      "max_abs_period_return_difference": 0.060560278663186695
+    },
+    "rb_monthly": {
+      "relative_terminal_nav": -0.028570837929638437,
+      "cumulative_return_pp_difference": -0.2291802316800844,
+      "annualized_period_tracking_error": 0.00796690575203459,
+      "max_abs_period_return_difference": 0.012730319346569319
+    },
+    "stock_net_proxy_monthly": {
+      "relative_terminal_nav": -0.015121296488392444,
+      "cumulative_return_pp_difference": -0.12129508560608304,
+      "annualized_period_tracking_error": 0.0005863895746573065,
+      "max_abs_period_return_difference": 0.0009120000000001349
+    }
+  },
+  "identities": {
+    "max_abs_baseline_gross_period_error": 3.95516952522712e-16,
+    "reported_baseline_net_cost_convention_metrics": {
+      "periods": 78,
+      "cumulative_return": 6.867171756572689,
+      "cagr_period_based": 0.3734670691581543,
+      "period_end_max_drawdown": -0.09913725481639912,
+      "annualized_period_volatility": 0.19712445592919375
+    },
+    "stock_cost_scaled_by_state_vs_reported_baseline_terminal_relative_nav": 0.004195547175755321
+  },
+  "cash_lookthrough": {
+    "TOP50": {
+      "stocks": 0.99,
+      "hydra_assets": 0.0,
+      "cash": 0.01
+    },
+    "T1_5050": {
+      "stocks": 0.495,
+      "hydra_assets": 0.5,
+      "cash": 0.005
+    },
+    "AUX_HYDRA": {
+      "stocks": 0.0,
+      "hydra_assets": 1.0,
+      "cash": 0.0
+    }
+  },
+  "input": {
+    "path": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/hydra/monthly_panel.json",
+    "sha256": "dba37a2797e1c40805321ae24d0cfe6b6c637bccb030e881d0159170df0361a3",
+    "periods": 78,
+    "metadata": {
+      "created_at_utc": "2026-10-16T11:27:02.370146+00:00",
+      "script": {
+        "path": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/hydra/v713_combination_validation_hydra.py",
+        "sha256": "606be76a96511a7ba3353b6a66f6af82a6a0fa2893d24c69e0cce1912bb0324e",
+        "bytes": 15538
+      },
+      "stock_panel": {
+        "path": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/monthly_panel.parquet",
+        "sha256": "dfab376e2668ed416bc0d676689e610e3ac3feb1e3727880389dfcc76b71927d",
+        "bytes": 12595
+      },
+      "stock_trading_calendar": {
+        "path": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/trading_calendar.json",
+        "sha256": "4ff05af525d0b032cef53afb68656ae440ad9e9eede259e308601fbe9a7190d5",
+        "bytes": 45962
+      },
+      "original_forward_rate_proxy": {
+        "path": "/opt/qmt-refresh/releases/permenant_portfolio-66985a1/v48/output_forward_rate_bond/daily_returns.parquet",
+        "sha256": "f01690e74ccc2c999c2ff3e21d9a78043c1c0352631401ae21a79db7a9becf1f",
+        "bytes": 31113,
+        "rows": 1602,
+        "start": "2019-12-06",
+        "end": "2026-07-17"
+      },
+      "rb_66985_research_ledger": {
+        "path": "/opt/qmt-refresh/releases/permenant_portfolio-66985a1/v48/execution_ledgers/v48.1-RB-66985a1/daily_returns.parquet",
+        "sha256": "ad9101326935ed09c068db66d05c4e5ea39e73aea204e8d008471ed92e246547",
+        "bytes": 46500,
+        "rows": 1607,
+        "start": "2019-12-06",
+        "end": "2026-07-24"
+      },
+      "rb_manifest": {
+        "path": "/opt/qmt-refresh/releases/permenant_portfolio-66985a1/v48/execution_ledgers/v48.1-RB-66985a1/manifest.json",
+        "sha256": "8902e217ab1faad478ece3fee20a4ff57e5beaeb6b8e5898f5f2c5d9b7b82ded",
+        "bytes": 744
+      },
+      "rb_execution_assumptions": {
+        "strategy_version": "v48.1-RB",
+        "status": "shadow_execution_audit",
+        "execution_rule": "decision_close_then_next_trading_day_open",
+        "price_source": "raw_tushare_fund_daily",
+        "dividend_source": "tushare_fund_div_cash",
+        "lot_rounding": "not_applied_in_research_ledger",
+        "buy_cost_bps": 1.0,
+        "sell_cost_bps": 1.0,
+        "weight_source_sha256": "d4e988c3425c4d63879cd72d6e422a316ae187ff1b4aa6cccf7abeb55747e6d5"
+      },
+      "base_weights": {
+        "path": "/opt/qmt-refresh/releases/permenant_portfolio-66985a1/v48/output/asset_weights.parquet",
+        "sha256": "ec80dfcab7293a9161d8ee8a78cbb60298c1a8942f6d9767e14a70b846fa8725",
+        "bytes": 13646
+      },
+      "rb_weights": {
+        "path": "/opt/qmt-refresh/releases/permenant_portfolio-66985a1/v48/output_v481_rb/asset_weights.parquet",
+        "sha256": "d4e988c3425c4d63879cd72d6e422a316ae187ff1b4aa6cccf7abeb55747e6d5",
+        "bytes": 13752
+      },
+      "research_only": true,
+      "actual_live_nav": false,
+      "periods_per_year": 12,
+      "comparison_basis": "Identical stock returns, original states and complete daily calendars; different Hydra research proxies",
+      "known_at_semantics": "Research month-end information assumption, not proof of executable closing-price orders",
+      "stock_return_semantics": "Original gross TOP50 return; stock_net_proxy_return separately subtracts original stock turnover cost; no lot execution added",
+      "stock_carry_valuation_return_semantics": "Separate stock audit sensitivity preserving held names and carrying prior adjusted marks when a period-end quote is missing",
+      "baseline_cost_difference": "Original baseline subtracts stock turnover cost even in AUX_HYDRA; unit-leg combination scales stock cost by stock sleeve weight",
+      "original_hydra_caveat": "Synthetic bond-index monthly returns spread over daily returns; not an executable ETF account NAV",
+      "rb_caveat": "Old 66985 research ledger, not authenticated current aa6 live model or broker NAV; fractional positions and next-open assumptions",
+      "interpretation": "Demonstrates non-equivalence, not an isolated causal RB effect or a strategy-selection performance contest",
+      "coverage_rule": "Both period boundaries observed in both series; daily dates in (start,end] equal each other and the independently exported stock calendar; no zero filling; internal gaps rejected"
+    }
+  },
+  "engine_sha256": "63fa7d7c01f01379fd0032a2d557a6ebd47d857e080d6676980e0c6f9b5f0b9a",
+  "details_sha256": "5d899e42d27e75cb806c68b8d7396ad4a90e6dc3190054c4be50dfe6a3f882dd",
+  "paired_stock_scale_sensitivity": {
+    "basis": "Matched overlapping 12-month stock-only sensitivity accounts; not dynamic-state execution or independent statistical samples",
+    "comparisons": [
+      {
+        "scenario": "minimum_5",
+        "stock_capital": 100000,
+        "reference_stock_capital": 200000,
+        "matched_windows": 114,
+        "median_relative_terminal_nav": -0.021692759743149215,
+        "min_relative_terminal_nav": -0.049759372081633835,
+        "max_relative_terminal_nav": 0.001672395973893126
+      },
+      {
+        "scenario": "minimum_5",
+        "stock_capital": 400000,
+        "reference_stock_capital": 200000,
+        "matched_windows": 114,
+        "median_relative_terminal_nav": 0.008790529110471956,
+        "min_relative_terminal_nav": -0.008535119193230911,
+        "max_relative_terminal_nav": 0.02240366450405462
+      },
+      {
+        "scenario": "no_fees",
+        "stock_capital": 100000,
+        "reference_stock_capital": 200000,
+        "matched_windows": 114,
+        "median_relative_terminal_nav": -0.0042858742846119124,
+        "min_relative_terminal_nav": -0.040872539092018045,
+        "max_relative_terminal_nav": 0.016010606806617922
+      },
+      {
+        "scenario": "no_fees",
+        "stock_capital": 400000,
+        "reference_stock_capital": 200000,
+        "matched_windows": 114,
+        "median_relative_terminal_nav": 0.00044826295423627815,
+        "min_relative_terminal_nav": -0.01580542633762283,
+        "max_relative_terminal_nav": 0.014006877151257369
+      },
+      {
+        "scenario": "proportional",
+        "stock_capital": 100000,
+        "reference_stock_capital": 200000,
+        "matched_windows": 114,
+        "median_relative_terminal_nav": -0.004393401453193335,
+        "min_relative_terminal_nav": -0.03990187755927577,
+        "max_relative_terminal_nav": 0.018251991929055578
+      },
+      {
+        "scenario": "proportional",
+        "stock_capital": 400000,
+        "reference_stock_capital": 200000,
+        "matched_windows": 114,
+        "median_relative_terminal_nav": 0.0006900552813656757,
+        "min_relative_terminal_nav": -0.014415276098827645,
+        "max_relative_terminal_nav": 0.01215031914284137
+      }
+    ],
+    "source": {
+      "path": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock/rolling_metrics.parquet",
+      "sha256": "c3193099ede508061eaf2a3fc712a556b127977b1cd0ae1e0ae3bb377c075011"
+    }
+  }
+}
