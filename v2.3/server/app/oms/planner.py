@@ -317,9 +317,14 @@ def plan_buy_session(*, target: Mapping[str, int], positions: Mapping[str, int],
     """
     orders, deferrals, wanted = [], [], []
     specs = {}
+    buy_anchor = buy_anchor or {}
     for s in sorted(target):
         residual = max(0, int(target[s]) - int(positions.get(s, 0)))
         if not residual:
+            continue
+        if s not in buy_anchor:
+            # No usable close yet (suspended on the sell day): wait for a later anchor, spend nothing.
+            deferrals.append(Deferral(s, "BUY", residual, "NO_ANCHOR"))
             continue
         spec = specs[s] = get_instrument(s, policy)
         need = floor_buy_quantity(residual, spec)

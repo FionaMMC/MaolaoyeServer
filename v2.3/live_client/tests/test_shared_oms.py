@@ -16,13 +16,17 @@ SPEC = dict(asset_type='stock', price_tick=.01, buy_lot=100, min_buy_quantity=10
             sell_lot=100, odd_lot_sell_all=True, t_plus_one=True, min_commission=5,
             commission_rate=.0003, transfer_fee_rate=0, stamp_duty_sell=.0005, buy_reserve_rate=.001)
 
+# Bands as the server freezes them in every v2 grant (Hydra C3: default 50 bp, sells 50 then 200 bp).
+POLICY = dict(default_buy_bps=50., buy_bps=[['518880.SH', 100.], ['513100.SH', 150.], ['513500.SH', 150.]],
+              sell_schedule=[50., 200.])
+
 
 def plan(cfg, instance, coid, *, side='BUY', quantity=100, cash=3000, positions=None, sellable=None, target=100, price=10):
     value = dict(schema_version=2, account_alias=cfg.account_alias, account_fingerprint=cfg.expected_account_sha256,
                  instance_id=instance, cycle_id='C'+instance, session_id='S'+instance,
                  trade_date='20261015', phase=side, frozen_target={STOCK: target},
                  orders=[dict(client_order_id=coid, symbol=STOCK, side=side, quantity=quantity, limit_price=price)],
-                 policy={'reference_prices': {STOCK: 10}}, instrument_specs={STOCK: SPEC}, allowed_symbols=[STOCK],
+                 policy=dict(POLICY, reference_prices={STOCK: 10}), instrument_specs={STOCK: SPEC}, allowed_symbols=[STOCK],
                  valid_until=(NOW+timedelta(hours=6)).isoformat(), lease_expires_at=(NOW+timedelta(minutes=10)).isoformat(),
                  issued_at=NOW.isoformat(), strategy_cash=cash, strategy_positions=positions or {},
                  strategy_sellable=sellable or {}, executable=True)
@@ -270,3 +274,38 @@ def test_live_profile_requires_current_broker_bands_and_approved_tick(tmp_path):
     g.execution_rules = lambda symbol: dict(price_tick=.01, up_limit=11., down_limit=8., source_time=NOW.isoformat())
     a.execute('20261015', 'BUY')
     assert len(g.calls) == 1
+
+
+def test_guard_allows_each_frozen_policy_band_and_nothing_wider():
+    """Bug: a 50 bp client cap rejected Hydra's frozen 100/150 bp buys and its 200 bp second sells."""
+    from live_client.oms_shared import require_guard
+    agent = SimpleNamespace(cfg=None)
+
+    def check(symbol, side, price, reference=10., policy=POLICY):
+        require_guard(agent, dict(symbol=symbol, side=side, limit_price=price), 100,
+                      allowed_symbols={symbol}, policy=dict(policy, reference_prices={symbol: reference}))
+
+    check('518880.SH', 'BUY', 8.558, reference=8.474)     # the real 10/9 gold buy: +99 bp
+    check('513100.SH', 'BUY', 10.149)                     # +149 bp
+    check('510300.SH', 'SELL', 9.801)                     # -199 bp, a second sell attempt
+    for symbol, side, price in (('518880.SH', 'BUY', 10.11), ('510300.SH', 'BUY', 10.06), ('510300.SH', 'SELL', 9.79)):
+        with pytest.raises(ValueError, match='frozen policy allows'):
+            check(symbol, side, price)
+    wide = dict(POLICY, default_buy_bps=1000.)
+    check('510300.SH', 'BUY', 10.25, policy=wide)         # within the 300 bp client ceiling
+    with pytest.raises(ValueError, match='frozen policy allows'):
+        check('510300.SH', 'BUY', 10.40, policy=wide)
+    with pytest.raises(ValueError, match='no price band'):
+        check('510300.SH', 'BUY', 10., policy={})
+
+
+def test_scheduled_buy_at_its_frozen_100bp_band_reaches_the_broker(tmp_path):
+    """The production failure: with the client config loaded, a +100 bp policy buy was GUARD_REJECTED."""
+    a, cfg, g, s, j = setup(tmp_path)
+    p = plan(cfg, 'a', 'H000010101', price=10.10)
+    p['policy'] = dict(POLICY, buy_bps=[[STOCK, 100.]], reference_prices={STOCK: 10})
+    p['plan_sha256'] = plan_content_sha256({k: v for k, v in p.items() if k != 'plan_sha256'})
+    s.plans = [p]
+    out = a.execute('20261015', 'BUY')
+    assert out['plans'][0]['orders'][0]['status'] == 'SUBMITTED' and len(g.calls) == 1
+

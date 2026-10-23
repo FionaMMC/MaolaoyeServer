@@ -263,32 +263,30 @@ class CycleService:
         if snap.trade_date < first_sell:
             # Before the first sell day nothing is scheduled; its plan was made at publish time.
             return []
+        wanted = [s for s, q in cycle.frozen_target.items() if int(q) > 0]
         if cycle.buy_anchor is None:
             if snap.trade_date != first_sell:
                 cycle.status = "HELD"
                 logger.error("oms cycle %s HELD: buy anchor needs the %s close", cycle.cycle_id, first_sell)
                 return []
-            wanted = [s for s, q in cycle.frozen_target.items() if int(q) > 0]
-            missing = [s for s in wanted if s not in snap.quotes]
-            if policy_from_dict(cycle.policy).require_instrument_specs:
-                for symbol in wanted:
-                    quote = snap.quotes.get(symbol)
-                    try:
-                        source = datetime.fromisoformat(quote.source_time).astimezone(CHINA)
-                        if (datetime.fromisoformat(quote.source_time).utcoffset() is None
-                                or source.strftime("%Y%m%d") != snap.trade_date
-                                or source.time() < time(15, 0)
-                                or quote.adjustment != "none"
-                                or quote.price_source not in {"raw_tick", "raw_daily_close"}
-                                or source > snap.taken_at.astimezone(CHINA)):
-                            missing.append(symbol)
-                    except (AttributeError, TypeError, ValueError):
-                        missing.append(symbol)
-            if missing:
+            anchors = self._closing_anchors(cycle, snap, wanted)
+            if wanted and not anchors:
+                # No target has a usable close at all: a data failure, not a suspension.
                 cycle.status = "HELD"
-                logger.error("oms cycle %s HELD: closing quotes missing for %s", cycle.cycle_id, missing)
+                logger.error("oms cycle %s HELD: closing quotes missing for %s", cycle.cycle_id, sorted(wanted))
                 return []
-            cycle.buy_anchor = {s: float(snap.quotes[s].last_price) for s in wanted}
+            missing = sorted(set(wanted) - set(anchors))
+            if missing:
+                logger.warning("oms cycle %s: no usable %s close for %s; their buys wait for a later close",
+                               cycle.cycle_id, snap.trade_date, missing)
+            cycle.buy_anchor = anchors
+        else:
+            # A target suspended on the sell day takes its anchor from the first usable close after it.
+            late = self._closing_anchors(cycle, snap, [s for s in wanted if s not in cycle.buy_anchor])
+            if late:
+                logger.info("oms cycle %s: late buy anchors from the %s close for %s",
+                            cycle.cycle_id, snap.trade_date, sorted(late))
+                cycle.buy_anchor = {**cycle.buy_anchor, **late}
         remaining = [x for x in schedule if x.trade_date > snap.trade_date]
         if not remaining:
             self._close(session, cycle, "WINDOW_COMPLETE", snap, now)
@@ -311,6 +309,33 @@ class CycleService:
                 planned.append(self._plan_session(session, cycle, spec, positions=positions, sellable=positions,
                                                   cash=cash, tradable=tradable, basis=snapshot_id, now=now))
         return planned
+
+    @staticmethod
+    def _closing_anchors(cycle: OmsCycle, snap: SnapshotIn, symbols) -> dict[str, float]:
+        """Same-day official closes usable as buy anchors. A symbol without one (suspended that
+        day, or no quote) gets no anchor; with instrument specs the close must be an unadjusted
+        price stamped at or after 15:00 of the snapshot's trade date."""
+        strict = policy_from_dict(cycle.policy).require_instrument_specs
+        taken = snap.taken_at.astimezone(CHINA)
+        anchors = {}
+        for symbol in symbols:
+            quote = snap.quotes.get(symbol)
+            try:
+                price = float(quote.last_price)
+                if not math.isfinite(price) or price <= 0:
+                    continue
+                if strict:
+                    stamp = datetime.fromisoformat(quote.source_time)
+                    source = stamp.astimezone(CHINA)
+                    if (stamp.utcoffset() is None or source.strftime("%Y%m%d") != snap.trade_date
+                            or source.time() < time(15, 0) or source > taken
+                            or quote.adjustment != "none"
+                            or quote.price_source not in {"raw_tick", "raw_daily_close"}):
+                        continue
+            except (AttributeError, TypeError, ValueError):
+                continue
+            anchors[symbol] = price
+        return anchors
 
     def _plan_session(self, session, cycle: OmsCycle, spec: Session, *, positions, sellable, cash, tradable,
                       basis, now) -> dict:

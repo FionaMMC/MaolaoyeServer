@@ -194,6 +194,6 @@ def test_same_day_morning_tick_is_not_accepted_as_v713_close_anchor(tmp_path):
     assert result["reconciliation"]["passed"]
     with sf() as session:
         cycle = session.get(OmsCycle, v713["cycle_id"])
-        assert cycle.status == "HELD" and cycle.buy_anchor is None
-        assert not session.scalars(select(OmsOrder).where(
-            OmsOrder.cycle_id == cycle.cycle_id, OmsOrder.side == "BUY")).all()
+        assert cycle.status == "ACTIVE" and "000002.SZ" not in cycle.buy_anchor
+        assert all(o.symbol != "000002.SZ" for o in session.scalars(select(OmsOrder).where(
+            OmsOrder.cycle_id == cycle.cycle_id, OmsOrder.side == "BUY")))

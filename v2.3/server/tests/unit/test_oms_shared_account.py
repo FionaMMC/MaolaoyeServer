@@ -2,13 +2,14 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import select
 
 from app.db import init_db, make_engine, make_session_factory
 from app.models import InstanceState
 from app.oms.cycles import CycleConflict, CycleService
 from app.oms.ledger import OrderLedger
 from app.oms.manual import ManualOrderIn, ManualService
-from app.oms.models import OmsCycle, OmsOrder, OmsTargetVersion
+from app.oms.models import OmsCycle, OmsOrder, OmsSession, OmsTargetVersion
 from app.oms.planner import Policy, policy_to_dict
 from app.oms.schemas import SnapshotIn, plan_content_sha256
 from app.services.reconcile import ReconcileService
@@ -147,4 +148,42 @@ def test_stale_quote_does_not_create_v713_buy_anchor(tmp_path):
     service.ingest_snapshot(snap, "2026-10-19T15:05:00+08:00")
     with sf() as session:
         cycle = session.get(OmsCycle, v713["cycle_id"])
+        assert cycle.status == "ACTIVE" and set(cycle.buy_anchor) == {"510300.SH"}
+        assert all(o.symbol != "000002.SZ" for o in session.scalars(select(OmsOrder).where(
+            OmsOrder.cycle_id == cycle.cycle_id, OmsOrder.side == "BUY")))
+
+
+def test_stock_without_a_close_on_the_sell_day_waits_for_its_own_anchor(tmp_path):
+    """Bug: one target stock without a usable close on day S held the whole V713 cycle for good."""
+    sf, service, _, _, v713 = setup_shared(tmp_path)
+    snap = snapshot(hhmm="1505", kind="EOD")
+    del snap.quotes["000002.SZ"]                      # suspended on S: no tick and no daily bar
+    service.ingest_snapshot(snap, "2026-10-19T15:05:00+08:00")
+    with sf() as session:
+        cycle = session.get(OmsCycle, v713["cycle_id"])
+        assert cycle.status == "ACTIVE" and set(cycle.buy_anchor) == {"510300.SH"}
+        buy = session.scalars(select(OmsSession).where(OmsSession.cycle_id == cycle.cycle_id,
+                                                       OmsSession.trade_date == "20261020",
+                                                       OmsSession.phase == "BUY")).one()
+        assert [(d["symbol"], d["reason"]) for d in buy.deferrals if d["symbol"] == "000002.SZ"] == [
+            ("000002.SZ", "NO_ANCHOR")]
+    service.ingest_snapshot(snapshot(day="20261020", hhmm="1505", kind="EOD"), "2026-10-20T15:05:00+08:00")
+    with sf() as session:
+        cycle = session.get(OmsCycle, v713["cycle_id"])
+        assert cycle.status == "ACTIVE" and cycle.buy_anchor["000002.SZ"] == 10.23   # its first usable close
+        later = session.scalars(select(OmsOrder).where(OmsOrder.cycle_id == cycle.cycle_id,
+                                                       OmsOrder.side == "BUY", OmsOrder.symbol == "000002.SZ")).all()
+        assert later and {o.trade_date for o in later} == {"20261021"}
+
+
+def test_no_usable_close_for_any_target_still_holds(tmp_path):
+    sf, service, _, hydra, v713 = setup_shared(tmp_path)
+    snap = snapshot(hhmm="1505", kind="EOD")
+    for symbol in ("000002.SZ", "510300.SH"):
+        snap.quotes[symbol].source_time = "2026-10-19T09:30:00+08:00"
+    service.ingest_snapshot(snap, "2026-10-19T15:05:00+08:00")
+    with sf() as session:
+        cycle = session.get(OmsCycle, v713["cycle_id"])
         assert cycle.status == "HELD" and cycle.buy_anchor is None
+        assert session.get(OmsCycle, hydra["cycle_id"]).status == "ACTIVE"   # Hydra's own rules are unaffected
+
