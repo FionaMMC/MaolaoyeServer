@@ -1,0 +1,148 @@
+{
+  "checks": [
+    {
+      "name": "sibling stock model is the archived script",
+      "passed": true
+    },
+    {
+      "name": "archived script copy unchanged",
+      "passed": true
+    },
+    {
+      "name": "period inputs match the Oct-19 manifest",
+      "passed": true
+    },
+    {
+      "name": "rolling metrics match the archived artifact",
+      "passed": true
+    },
+    {
+      "name": "protocol fixes bands before results",
+      "passed": true
+    },
+    {
+      "name": "114 rolling windows",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "archived value-delta paths reproduce Oct-16 rolling metrics",
+      "passed": true,
+      "detail": 0.0
+    },
+    {
+      "name": "share ledger at band 0 equals archived path with no fees",
+      "passed": true,
+      "detail": 2.3314683517128287e-15
+    },
+    {
+      "name": "114 matched windows archived_value_delta minimum_5",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Decimal ratio archived_value_delta minimum_5",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "114 matched windows share_delta_band_0.00 minimum_5",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Decimal ratio share_delta_band_0.00 minimum_5",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "114 matched windows share_delta_band_0.10 minimum_5",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Decimal ratio share_delta_band_0.10 minimum_5",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "114 matched windows share_delta_band_0.25 minimum_5",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Decimal ratio share_delta_band_0.25 minimum_5",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "114 matched windows share_delta_band_0.50 minimum_5",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Decimal ratio share_delta_band_0.50 minimum_5",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "114 matched windows archived_value_delta proportional",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Decimal ratio archived_value_delta proportional",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "114 matched windows share_delta_band_0.00 proportional",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Decimal ratio share_delta_band_0.00 proportional",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "114 matched windows share_delta_band_0.10 proportional",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Decimal ratio share_delta_band_0.10 proportional",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "114 matched windows share_delta_band_0.25 proportional",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Decimal ratio share_delta_band_0.25 proportional",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "114 matched windows share_delta_band_0.50 proportional",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "Decimal ratio share_delta_band_0.50 proportional",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "archived minimum-5 paired median equals the Oct-19 result",
+      "passed": true,
+      "detail": [
+        0.008790529110471956,
+        0.008790529110471956
+      ]
+    }
+  ],
+  "all_passed": true
+}
