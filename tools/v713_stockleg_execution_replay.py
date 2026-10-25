@@ -106,8 +106,12 @@ def ex_reference(prev_close: float, interest: float, bonus: float, allot_num: fl
     return (prev_close - interest + allot_price * allot_num) / (1 + bonus + allot_num)
 
 
-def run_window(periods, *, end, capital, template, market, participation=.01) -> dict:
-    """One continuous stock-leg ledger from cash over consecutive monthly V713 targets."""
+def run_window(periods, *, end, capital, template, market, participation=.01, rolling_anchor=False) -> dict:
+    """One continuous stock-leg ledger from cash over consecutive monthly V713 targets.
+
+    ``rolling_anchor`` is a research variant, not live OMS behaviour: every retry prices off
+    the previous close instead of the frozen signal close (sells) and first sell-day close (buys).
+    """
     calendar = [d for d in market.calendar if periods[0]["signal"] <= d <= end]
     signals = {p["signal"]: p for p in periods}
     positions = {}
@@ -140,8 +144,10 @@ def run_window(periods, *, end, capital, template, market, participation=.01) ->
             del positions[symbol]
         assert state["cash"] >= -1e-6 and positions.get(symbol, 0) >= 0
 
-    def buy_phase(date):
+    def buy_phase(date, previous):
         reasons = defaultdict(lambda: defaultdict(float))
+        if rolling_anchor and pending["buy_anchor"] is not None:
+            pending["buy_anchor"].update(closing_anchors(previous, [s for s, q in pending["frozen"].items() if q > 0]))
         orders, deferrals = plan_buy_session(target=pending["frozen"], positions=positions, cash=state["cash"],
                                              buy_anchor=pending["buy_anchor"] or {}, policy=pending["policy"])
         for d in deferrals:
@@ -168,11 +174,14 @@ def run_window(periods, *, end, capital, template, market, participation=.01) ->
         if pending["first_buy_done"] is None:
             pending["first_buy_done"] = dict(pending["bought"])
 
-    def sell_phase(date, attempt):
+    def sell_phase(date, attempt, previous):
         reasons = defaultdict(lambda: defaultdict(float))
         sellable = {s: q - today_bought.get(s, 0) for s, q in positions.items()}
+        anchors = pending["anchor"]
+        if rolling_anchor:
+            anchors = {s: market.mark(s, previous) or a for s, a in anchors.items()}
         orders, deferrals = plan_sell_session(target=pending["frozen"], positions=positions, sellable=sellable,
-                                              sell_anchor=pending["anchor"], attempt=attempt, policy=pending["policy"])
+                                              sell_anchor=anchors, attempt=attempt, policy=pending["policy"])
         for d in deferrals:
             note(reasons, date, d.symbol, "SELL", d.reason, d.quantity)
         for order in orders:
@@ -292,9 +301,9 @@ def run_window(periods, *, end, capital, template, market, participation=.01) ->
             for session in sorted((x for x in pending["schedule"] if x.trade_date == date),
                                   key=lambda x: x.phase != "BUY"):
                 if session.phase == "BUY":
-                    buy_phase(date)
+                    buy_phase(date, previous)
                 else:
-                    sell_phase(date, session.sell_attempt)
+                    sell_phase(date, session.sell_attempt, previous)
                     sold_today = True
             wanted = [s for s, q in pending["frozen"].items() if q > 0]
             if pending["buy_anchor"] is None and sold_today:
@@ -474,7 +483,8 @@ def main():
             for k in range(len(periods) - 11):
                 window = periods[k:k + 12]
                 result = run_window(window, end=window[-1]["end"], capital=capital, template=variant_template,
-                                    market=market, participation=protocol["participation"])
+                                    market=market, participation=protocol["participation"],
+                                    rolling_anchor=variant.get("anchor") == "rolling")
                 theory = 1.0
                 for p in window:
                     theory *= 1 + (0.0 if p["sleeve"] == AUX else sum(p["returns"]) / len(p["returns"]))

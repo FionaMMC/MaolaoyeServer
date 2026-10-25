@@ -24,8 +24,8 @@ def market(prices=None, bars=None, actions=None, st=()):
     return replay.Market(CAL, table, dict(actions or {}), set(st))
 
 
-def run(periods, end=CAL[-1], data=None, capital=200_000.0):
-    return replay.run_window(periods, end=end, capital=capital, template=TEMPLATE, market=data or market())
+def run(periods, end=CAL[-1], data=None, capital=200_000.0, **options):
+    return replay.run_window(periods, end=end, capital=capital, template=TEMPLATE, market=data or market(), **options)
 
 
 class RuleTests(unittest.TestCase):
@@ -101,6 +101,18 @@ class WindowTests(unittest.TestCase):
         actions = [e for e in paid["events"] if e["reason"] == "CORPORATE_ACTION"]
         self.assertEqual(len(actions), 1)
         self.assertGreater(paid["nav"][-1]["cash"], plain["nav"][-1]["cash"])
+
+    def test_rolling_anchor_sells_after_a_drift_that_a_fixed_anchor_never_reaches(self):
+        data = market()
+        data.bars[(A, "20261102")] = replay.Bar(open=9.5, close=9.5, volume=1e6)
+        for day in CAL[CAL.index("20261103"):]:
+            data.bars[(A, day)] = replay.Bar(open=9.45, close=9.45, volume=1e6)
+        periods = [{"signal": "20260930", "sleeve": "TOP50", "codes": [A, B]},
+                   {"signal": "20261030", "sleeve": "AUX_HYDRA", "codes": []}]
+        fixed = run(periods, data=data)["cycles"][1]
+        rolling = run(periods, data=data, rolling_anchor=True)["cycles"][1]
+        self.assertGreater(fixed["residual_stock_weight"], .3)
+        self.assertAlmostEqual(rolling["residual_stock_weight"], 0.0)
 
     def test_name_suspended_on_the_first_sell_day_waits_for_a_later_anchor(self):
         data = market()
