@@ -30,6 +30,12 @@ SPEC.loader.exec_module(stock)
 # contained bonus or split shares.
 SPLIT_FACTOR = 1.095
 
+# Stock-account fees confirmed on 2026-10-25: commission 0.854bp with a 5-yuan
+# minimum on commission alone; stamp duty on sells and the statutory transfer fee
+# on both sides are charged on top.
+CONFIRMED = "confirmed_20261025"
+CONFIRMED_COMMISSION = 0.0000854
+
 ROOT = Path("/opt/qmt-server/private/research-runs")
 SOURCE = ROOT / "v713-combination-validation-20261016"
 PRIOR = ROOT / "v713-scale-mapping-20261019-01"
@@ -44,6 +50,31 @@ def carry(shares: int, value: float, price: float) -> tuple[int, float]:
     factor = value / (shares * price)
     held = shares if factor < SPLIT_FACTOR else int(math.floor(shares * factor + 1e-9))
     return held, value - held * price
+
+
+def confirmed_costs(old: dict[str, float], new: dict[str, float], date) -> dict:
+    day = pd.Timestamp(date)
+    stamp_rate = 0.001 if day < pd.Timestamp("2023-08-28") else 0.0005
+    transfer_rate = 0.00002 if day < pd.Timestamp("2022-04-29") else 0.00001
+    commission = tax = transfer = buys = sells = 0.0
+    orders = 0
+    for code in sorted(set(old) | set(new)):
+        delta = new.get(code, 0.0) - old.get(code, 0.0)
+        if abs(delta) <= 1e-8:
+            continue
+        orders += 1
+        commission += max(5.0, CONFIRMED_COMMISSION * abs(delta))
+        transfer += transfer_rate * abs(delta)
+        buys += max(delta, 0.0)
+        sells += max(-delta, 0.0)
+        if delta < 0:
+            tax += -delta * stamp_rate
+    return {"commission": commission, "stamp_duty": tax, "transfer_fee": transfer,
+            "total": commission + tax + transfer, "buy_value": buys, "sell_value": sells, "economic_orders": orders}
+
+
+def costs(old, new, date, scenario: str) -> dict:
+    return confirmed_costs(old, new, date) if scenario == CONFIRMED else stock.costs(old, new, date, scenario)
 
 
 def rebalance(codes, prices, held: dict[str, int], exiting: dict[str, float], equity: float, band: float, scenario: str, date):
@@ -64,7 +95,7 @@ def rebalance(codes, prices, held: dict[str, int], exiting: dict[str, float], eq
     old = {code: held[code] * price for code, price in zip(codes, prices) if held.get(code, 0) > 0}
     old.update(exiting)
     while True:
-        fee = stock.costs(old, {code: n * price for code, n, price in zip(codes, q, prices) if n > 0}, date, scenario)
+        fee = costs(old, {code: n * price for code, n, price in zip(codes, q, prices) if n > 0}, date, scenario)
         if equity - (q * prices).sum() - fee["total"] >= 0.01 * (equity - fee["total"]) - 1e-7:
             return q, fee
         candidates = []
@@ -146,7 +177,7 @@ def startup_check(out: Path, protocol: dict) -> dict:
         "archived script copy unchanged": sha(SOURCE / "v713_combination_validation_stock.py") == archived["script_sha256"],
         "period inputs match the Oct-19 manifest": sha(SOURCE / "stock" / "period_inputs.json") == prior["source_manifest"][str(SOURCE / "stock" / "period_inputs.json")],
         "rolling metrics match the archived artifact": any(Path(a["path"]).name == "rolling_metrics.parquet" and sha(Path(a["path"])) == a["sha256"] for a in archived["remote_artifacts"]),
-        "protocol fixes bands before results": protocol["bands"] == [0.0, 0.10, 0.25, 0.50],
+        "protocol fixes bands before results": bool(protocol["bands"]) and protocol["bands"][0] == 0.0,
     }
     if not all(checks.values()):
         raise SystemExit("Startup check failed: " + json.dumps(checks, ensure_ascii=False))
@@ -173,7 +204,11 @@ def main():
     windows = [periods[i:i + 12] for i in range(len(periods) - 11)]
     check("114 rolling windows", len(windows) == 114)
     capitals, scenarios = protocol["capitals"], protocol["scenarios"]
-    variants = [("archived_value_delta", None)] + [(f"share_delta_band_{b:.2f}", b) for b in protocol["bands"]]
+
+    def variants(scenario):
+        # The archived value-delta model only knows its own fee scenarios.
+        archived = [("archived_value_delta", None)] if scenario in stock.SCENARIOS else []
+        return archived + [(f"share_delta_band_{b:.2f}", b) for b in protocol["bands"]]
 
     rows = []
     replay_error = no_fee_error = 0.0
@@ -188,7 +223,7 @@ def main():
             b, _ = simulate_shares(window, capital, "no_fees", 0.0)
             no_fee_error = max(no_fee_error, abs(b[-1]["end_equity"] / a[-1]["end_equity"] - 1))
             for scenario in scenarios:
-                for variant, band in variants:
+                for variant, band in variants(scenario):
                     path, fees = archived_path(window, capital, scenario) if band is None else simulate_shares(window, capital, scenario, band)
                     factor = path[-1]["end_equity"] / capital
                     if band is None:

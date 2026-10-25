@@ -92,5 +92,28 @@ class PathTests(unittest.TestCase):
         self.assertGreaterEqual(rows[-1]["cash"], 0.01 * rows[-1]["end_equity"])
 
 
+
+class ConfirmedFeeTests(unittest.TestCase):
+    def test_minimum_applies_to_commission_alone(self):
+        fee = share.confirmed_costs({}, {"600001.SH": 4_000.0}, "2026-06-30")
+        self.assertAlmostEqual(fee["commission"], 5.0)
+        self.assertAlmostEqual(fee["transfer_fee"], 0.04)
+        self.assertAlmostEqual(fee["total"], 5.04)
+
+    def test_large_sell_pays_rate_commission_stamp_and_transfer(self):
+        fee = share.confirmed_costs({"600001.SH": 100_000.0}, {}, "2026-06-30")
+        self.assertAlmostEqual(fee["commission"], 8.54)
+        self.assertAlmostEqual(fee["total"], 8.54 + 50.0 + 1.0)
+
+    def test_historical_stamp_and_transfer_rates(self):
+        fee = share.confirmed_costs({"600001.SH": 100_000.0}, {}, "2021-06-30")
+        self.assertAlmostEqual(fee["stamp_duty"], 100.0)
+        self.assertAlmostEqual(fee["transfer_fee"], 2.0)
+
+    def test_share_ledger_runs_on_the_confirmed_scenario(self):
+        rows, _ = share.simulate_shares([FIRST, SECOND], 100_000, share.CONFIRMED, band=0.0)
+        self.assertEqual(rows[1]["orders"], 0)
+        self.assertGreater(rows[0]["fee"], 10.0)
+
 if __name__ == "__main__":
     unittest.main()
