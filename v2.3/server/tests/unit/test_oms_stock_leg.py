@@ -9,10 +9,11 @@ from app.models import InstanceState
 from app.oms.cycles import CycleConflict, CycleService
 from app.oms.instruments import InstrumentSpec, instrument_to_dict
 from app.oms.ledger import OrderLedger
-from app.oms.models import OmsCycle, OmsOrder
+from app.oms.models import OmsCycle, OmsOrder, V713StateRecord
 from app.oms.planner import Policy, policy_to_dict
 from app.oms.v713 import build_publication, validate_v713_policy
-from app.oms.v713_stock_leg import STATE_STOCK_WEIGHT, derive_stock_leg, expand_policy, instrument_rule
+from app.oms.v713_stock_leg import (STATE_STOCK_WEIGHT, derive_stock_leg, expand_policy, instrument_rule,
+                                    record_state)
 from app.services.reconcile import ReconcileService
 from app.services.settlement import SettlementService
 from plugins.v713_relay import basket_hash
@@ -142,3 +143,20 @@ def test_stock_weight_must_match_the_sleeve(tmp_path):
     path = _basket(tmp_path, [("600001.SH", .7), ("511260.SH", .3)], "T1_5050")
     with pytest.raises(ValueError, match="expected 0.5"):
         derive_stock_leg(_base(path))
+
+
+def test_state_record_is_idempotent_and_frozen(tmp_path):
+    sf, _ = _service(tmp_path)
+    leg = derive_stock_leg(_base(_basket(tmp_path, [("600001.SH", 1.)], "TOP50")))
+    assert record_state(sf, instance_id=INSTANCE, payload=leg, target_version_id=None, now=NOW)["sleeve"] == "TOP50"
+    for _ in range(2):
+        out = record_state(sf, instance_id=INSTANCE, payload=leg, target_version_id="tv_1", now=NOW)
+        assert out["target_version_id"] == "tv_1"
+    with pytest.raises(CycleConflict, match="another target version"):
+        record_state(sf, instance_id=INSTANCE, payload=leg, target_version_id="tv_2", now=NOW)
+    other = derive_stock_leg(_base(_basket(tmp_path, [("600001.SH", .5), ("511260.SH", .5)], "T1_5050")))
+    with pytest.raises(CycleConflict, match="different allocation"):
+        record_state(sf, instance_id=INSTANCE, payload=other, target_version_id=None, now=NOW)
+    with sf() as s:
+        row = s.get(V713StateRecord, (INSTANCE, "20260930"))
+        assert (row.sleeve, row.decision_date, row.target_version_id) == ("TOP50", "20261008", "tv_1")
