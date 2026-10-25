@@ -20,7 +20,8 @@
 2. **运维密钥路径白名单。**`app/auth.py` 的 `OPERATOR_PATHS` 只允许列出的路径，下文 Task 10 没有写这一步；实现中加入 `/oms/live/v713/synthetic`，live 客户端密钥仍为 403。
 3. **新增冻结规则模板。**`plugins/v713/stockleg_policy_template_v1.json` 按 10/25 确认的费率与 Hydra 流程填写，对照说明见 [V713_STOCKLEG_EXECUTION_RULES_20261025.md](V713_STOCKLEG_EXECUTION_RULES_20261025.md)。
 4. **测试数。**`test_oms_stock_leg.py` 13 项、`test_v713_synthetic.py` 15 项、`test_v713_synthetic_api.py` 3 项。全量单元测试 907 项通过，另有 76 项失败，与改动前完全相同，都是 Windows 测试环境问题（缺 `fcntl`、GBK 解码）。
-5. **远程核对。**qmt 隔离目录 `research-runs/v713-stock-leg-checks-20261025-01` 用本分支代码复现 10/16 结果，误差 ≤ 8e-16；用当期生产篮子的副本导出股票腿，得到 50 只、各 2%。汇总见 [checks.json](../reports/v713_stock_leg_checks_20261025/checks.json)。
+5. **Linux 全量测试（2026-10-26）。**在 qmt 隔离目录（`research-runs/v713-linux-tests-20261026-01`，用生产 venv，测试依赖另装在隔离目录）运行服务器单元测试和客户端测试：本分支 1253 项、PR #3 基线 1214 项全部通过。Windows 上失败的 76 项和 2 项客户端测试在 Linux 上都通过。
+6. **远程核对。**qmt 隔离目录 `research-runs/v713-stock-leg-checks-20261025-01` 用本分支代码复现 10/16 结果，误差 ≤ 8e-16；用当期生产篮子的副本导出股票腿，得到 50 只、各 2%。汇总见 [checks.json](../reports/v713_stock_leg_checks_20261025/checks.json)。
 
 ## 范围与前提
 
