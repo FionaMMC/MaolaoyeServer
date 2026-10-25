@@ -7,6 +7,7 @@ session closes. It never creates targets or orders.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 import json
 import math
 from pathlib import Path
@@ -14,6 +15,7 @@ from pathlib import Path
 from app.oms.v713_stock_leg import STATE_STOCK_WEIGHT
 
 AUX = "AUX_HYDRA"
+CHINA = timezone(timedelta(hours=8))
 
 
 @dataclass(frozen=True)
@@ -171,3 +173,51 @@ def run_synthetic(policy: SyntheticPolicy, *, dates, unit_stock, unit_hydra, exp
                      "cash": cash, "value": value, "stock_weight": values[0] / value,
                      "pending": None if waiting is None else "ENTER_AUX"})
     return {"status": status, "rows": rows, "events": events}
+
+
+def _china_date(stamp: str) -> str:
+    moment = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    return (moment if moment.tzinfo is None else moment.astimezone(CHINA)).strftime("%Y%m%d")
+
+
+def load_inputs(session_factory, policy: SyntheticPolicy) -> dict:
+    """Leg unit NAVs, stock-leg exposure, open sells and monthly states from the live database.
+
+    A sell counts as finished at a close only if it is terminal now and became terminal
+    by the end of that day, so a later run never moves an AUX switch earlier.
+    """
+    from sqlalchemy import select
+    from app.models import PerfSnapshot, PerfValuation
+    from app.oms.models import OmsCycle, OmsOrder, V713StateRecord
+    from app.oms.states import TERMINAL
+
+    terminal = {state.value for state in TERMINAL}
+    with session_factory() as session:
+        def snapshots(instance_id):
+            return [(row.date, row.daily_return) for row in session.scalars(select(PerfSnapshot).where(
+                PerfSnapshot.instance_id == instance_id, PerfSnapshot.execution_domain == "live"))]
+
+        unit_stock = unit_nav(snapshots(policy.stock_instance))
+        unit_hydra = unit_nav(snapshots(policy.hydra_instance))
+        exposure = {row.date: max(0.0, (row.nav - row.cash - row.dividend_receivable) / row.nav)
+                    for row in session.scalars(select(PerfValuation).where(
+                        PerfValuation.instance_id == policy.stock_instance,
+                        PerfValuation.execution_domain == "live"))}
+        sells = [(order.trade_date, order.state in terminal and _china_date(order.updated_at))
+                 for order in session.scalars(select(OmsOrder).join(
+                     OmsCycle, OmsCycle.cycle_id == OmsOrder.cycle_id).where(
+                     OmsCycle.instance_id == policy.stock_instance, OmsOrder.side == "SELL"))]
+        months = []
+        for record in session.scalars(select(V713StateRecord).where(
+                V713StateRecord.instance_id == policy.stock_instance).order_by(V713StateRecord.signal_date)):
+            anchor = record.decision_date
+            if record.target_version_id is not None:
+                cycle = session.scalars(select(OmsCycle).where(
+                    OmsCycle.target_version_id == record.target_version_id)).one()
+                anchor = cycle.schedule[0]["trade_date"]
+            months.append(MonthState(record.signal_date, record.sleeve, anchor))
+    dates = sorted(set(unit_stock) & set(unit_hydra))
+    open_sell_dates = {date for date in dates for traded, finished in sells
+                       if traded <= date and not (finished and finished <= date)}
+    return {"dates": dates, "unit_stock": unit_stock, "unit_hydra": unit_hydra, "exposure": exposure,
+            "open_sell_dates": open_sell_dates, "months": months}

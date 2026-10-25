@@ -68,6 +68,7 @@ class Settings(BaseSettings):
     # Dedicated systemd worker: never run expensive research in the API process.
     hydra_monthly_enabled: bool = False
     hydra_monthly_instance_id: str = "live_hydra_v481_rb"
+    v713_synthetic_output: Path | None = None
     hydra_monthly_account_alias: str = ""
     hydra_monthly_start_date: str = "20260918"
     hydra_monthly_research_dir: Path = Path("/opt/qmt-refresh/releases/hydra-aa6b60d")

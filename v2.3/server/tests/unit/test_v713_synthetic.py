@@ -137,3 +137,65 @@ def test_all_virtual_replay_equals_the_oct16_engine(bps):
                         unit_hydra=unit_nav([(bounds[0], None)] + [(r["end"], r["hydra_return"]) for r in rows]),
                         months=[MonthState(r["start"], r["sleeve"], r["start"]) for r in rows])
     assert out["rows"][-1]["value"] == pytest.approx(reference, rel=1e-12)
+
+
+from app.db import init_db, make_engine, make_session_factory
+from app.models import PerfSnapshot, PerfValuation
+from app.oms.models import OmsCycle, OmsOrder, V713StateRecord
+from app.services.v713_synthetic import load_inputs
+from scripts import run_v713_synthetic
+
+
+def _database(tmp_path):
+    engine = make_engine(f"sqlite:///{tmp_path}/synthetic.db")
+    init_db(engine)
+    sf = make_session_factory(engine)
+    with sf() as s:
+        for i, day in enumerate(D[:5]):
+            s.add(PerfSnapshot(instance_id="live_v713_stockleg", date=day, execution_domain="live",
+                               nav=200_000.0 * 1.01 ** i, daily_return=None if i == 0 else .01,
+                               positions_snapshot={}))
+            s.add(PerfSnapshot(instance_id="live_hydra_v481_rb", date=day, execution_domain="live",
+                               nav=300_000.0, daily_return=None if i == 0 else 0.0, positions_snapshot={}))
+            s.add(PerfValuation(instance_id="live_v713_stockleg", date=day, execution_domain="live",
+                                nav=200_000.0, cash=2_000.0, dividend_receivable=0.0))
+        s.add(V713StateRecord(instance_id="live_v713_stockleg", signal_date="20261130", sleeve="T1_5050",
+                              decision_date=D[1], basket_sha256="b" * 64, allocation_sha256="a" * 64,
+                              target_version_id="tv_x", recorded_at="2026-11-30T20:00:00+08:00"))
+        s.add(OmsCycle(cycle_id="C00001", cycle_no=1, target_version_id="tv_x", account_alias="shared",
+                       instance_id="live_v713_stockleg", policy={}, nav_at_signal=200_000.0, frozen_target={},
+                       sell_anchor={}, lot_gap=0.0, status="ACTIVE", created_at="2026-11-30T20:00:00+08:00",
+                       schedule=[{"seq": 1, "trade_date": D[0], "phase": "SELL", "sell_attempt": 0}]))
+        s.commit()
+    return sf
+
+
+def _sell(client_order_id, trade_date, state, updated_at):
+    return OmsOrder(client_order_id=client_order_id, session_id="C00001:1", cycle_id="C00001", account_alias="shared",
+                    trade_date=trade_date, symbol="600001.SH", side="SELL", quantity=100, limit_price=9.95,
+                    reference_price=10.0, state=state, created_at=updated_at, updated_at=updated_at)
+
+
+def test_job_reads_leg_navs_and_states_and_writes_every_cost_line(tmp_path):
+    sf = _database(tmp_path)
+    output = tmp_path / "v713_synthetic.json"
+    assert run_v713_synthetic.main(["--policy", str(POLICY_FILE), "--output", str(output)], session_factory=sf,
+                                   now="2026-12-05T17:00:00+08:00") == 0
+    document = json.loads(output.read_text(encoding="utf-8"))
+    assert document["policy_id"] == "V713_SYNTHETIC_V1" and document["status"] == "CURRENT"
+    assert set(document["lines"]) == {"0", "20", "50"}
+    rows = document["lines"]["20"]["rows"]
+    assert rows[0]["date"] == D[0]  # the cycle's first session, not the decision date
+    assert rows[-1]["value"] == pytest.approx(400_000.0 * (.5 * 1.01 ** 4 + .5))
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_a_sell_is_open_until_the_close_of_the_day_it_became_terminal(tmp_path):
+    sf = _database(tmp_path)
+    with sf() as s:
+        s.add(_sell("S1", D[0], "EXPIRED_DAY", "2026-12-03T15:30:00+08:00"))
+        s.add(_sell("S2", D[3], "UNKNOWN", "2026-12-04T14:57:05+08:00"))
+        s.commit()
+    inputs = load_inputs(sf, load_synthetic_policy(POLICY_FILE))
+    assert inputs["open_sell_dates"] == {D[0], D[1], D[3], D[4]}
+    assert inputs["exposure"][D[0]] == pytest.approx(.99)
