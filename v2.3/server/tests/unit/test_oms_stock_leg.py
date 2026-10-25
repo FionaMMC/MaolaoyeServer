@@ -16,7 +16,9 @@ from app.oms.v713_stock_leg import (STATE_STOCK_WEIGHT, derive_stock_leg, expand
                                     record_state)
 from app.services.reconcile import ReconcileService
 from app.services.settlement import SettlementService
+from app.settings import Settings
 from plugins.v713_relay import basket_hash
+from scripts import oms_ops
 
 CAL = ["20260831", "20260901", "20260929", "20260930", "20261008", "20261009", "20261012",
        "20261013", "20261014", "20261015", "20261016", "20261019", "20261020", "20261021"]
@@ -160,3 +162,55 @@ def test_state_record_is_idempotent_and_frozen(tmp_path):
     with sf() as s:
         row = s.get(V713StateRecord, (INSTANCE, "20260930"))
         assert (row.sleeve, row.decision_date, row.target_version_id) == ("TOP50", "20261008", "tv_1")
+
+
+def _cli_args(tmp_path, basket):
+    args = ["publish-v713-stock-leg", "--instance", INSTANCE, "--account", ALIAS, "--basket", str(basket),
+            "--now", NOW]
+    for name, value in {"policy-template": _template(), "closes": CLOSES, "calendar": CAL}.items():
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps(value))
+        args += [f"--{name}", str(path)]
+    return args
+
+
+def _settings(tmp_path):
+    return Settings(_env_file=None, db_url=f"sqlite:///{tmp_path}/oms.db")
+
+
+def test_cli_t1_month_publishes_rescaled_target_and_records_state(tmp_path, capsys):
+    sf, _ = _service(tmp_path)
+    basket = _basket(tmp_path, [("600001.SH", .25), ("600002.SH", .25), ("511260.SH", .5)], "T1_5050")
+    args = _cli_args(tmp_path, basket)
+    assert oms_ops.main(args, session_factory=sf, settings=_settings(tmp_path)) == 0
+    assert "DRY RUN" in capsys.readouterr().out
+    with sf() as s:
+        assert s.query(OmsCycle).count() == 0 and s.query(V713StateRecord).count() == 0
+    for _ in range(2):
+        assert oms_ops.main(args + ["--apply"], session_factory=sf, settings=_settings(tmp_path)) == 0
+    with sf() as s:
+        cycle = s.query(OmsCycle).one()
+        assert set(cycle.frozen_target) == {"600001.SH", "600002.SH"}
+        state = s.query(V713StateRecord).one()
+        assert state.sleeve == "T1_5050" and state.target_version_id == cycle.target_version_id
+
+
+def test_cli_aux_month_liquidates_held_stock(tmp_path):
+    sf, _ = _service(tmp_path, positions={"600001.SH": 1000}, cash=1000.0)
+    basket = _basket(tmp_path, [("511260.SH", 1.)], "AUX_HYDRA")
+    assert oms_ops.main(_cli_args(tmp_path, basket) + ["--apply"], session_factory=sf,
+                        settings=_settings(tmp_path)) == 0
+    with sf() as s:
+        assert s.query(OmsCycle).one().frozen_target == {"600001.SH": 0}
+        assert s.query(V713StateRecord).one().sleeve == "AUX_HYDRA"
+
+
+def test_cli_aux_month_with_cash_only_records_state(tmp_path, capsys):
+    sf, _ = _service(tmp_path)
+    basket = _basket(tmp_path, [("511260.SH", 1.)], "AUX_HYDRA")
+    assert oms_ops.main(_cli_args(tmp_path, basket) + ["--apply"], session_factory=sf,
+                        settings=_settings(tmp_path)) == 0
+    assert "STATE_ONLY" in capsys.readouterr().out
+    with sf() as s:
+        assert s.query(OmsCycle).count() == 0
+        assert s.query(V713StateRecord).one().target_version_id is None

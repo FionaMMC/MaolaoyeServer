@@ -2,6 +2,8 @@
 
     PYTHONPATH=. python -m scripts.oms_ops publish --instance live_hydra_v481_rb --account hydra-live \
         --signal-date 20260930 --weights w.json --closes c.json --calendar cal.json --source-sha256 <sha> [--apply]
+    PYTHONPATH=. python -m scripts.oms_ops publish-v713-stock-leg --instance live_v713_stockleg --account <alias> \
+        --basket v713_target_latest.parquet --policy-template t.json --closes c.json --calendar cal.json [--apply]
     PYTHONPATH=. python -m scripts.oms_ops approve --cycle-id C00001 --approver <name> [--yes]
     PYTHONPATH=. python -m scripts.oms_ops resolve --cycle-id C00001 --operator <name> --reason "<why>" [--yes]
     PYTHONPATH=. python -m scripts.oms_ops status --account hydra-live
@@ -78,6 +80,12 @@ def main(argv=None, *, session_factory=None, settings=None) -> int:
         v.add_argument(name, required=True)
     v.add_argument("--apply", action="store_true")
     v.add_argument("--now", default=None, help="zoned ISO publication time for an isolated rehearsal")
+    k = sub.add_parser("publish-v713-stock-leg",
+                       help="derive the V713 stock-leg target from a monthly basket and record its state")
+    for name in ("--instance", "--account", "--basket", "--policy-template", "--closes", "--calendar"):
+        k.add_argument(name, required=True)
+    k.add_argument("--apply", action="store_true")
+    k.add_argument("--now", default=None, help="zoned ISO publication time for an isolated rehearsal")
     a = sub.add_parser("approve")
     a.add_argument("--cycle-id", required=True)
     a.add_argument("--approver", required=True)
@@ -105,13 +113,13 @@ def main(argv=None, *, session_factory=None, settings=None) -> int:
         session_factory = make_session_factory(engine)
     service = get_oms_cycle_service(session_factory, settings)
 
-    if args.command in ("publish", "publish-v713"):
+    if args.command in ("publish", "publish-v713", "publish-v713-stock-leg"):
         from app.oms.planner import policy_from_dict, policy_to_dict
 
         closes = json.loads(Path(args.closes).read_text(encoding="utf-8"))
         calendar = json.loads(Path(args.calendar).read_text(encoding="utf-8"))
         now = args.now or _now()
-        if args.command == "publish-v713":
+        if args.command in ("publish-v713", "publish-v713-stock-leg"):
             from app.models import InstanceState
             from app.oms.v713 import build_publication
             with session_factory() as session:
@@ -119,9 +127,28 @@ def main(argv=None, *, session_factory=None, settings=None) -> int:
                 if instance is None or instance.execution_domain != "live" or instance.account_alias != args.account:
                     raise SystemExit("V713 publication requires the initialized live instance for this account")
                 held = [s for s, q in (instance.virtual_positions or {}).items() if q]
+            if args.command == "publish-v713":
+                policy_payload = json.loads(Path(args.policy).read_text(encoding="utf-8"))
+            else:
+                import pandas as pd
+                from app.oms.v713_stock_leg import expand_policy
+                codes = set(pd.read_parquet(args.basket, columns=["code"])["code"].astype(str))
+                policy_payload = expand_policy(json.loads(Path(args.policy_template).read_text(encoding="utf-8")),
+                                               codes | set(held))
             payload = build_publication(args.basket, closes=closes, calendar=calendar,
-                                        policy_payload=json.loads(Path(args.policy).read_text(encoding="utf-8")),
-                                        now=now, held_symbols=held)
+                                        policy_payload=policy_payload, now=now, held_symbols=held)
+            if args.command == "publish-v713-stock-leg":
+                from app.oms.v713_stock_leg import derive_stock_leg, record_state
+                payload = derive_stock_leg(payload)
+                if payload["liquidate"] and not held:
+                    print(json.dumps({"sleeve": payload["provenance"]["sleeve"], "action": "STATE_ONLY",
+                                      "reason": "the stock leg already holds no stock"}, ensure_ascii=False))
+                    if not args.apply:
+                        print("DRY RUN: nothing written.")
+                        return 0
+                    print(json.dumps(record_state(session_factory, instance_id=args.instance, payload=payload,
+                                                  target_version_id=None, now=now), ensure_ascii=False))
+                    return 0
         else:
             policy = policy_from_dict(json.loads(Path(args.policy).read_text(encoding="utf-8"))) if args.policy else service.policy
             if policy.strategy_id == "v713":
@@ -142,6 +169,9 @@ def main(argv=None, *, session_factory=None, settings=None) -> int:
             return 0
         out = service.publish_target(instance_id=args.instance, account_alias=args.account, **payload)
         print(json.dumps({k: out[k] for k in ("cycle_id", "status", "target_version_id", "lot_gap")}, indent=2))
+        if args.command == "publish-v713-stock-leg":
+            print(json.dumps(record_state(session_factory, instance_id=args.instance, payload=payload,
+                                          target_version_id=out["target_version_id"], now=now), ensure_ascii=False))
         return 0
 
     if args.command == "approve":
