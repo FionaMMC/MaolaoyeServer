@@ -66,12 +66,18 @@ class CycleService:
     def publish_target(self, *, instance_id: str, account_alias: str, signal_date: str, weights: dict,
                        signal_closes: dict, calendar: list, source_sha256: str, now: str,
                        policy: Policy | dict | None = None, metadata: dict | None = None,
-                       provenance: dict | None = None, earliest_execution_date: str | None = None) -> dict:
+                       provenance: dict | None = None, earliest_execution_date: str | None = None,
+                       liquidate: bool = False) -> dict:
         policy = policy_from_dict(policy) if isinstance(policy, dict) else (policy or self.policy)
-        if not weights or any(not math.isfinite(float(w)) or float(w) < 0 for w in weights.values()):
-            raise ValueError("target weights must be finite, non-negative and nonempty")
-        if abs(sum(float(w) for w in weights.values()) - 1.0) > 1e-6:
-            raise ValueError("target weights must sum to one")
+        if liquidate:
+            # An explicit all-cash target (V713 AUX): every held symbol is frozen at zero below.
+            if weights:
+                raise ValueError("a liquidation target carries no weights")
+        else:
+            if not weights or any(not math.isfinite(float(w)) or float(w) < 0 for w in weights.values()):
+                raise ValueError("target weights must be finite, non-negative and nonempty")
+            if abs(sum(float(w) for w in weights.values()) - 1.0) > 1e-6:
+                raise ValueError("target weights must sum to one")
         with self.session_factory() as session:
             begin_ledger_transaction(session, "live", account_alias)
             inst = session.get(InstanceState, instance_id)
@@ -96,6 +102,8 @@ class CycleService:
                 if monthly:
                     raise CycleConflict("V713 monthly allocation is already frozen; a different allocation needs review")
             positions = {s: int(q) for s, q in (inst.virtual_positions or {}).items() if int(q)}
+            if liquidate and not positions:
+                raise ValueError("nothing to liquidate: the instance holds no position")
             # Not-yet-listed or suspended symbols carry no close; they may only appear with zero weight.
             signal_closes = {s: float(p) for s, p in signal_closes.items()
                              if p is not None and math.isfinite(float(p)) and float(p) > 0}

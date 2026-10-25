@@ -61,3 +61,46 @@ def test_expand_policy_requires_exactly_the_three_rules():
     del template["instrument_rules"]["etf"]
     with pytest.raises(ValueError, match="exactly"):
         expand_policy(template, ["600001.SH"])
+
+
+def _policy():
+    return expand_policy(_template(), ["600001.SH", "600002.SH", "511260.SH"])
+
+
+def _service(tmp_path, positions=None, cash=200000.0):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    engine = make_engine(f"sqlite:///{tmp_path}/oms.db")
+    init_db(engine)
+    sf = make_session_factory(engine)
+    with sf() as s:
+        s.add(InstanceState(instance_id=INSTANCE, execution_domain="live", account_alias=ALIAS,
+                            ledger_mode="attributed", virtual_cash=cash, virtual_positions=dict(positions or {}),
+                            owned_symbols=sorted(positions or {}), last_update="x"))
+        s.commit()
+    settlement = SettlementService(sf, commission_rate=.0002, min_commission=5.0, stamp_duty_sell=.0005)
+    return sf, CycleService(sf, OrderLedger(sf, settlement), ReconcileService(sf))
+
+
+def _liquidate(svc, **changes):
+    return svc.publish_target(**({"instance_id": INSTANCE, "account_alias": ALIAS, "signal_date": "20260930",
+                                  "weights": {}, "signal_closes": CLOSES, "calendar": CAL,
+                                  "source_sha256": "a" * 64, "now": NOW, "policy": _policy(),
+                                  "earliest_execution_date": "20261008", "liquidate": True} | changes))
+
+
+def test_liquidation_target_sells_every_holding(tmp_path):
+    sf, svc = _service(tmp_path, positions={"600001.SH": 1000, "600002.SH": 500}, cash=5000.0)
+    out = _liquidate(svc)
+    assert {row["symbol"]: row["target"] for row in out["shares"]} == {"600001.SH": 0, "600002.SH": 0}
+    with sf() as s:
+        orders = s.query(OmsOrder).order_by(OmsOrder.symbol).all()
+        assert [(o.symbol, o.side) for o in orders] == [("600001.SH", "SELL"), ("600002.SH", "SELL")]
+
+
+def test_liquidation_target_rejects_weights_and_an_instance_without_stock(tmp_path):
+    _, svc = _service(tmp_path / "held", positions={"600001.SH": 1000})
+    with pytest.raises(ValueError, match="carries no weights"):
+        _liquidate(svc, weights={"600001.SH": 1.0})
+    _, svc = _service(tmp_path / "cash")
+    with pytest.raises(ValueError, match="nothing to liquidate"):
+        _liquidate(svc)
