@@ -322,8 +322,14 @@ def sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def load_market(g, names, data_root: Path, start: str) -> tuple[Market, dict]:
-    """Daily raw bars of the target names with limit prices, QMT dividend records and ST flags."""
+def load_market(g, names, data_root: Path, start: str, corporate_actions: bool) -> tuple[Market, dict]:
+    """Daily bars of the target names with limit prices, ST flags and, optionally, QMT dividend records.
+
+    The market/daily/stocks files are forward-adjusted as of their download (closes before
+    a later ex-date carry more than two decimals), so their prices already contain every
+    dividend and split. Applying QMT dividend records on top would count them twice;
+    ``corporate_actions`` is for genuinely unadjusted bars only.
+    """
     import pandas as pd
 
     dates = [str(d.date()).replace("-", "") for d in g["all_dates"]]
@@ -338,7 +344,7 @@ def load_market(g, names, data_root: Path, start: str) -> tuple[Market, dict]:
                 st.add((symbol, day))
         rights = {}
         path = data_root / "fundamentals" / "dividends" / f"{symbol}.parquet"
-        if path.exists():
+        if corporate_actions and path.exists():
             for row in pd.read_parquet(path).itertuples(index=False):
                 day = str(int(row.trade_date))
                 if day < calendar[0]:
@@ -384,7 +390,7 @@ def startup_check(out: Path) -> dict:
     return checks
 
 
-def summarize(cycles, windows) -> dict:
+def summarize(cycles, windows, recent_from) -> dict:
     import numpy as np
     import pandas as pd
 
@@ -396,11 +402,25 @@ def summarize(cycles, windows) -> dict:
                 "mean": float(a.mean()), "p95": float(a.quantile(.95)), "max": float(a.max())}
 
     frame = pd.DataFrame(cycles)
-    out = {"cycles": [], "windows": []}
+    out = {"cycles": [], "recent_cycles": [], "windows": []}
+    for key, group in (("cycles", frame), ("recent_cycles", frame[frame.signal >= recent_from])):
+        out[key] = cycle_rows(group, stats)
+    w = pd.DataFrame(windows)
+    for capital, c in w.groupby("capital"):
+        out["windows"].append({"capital": int(capital), "windows": int(len(c)),
+                               "relative_nav_vs_theory": stats(c.relative_nav_vs_theory),
+                               "fees": stats(c.fees), "net_return": stats(c.net_return)})
+    return out
+
+
+def cycle_rows(frame, stats) -> list:
+    import pandas as pd
+
+    rows = []
     for (capital, kind), c in frame.groupby(["capital", "kind"]):
         traded = c[c.kind != "AUX_CASH"]
         causes = pd.DataFrame(list(traded.causes)).fillna(0.) if len(traded) else pd.DataFrame()
-        out["cycles"].append({
+        rows.append({
             "capital": int(capital), "kind": kind, "cycles": int(len(c)),
             "distinct_signal_months": int(c.signal.nunique()),
             "exec_underweight": stats(traded.get("exec_underweight", [])),
@@ -418,12 +438,7 @@ def summarize(cycles, windows) -> dict:
             "cycles_residual_above_1pct": int((c.residual_stock_weight > .01).sum()) if kind == "AUX_LIQUIDATE" else None,
             "star_sell_lot_deferrals": int(traded.get("star_sell_lot_deferrals", pd.Series(dtype=float)).fillna(0).sum()),
             "unfinished_share_of_nav_mean_by_cause": {k: float(v) for k, v in causes.mean().items()} if len(causes) else {}})
-    w = pd.DataFrame(windows)
-    for capital, c in w.groupby("capital"):
-        out["windows"].append({"capital": int(capital), "windows": int(len(c)),
-                               "relative_nav_vs_theory": stats(c.relative_nav_vs_theory),
-                               "fees": stats(c.fees), "net_return": stats(c.net_return)})
-    return out
+    return rows
 
 
 def main():
@@ -446,7 +461,8 @@ def main():
     periods = [{"signal": p["start"].replace("-", ""), "end": p["date"].replace("-", ""), "codes": p["codes"],
                 "sleeve": str(panel.loc[p["start"], "sleeve"]), "returns": p["returns"]} for p in inputs]
     names = sorted({c for p in periods for c in p["codes"]})
-    market, action_counts = load_market(g, names, Path(args.data), periods[0]["signal"])
+    market, action_counts = load_market(g, names, Path(args.data), periods[0]["signal"],
+                                        protocol["corporate_actions"] == "qmt_dividend_records")
     qa = [{"name": k, "passed": v} for k, v in checks.items()]
     qa.append({"name": "every target name has daily bars", "passed": all(any((s, d) in market.bars for d in market.calendar[:5000]) for s in names)})
     cycles, windows, events = [], [], Counter()
@@ -469,7 +485,7 @@ def main():
     first = [c for c in cycles if c["capital"] == protocol["capitals"][0] and c["window_start"] == periods[0]["signal"]]
     qa.append({"name": "replay is deterministic", "passed": [c["nav_end"] for c in again["cycles"]] == [c["nav_end"] for c in first]})
     summary = {"experiment_id": protocol["experiment_id"],
-               "status": "COMPLETED_DAILY_AUCTION_REPLAY_NOT_BROKER_FILLS", **summarize(cycles, windows),
+               "status": "COMPLETED_DAILY_AUCTION_REPLAY_NOT_BROKER_FILLS", **summarize(cycles, windows, protocol["recent_from"]),
                "events_by_side_reason": {f"{side}:{reason}": n for (side, reason), n in sorted(events.items())},
                "corporate_action_records": action_counts,
                "qa": qa, "qa_all_passed": all(q["passed"] for q in qa), "limits": protocol["limits"],
