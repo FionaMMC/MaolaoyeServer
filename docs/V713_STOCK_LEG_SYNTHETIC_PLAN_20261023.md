@@ -12,6 +12,16 @@
 
 ---
 
+## 实施记录（2026-10-25）
+
+本计划已在分支 `feat/v713-stock-leg` 上实施。与下文任务的差异：
+
+1. **进入 AUX 的条件。**设计和 10/25 确认记录要求“股票市值 ≤ 1% **且**没有未终局卖出委托”，下文 Task 7 只检查了 1%。实现中 `run_synthetic` 增加 `open_sell_dates`，`load_inputs` 从股票腿的卖单推出：卖单只有在现在已终局、且终局时间不晚于当天结束时，才算当天已完成。因此日后重跑不会把切换提前。
+2. **运维密钥路径白名单。**`app/auth.py` 的 `OPERATOR_PATHS` 只允许列出的路径，下文 Task 10 没有写这一步；实现中加入 `/oms/live/v713/synthetic`，live 客户端密钥仍为 403。
+3. **新增冻结规则模板。**`plugins/v713/stockleg_policy_template_v1.json` 按 10/25 确认的费率与 Hydra 流程填写，对照说明见 [V713_STOCKLEG_EXECUTION_RULES_20261025.md](V713_STOCKLEG_EXECUTION_RULES_20261025.md)。
+4. **测试数。**`test_oms_stock_leg.py` 13 项、`test_v713_synthetic.py` 15 项、`test_v713_synthetic_api.py` 3 项。全量单元测试 907 项通过，另有 76 项失败，与改动前完全相同，都是 Windows 测试环境问题（缺 `fcntl`、GBK 解码）。
+5. **远程核对。**qmt 隔离目录 `research-runs/v713-stock-leg-checks-20261025-01` 用本分支代码复现 10/16 结果，误差 ≤ 8e-16；用当期生产篮子的副本导出股票腿，得到 50 只、各 2%。汇总见 [checks.json](../reports/v713_stock_leg_checks_20261025/checks.json)。
+
 ## 范围与前提
 
 | 设计项 | 本计划 | 说明 |

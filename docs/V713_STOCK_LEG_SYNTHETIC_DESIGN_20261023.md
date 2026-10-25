@@ -121,7 +121,7 @@ T1 时真实股票腿正好等于 V713@40万 的股票部分；TOP50 时是它�
 
 ### 5 输出
 
-每日行：日期、状态、`u_S`、`u_H`、`n_S`、`n_H`、`c`、三条合成值、待完成的换仓（如清仓中）。事件日志：时点、类型、调整前后权重、各侧虚拟金额与成本、触发原因。合成账本只读两条腿的数据，没有任何下单路径。
+每日行：日期、状态、`u_S`、`u_H`、`n_S`、`n_H`、`c`、三条合成值、待完成的换仓（如清仓中）。事件日志：时点、类型、调整前后权重、各侧虚拟金额与成本、触发原因。合成账本只读两条腿的数据，没有任何下单路径。结果写入一个 JSON 文件并原子替换（`QMT_V713_SYNTHETIC_OUTPUT`），由 `GET /oms/live/v713/synthetic` 只读提供；每月状态记录在 `v713_state_records` 表。
 
 ## 七 验证口径与指标
 
@@ -140,12 +140,12 @@ T1 时真实股票腿正好等于 V713@40万 的股票部分；TOP50 时是它�
 | 编号 | 工作 | 代码位置 | 验收条件 | 估算人日 |
 |---|---|---|---|---:|
 | E0 | 共享账户 OMS 基础设施验收：Windows N02、server N03；部署前把生产当前运行的、未进 GitHub 的热修复并回代码线 | PR #3、`1a0bc81` | 按 [Handoff](V713_SHARED_OMS_HANDOFF_20261015.md) 的 N01–N03 通过条件 | 按 Handoff |
-| E1 | 股票腿目标适配器：复用 `build_publication` 的篮子校验，按第五节规则导出股票目标；provenance 记录源篮子 SHA、sleeve、`transform = v713-stock-leg-v1` 和导出权重哈希 | 新增 `v2.3/server/app/oms/v713_stock_leg.py` | TOP50 / T1 / AUX 三种篮子各得正确目标；同月重试幂等；未知证券或非 stock/etf 拒绝 | 1–1.5 |
+| E1 | 股票腿目标适配器：复用 `build_publication` 的篮子校验，按第五节规则导出股票目标；provenance 记录源篮子 SHA、sleeve、`transform = v713-stock-leg-v1` 和导出权重哈希；每月状态写入 `v713_state_records` | 新增 `v2.3/server/app/oms/v713_stock_leg.py` | TOP50 / T1 / AUX 三种篮子各得正确目标；同月重试幂等；未知证券或非 stock/etf 拒绝 | 1–1.5 |
 | E2 | 清仓目标：`publish_target` 增加显式 `liquidate=True`，仅允许空权重且来源 sleeve 为 `AUX_HYDRA`；所有持仓冻结为零目标，沿用现有退出与残余逻辑 | `v2.3/server/app/oms/cycles.py:66` | 持仓全部生成卖单；残余保留责任；不能与非空权重混用；重复发布不建新周期 | 1–1.5 |
 | E3 | 股票执行政策 `V713_STOCKLEG_v1` 与执行回放（即 Handoff N04）：用近年 V713 篮子和分钟或日线数据回放卖买、补单、残余 | 远程隔离 `research-runs` | 冻结政策可复现；回放报告列出覆盖率、成本、整手偏离、成交与未成原因 | 3–5 |
 | E4 | 新建实例与期初：`ledger_mode=attributed`，从账户未分配现金划拨 20 万元，不认领 Hydra 的现金和持仓 | `/accounts/initialize-from-qmt`、`/accounts/capital-transfers` | 两个实例加未分配资产等于 QMT 总量；不可变期初回执 | 0.5–1 |
 | E5 | 两条腿的单位净值：`run_live_performance --instance` 覆盖两个实例；外部资金进出折算为份数 | `v2.3/server/scripts/run_live_performance.py` | 合成测试中的划拨不改变单位净值 | 0.5–1 |
-| E6 | 合成账本服务：纯计算引擎 + 每日收盘任务（在净值任务之后），读冻结的 `v713_synthetic_policy_v1.json`（基准 40 万、状态权重、时点规则、20bp 及 0/50bp、清仓完成阈值 1%、10 日复核、两个实例 ID）；结果写入 `ParquetStore` | 新增 `v2.3/server/app/services/v713_synthetic.py`、`v2.3/server/scripts/run_v713_synthetic.py` | 幂等重跑结果相同；份额自融资误差 ≤ 1e-9；只读，无下单接口 | 2–3 |
+| E6 | 合成账本服务：纯计算引擎 + 每日收盘任务（在净值任务之后），读冻结的 `v713_synthetic_policy_v1.json`（基准 40 万、状态权重、时点规则、20bp 及 0/50bp、清仓完成阈值 1%、10 日复核、两个实例 ID）；结果写入 JSON 文件（原子替换） | 新增 `v2.3/server/app/services/v713_synthetic.py`、`v2.3/server/scripts/run_v713_synthetic.py` | 幂等重跑结果相同；份额自融资误差 ≤ 1e-9；只读，无下单接口 | 2–3 |
 | E7 | 只读看板与月报：三条线、理论线、偏差拆解、事件日志 | 新增 `/dashboard/v713-synthetic` | 能分清状态、清仓中、残余、虚拟成本 | 1–1.5 |
 | E8 | 测试与演练：状态规则、三种时点、清仓残余、资金进出单元测试；用 10/16 的月度面板回放引擎（所有侧按虚拟计费），复现 10/16 主代理和 20bp 情景结果；生产库副本上的隔离演练 | `v2.3/server/tests/unit/`、远程隔离目录 | 回放与 10/16 结果一致（相对误差 ≤ 1e-12）；演练完成一轮建仓、清仓、重建 | 2–3 |
 
