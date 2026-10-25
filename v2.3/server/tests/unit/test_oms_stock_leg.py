@@ -214,3 +214,25 @@ def test_cli_aux_month_with_cash_only_records_state(tmp_path, capsys):
     with sf() as s:
         assert s.query(OmsCycle).count() == 0
         assert s.query(V713StateRecord).one().target_version_id is None
+
+
+from pathlib import Path
+
+from app.oms.instruments import estimate_fees, instrument_from_dict
+
+TEMPLATE_FILE = Path(__file__).resolve().parents[2] / "plugins" / "v713" / "stockleg_policy_template_v1.json"
+
+
+def test_frozen_template_carries_the_confirmed_execution_and_fee_rules():
+    template = json.loads(TEMPLATE_FILE.read_text(encoding="utf-8"))
+    payload = expand_policy(template, ["600001.SH", "300750.SZ", "688981.SH", "511260.SH"])
+    policy = validate_v713_policy(payload, list(payload["instruments"]))
+    assert (policy.default_buy_bps, policy.sell_schedule, policy.buy_bps, policy.reserve) == (50.0, (50.0, 200.0), (), .01)
+    board = payload["instruments"]["600001.SH"]
+    assert (board["commission_rate"], board["min_commission"], board["stamp_duty_sell"]) == (.0000854, 5.0, .0005)
+    assert payload["instruments"]["688981.SH"]["min_buy_quantity"] == 200
+    spec = instrument_from_dict(board)
+    # Above the minimum: 8.54 commission + 1.00 transfer fee + 50.00 stamp duty.
+    assert estimate_fees(spec, 100_000.0, "SELL") == pytest.approx(59.54)
+    # The 5-yuan minimum applies to commission alone, not to all fees together.
+    assert estimate_fees(spec, 10_000.0, "BUY") == pytest.approx(5.10)
