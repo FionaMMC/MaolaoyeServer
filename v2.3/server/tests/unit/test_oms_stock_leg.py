@@ -31,7 +31,7 @@ CLOSES = {"600001.SH": 10.0, "600002.SH": 20.0, "511260.SH": 120.0}
 def _template():
     board = instrument_to_dict(InstrumentSpec("stock", .01, commission_rate=.0002, stamp_duty_sell=.0005))
     star = instrument_to_dict(InstrumentSpec("stock", .01, buy_lot=1, min_buy_quantity=200, sell_lot=1,
-                                             commission_rate=.0002, stamp_duty_sell=.0005))
+                                             commission_rate=.0002, stamp_duty_sell=.0005, min_sell_quantity=200))
     etf = instrument_to_dict(InstrumentSpec("etf", .001, commission_rate=.0002))
     base = policy_to_dict(Policy(policy_id="V713_STOCKLEG_TEST", strategy_id="v713", require_instrument_specs=True,
                                  reserve=.01, buy_bps=()))
@@ -231,6 +231,7 @@ def test_frozen_template_carries_the_confirmed_execution_and_fee_rules():
     board = payload["instruments"]["600001.SH"]
     assert (board["commission_rate"], board["min_commission"], board["stamp_duty_sell"]) == (.0000854, 5.0, .0005)
     assert payload["instruments"]["688981.SH"]["min_buy_quantity"] == 200
+    assert payload["instruments"]["688981.SH"]["min_sell_quantity"] == 200
     spec = instrument_from_dict(board)
     # Above the minimum: 8.54 commission + 1.00 transfer fee + 50.00 stamp duty.
     assert estimate_fees(spec, 100_000.0, "SELL") == pytest.approx(59.54)

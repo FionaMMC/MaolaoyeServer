@@ -246,6 +246,10 @@ def execute_bundle(agent, trade_date, phase, *, plans=None, dry_run=False):
                     raise ValueError("invalid sell lot")
                 if quantity % lot and not (spec.get("odd_lot_sell_all") and quantity == available):
                     quantity = quantity // lot * lot
+                # STAR: a sale under 200 shares is only valid for the whole remaining position.
+                if quantity < int(spec.get("min_sell_quantity", 1)) and quantity != int(
+                        plan["strategy_positions"].get(symbol, 0)):
+                    quantity = 0
             if quantity <= 0:
                 results.append({"client_order_id": coid, "status": "SKIPPED_NO_ROOM"})
                 continue

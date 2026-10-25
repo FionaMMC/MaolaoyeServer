@@ -309,3 +309,19 @@ def test_scheduled_buy_at_its_frozen_100bp_band_reaches_the_broker(tmp_path):
     out = a.execute('20261015', 'BUY')
     assert out['plans'][0]['orders'][0]['status'] == 'SUBMITTED' and len(g.calls) == 1
 
+
+
+def test_star_sale_below_200_shares_is_only_sent_for_the_whole_position(tmp_path):
+    a, cfg, g, s, j = setup(tmp_path, positions={STOCK: 300}, sellable={STOCK: 300})
+    now = NOW.replace(hour=14, minute=57)
+    a.clock = lambda: now
+    star = dict(SPEC, buy_lot=1, min_buy_quantity=200, sell_lot=1, min_sell_quantity=200)
+    plans = [plan(cfg, 'a', 'H000010101', side='SELL', quantity=100, positions={STOCK: 300}, sellable={STOCK: 300}),
+             plan(cfg, 'b', 'H000020101', side='SELL', quantity=150, positions={STOCK: 150}, sellable={STOCK: 150})]
+    for p in plans:
+        p['instrument_specs'] = {STOCK: star}
+        p['lease_expires_at'] = (now+timedelta(minutes=2)).isoformat()
+        p['plan_sha256'] = plan_content_sha256({k: v for k, v in p.items() if k != 'plan_sha256'})
+    s.plans = plans
+    a.execute('20261015', 'SELL')
+    assert [c['quantity'] for c in g.calls] == [150]

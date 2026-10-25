@@ -21,7 +21,8 @@ CHINA = timezone(timedelta(hours=8))
 _EXPLICIT_POLICY = {"policy_id", "strategy_id", "lot", "size_factor", "default_buy_bps", "buy_bps",
                     "sell_schedule", "window", "reserve", "instruments", "require_instrument_specs",
                     "execution_model", "execution_windows", "submit_at"}
-_EXPLICIT_INSTRUMENT = {field.name for field in fields(InstrumentSpec)}
+# min_sell_quantity defaults to 1 and is checked for STAR symbols below.
+_EXPLICIT_INSTRUMENT = {field.name for field in fields(InstrumentSpec)} - {"min_sell_quantity"}
 _SYMBOL = re.compile(r"^\d{6}\.(SH|SZ)$")
 
 
@@ -40,6 +41,8 @@ def validate_v713_policy(payload: dict, symbols=()) -> Policy:
             raise ValueError(f"unsupported V713 instrument symbol {symbol}")
         if not isinstance(spec, dict) or _EXPLICIT_INSTRUMENT - set(spec):
             raise ValueError(f"V713 must explicitly specify all instrument and fee rules for {symbol}")
+        if symbol.startswith("688") and int(spec.get("min_sell_quantity", 1)) < 200:
+            raise ValueError(f"STAR instrument {symbol} must set min_sell_quantity of at least 200")
     policy = policy_from_dict(payload)
     for symbol in symbols:
         get_instrument(symbol, policy)

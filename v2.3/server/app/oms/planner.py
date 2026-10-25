@@ -298,6 +298,8 @@ def plan_sell_session(*, target: Mapping[str, int], positions: Mapping[str, int]
         if can < excess:
             deferrals.append(Deferral(s, "SELL", excess - can, "NOT_SELLABLE"))
         legal = can if spec.odd_lot_sell_all and can == held else can // spec.sell_lot * spec.sell_lot
+        if legal < held and legal < spec.min_sell_quantity:
+            legal = 0
         if legal < can:
             deferrals.append(Deferral(s, "SELL", can - legal, "SELL_LOT"))
         if legal > 0:

@@ -21,7 +21,8 @@
     "stock_star": {
       "asset_type": "stock", "price_tick": 0.01, "buy_lot": 1, "min_buy_quantity": 200, "sell_lot": 1,
       "odd_lot_sell_all": true, "t_plus_one": true, "commission_rate": 0.0000854, "min_commission": 5.0,
-      "stamp_duty_sell": 0.0005, "transfer_fee_rate": 0.00001, "buy_reserve_rate": null
+      "stamp_duty_sell": 0.0005, "transfer_fee_rate": 0.00001, "buy_reserve_rate": null,
+      "min_sell_quantity": 200
     },
     "etf": {
       "asset_type": "etf", "price_tick": 0.001, "buy_lot": 100, "min_buy_quantity": 100, "sell_lot": 1,

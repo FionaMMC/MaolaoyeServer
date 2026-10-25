@@ -100,3 +100,31 @@ def test_unrecognized_fields_and_out_of_window_submission_are_rejected():
         policy_from_dict({"mystery": 1})
     with pytest.raises(ValueError, match="inside"):
         policy_from_dict({"submit_at": {"BUY": "15:00:00", "SELL": "14:57:05"}})
+
+
+def star(**changes):
+    return stock(**({"buy_lot": 1, "min_buy_quantity": 200, "sell_lot": 1, "min_sell_quantity": 200} | changes))
+
+
+def test_default_min_sell_quantity_is_omitted_so_existing_plans_stay_identical():
+    assert "min_sell_quantity" not in instrument_to_dict(stock())
+    assert instrument_to_dict(star())["min_sell_quantity"] == 200
+    assert instrument_from_dict(instrument_to_dict(star())) == star()
+    with pytest.raises(ValueError, match="min_sell_quantity"):
+        stock(min_sell_quantity=0)
+
+
+def test_star_partial_sale_below_200_shares_waits_but_a_full_exit_is_allowed():
+    specs = policy({"688001.SH": star()})
+    orders, deferrals = plan_sell_session(target={"688001.SH": 200}, positions={"688001.SH": 300},
+                                          sellable={"688001.SH": 300}, sell_anchor={"688001.SH": 50.},
+                                          attempt=0, policy=specs)
+    assert orders == [] and [(d.reason, d.quantity) for d in deferrals] == [("SELL_LOT", 100)]
+    orders, _ = plan_sell_session(target={"688001.SH": 200}, positions={"688001.SH": 450},
+                                  sellable={"688001.SH": 450}, sell_anchor={"688001.SH": 50.},
+                                  attempt=0, policy=specs)
+    assert [o.quantity for o in orders] == [250]
+    orders, _ = plan_sell_session(target={"688001.SH": 0}, positions={"688001.SH": 150},
+                                  sellable={"688001.SH": 150}, sell_anchor={"688001.SH": 50.},
+                                  attempt=0, policy=specs)
+    assert [o.quantity for o in orders] == [150]
