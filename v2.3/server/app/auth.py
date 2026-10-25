@@ -29,6 +29,7 @@ class AuthContext:
 OPERATOR_CLIENT_ID = "oms-operator"
 OPERATOR_PATHS = frozenset({
     "/oms/live/overview",
+    "/oms/live/v713/synthetic",
     "/oms/live/manual/orders",
     "/oms/live/manual/cancels",
     "/oms/live/dividends/preview",

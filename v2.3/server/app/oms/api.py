@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
+from pathlib import Path
 from typing import Literal
 from pydantic import BaseModel, Field
 
@@ -107,6 +109,16 @@ def get_overview(account_alias: str, instance_id: str | None = None, auth: AuthC
         return APIResponse[dict](code=0, message="ok", data=service.overview(account_alias, instance_id))
     except ValueError as exc:
         raise _bad_request(exc) from exc
+
+
+@router.get("/v713/synthetic", response_model=APIResponse[dict])
+def get_v713_synthetic(account_alias: str, auth: AuthContext = Depends(verify_api_key),
+                       settings: Settings = Depends(get_settings)):
+    _authorize_operator(auth, account_alias)
+    path = settings.v713_synthetic_output
+    if path is None or not Path(path).is_file():
+        raise APIError(ErrorCode.BAD_REQUEST, "V713 合成账本尚未生成", http_status=404)
+    return APIResponse[dict](code=0, message="ok", data=json.loads(Path(path).read_text(encoding="utf-8")))
 
 
 @router.post("/manual/orders", response_model=APIResponse[dict])

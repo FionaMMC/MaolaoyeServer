@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>V713 合成净值</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 16px; color: #1f2328; background: #fff; }
+  input, button { font: inherit; padding: 4px 8px; }
+  table { border-collapse: collapse; margin-top: 12px; width: 100%; }
+  th, td { border-bottom: 1px solid #d0d7de; padding: 4px 8px; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  .status { font-weight: 600; }
+  .status.REVIEW_REQUIRED { color: #cf222e; }
+  svg { width: 100%; height: 220px; margin-top: 12px; }
+</style>
+</head>
+<body>
+<h1>V713 合成净值</h1>
+<p id="label"></p>
+<label>运维密钥 <input id="key" type="password" autocomplete="off"></label>
+<label>账户 <input id="account" autocomplete="off"></label>
+<button id="load">读取</button>
+<p>状态：<span id="status" class="status">未读取</span> · 生成于 <span id="generated">—</span></p>
+<svg id="chart" viewBox="0 0 600 220" preserveAspectRatio="none"></svg>
+<h2>最近 20 个交易日（主线）</h2>
+<table id="rows"><thead><tr><th>日期</th><th>状态</th><th>合成值</th><th>股票腿占比</th><th>待完成</th></tr></thead><tbody></tbody></table>
+<h2>事件</h2>
+<table id="events"><thead><tr><th>日期</th><th>类型</th><th>月份</th><th>状态</th><th>虚拟成本</th></tr></thead><tbody></tbody></table>
+<script>
+const $ = (id) => document.getElementById(id);
+for (const id of ["key", "account"]) {
+  try { $(id).value = sessionStorage.getItem("v713." + id) || ""; } catch (e) {}
+}
+function cell(text) { const td = document.createElement("td"); td.textContent = text; return td; }
+function fill(table, rows) {
+  const body = $(table).querySelector("tbody");
+  body.replaceChildren(...rows.map((values) => { const tr = document.createElement("tr"); tr.append(...values.map(cell)); return tr; }));
+}
+function chart(lines) {
+  const svg = $("chart"); svg.replaceChildren();
+  const all = Object.values(lines).flatMap((line) => line.rows.map((row) => row.value));
+  if (!all.length) return;
+  const lo = Math.min(...all), hi = Math.max(...all), span = hi - lo || 1;
+  const colors = {"0": "#8c959f", "20": "#0969da", "50": "#bf8700"};
+  for (const [bps, line] of Object.entries(lines)) {
+    const n = Math.max(line.rows.length - 1, 1);
+    const points = line.rows.map((row, i) => `${(i / n) * 600},${210 - ((row.value - lo) / span) * 200}`).join(" ");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+    path.setAttribute("points", points); path.setAttribute("fill", "none");
+    path.setAttribute("stroke", colors[bps] || "#1f2328"); path.setAttribute("stroke-width", "2");
+    svg.append(path);
+  }
+}
+$("load").addEventListener("click", async () => {
+  try { sessionStorage.setItem("v713.key", $("key").value); sessionStorage.setItem("v713.account", $("account").value); } catch (e) {}
+  const url = "/oms/live/v713/synthetic?account_alias=" + encodeURIComponent($("account").value);
+  const response = await fetch(url, {headers: {"Authorization": "Bearer " + $("key").value}});
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || body.code !== 0) { $("status").textContent = body.message || ("HTTP " + response.status); return; }
+  const doc = body.data, primary = doc.lines[String(doc.primary_bps)] || {rows: [], events: []};
+  $("label").textContent = doc.label + " · 主线 " + doc.primary_bps + "bp（另有 0bp、50bp）";
+  $("status").textContent = doc.status; $("status").className = "status " + doc.status;
+  $("generated").textContent = doc.generated_at;
+  chart(doc.lines);
+  fill("rows", primary.rows.slice(-20).reverse().map((r) => [r.date, r.sleeve, r.value.toFixed(2), (r.stock_weight * 100).toFixed(1) + "%", r.pending || ""]));
+  fill("events", primary.events.slice().reverse().map((e) => [e.date, e.kind, e.signal_date, e.sleeve, e.cost === undefined ? "" : e.cost.toFixed(2)]));
+});
+</script>
+</body>
+</html>
