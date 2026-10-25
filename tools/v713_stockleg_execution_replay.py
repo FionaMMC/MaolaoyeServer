@@ -465,27 +465,41 @@ def main():
                                         protocol["corporate_actions"] == "qmt_dividend_records")
     qa = [{"name": k, "passed": v} for k, v in checks.items()]
     qa.append({"name": "every target name has daily bars", "passed": all(any((s, d) in market.bars for d in market.calendar[:5000]) for s in names)})
+    # A post-hoc sensitivity grid names its variants in the protocol; the frozen policy is the default.
+    variants = protocol.get("variants") or [{"name": template["policy_id"], "overrides": {}}]
     cycles, windows, events = [], [], Counter()
-    for capital in protocol["capitals"]:
-        for k in range(len(periods) - 11):
-            window = periods[k:k + 12]
-            result = run_window(window, end=window[-1]["end"], capital=capital, template=template, market=market,
-                                participation=protocol["participation"])
-            theory = 1.0
-            for p in window:
-                theory *= 1 + (0.0 if p["sleeve"] == AUX else sum(p["returns"]) / len(p["returns"]))
-            factor = result["nav"][-1]["nav"] / capital
-            windows.append({"capital": capital, "start": window[0]["signal"], "end": window[-1]["end"],
-                            "net_return": factor - 1, "relative_nav_vs_theory": factor / theory - 1, "fees": result["fees"]})
-            for i, c in enumerate(result["cycles"]):
-                cycles.append({**c, "capital": capital, "window_start": window[0]["signal"], "cycle_index": i})
-            events.update((e["side"], e["reason"]) for e in result["events"])
-    again = run_window(periods[:12], end=periods[11]["end"], capital=protocol["capitals"][0], template=template,
+    for variant in variants:
+        variant_template = {**template, **variant["overrides"]}
+        for capital in protocol["capitals"]:
+            for k in range(len(periods) - 11):
+                window = periods[k:k + 12]
+                result = run_window(window, end=window[-1]["end"], capital=capital, template=variant_template,
+                                    market=market, participation=protocol["participation"])
+                theory = 1.0
+                for p in window:
+                    theory *= 1 + (0.0 if p["sleeve"] == AUX else sum(p["returns"]) / len(p["returns"]))
+                factor = result["nav"][-1]["nav"] / capital
+                windows.append({"variant": variant["name"], "capital": capital, "start": window[0]["signal"],
+                                "end": window[-1]["end"], "net_return": factor - 1,
+                                "relative_nav_vs_theory": factor / theory - 1, "fees": result["fees"]})
+                for i, c in enumerate(result["cycles"]):
+                    cycles.append({**c, "variant": variant["name"], "capital": capital,
+                                   "window_start": window[0]["signal"], "cycle_index": i})
+                if variant is variants[0]:
+                    events.update((e["side"], e["reason"]) for e in result["events"])
+    first_variant = {**template, **variants[0]["overrides"]}
+    again = run_window(periods[:12], end=periods[11]["end"], capital=protocol["capitals"][0], template=first_variant,
                        market=market, participation=protocol["participation"])
-    first = [c for c in cycles if c["capital"] == protocol["capitals"][0] and c["window_start"] == periods[0]["signal"]]
+    first = [c for c in cycles if c["variant"] == variants[0]["name"] and c["capital"] == protocol["capitals"][0]
+             and c["window_start"] == periods[0]["signal"]]
     qa.append({"name": "replay is deterministic", "passed": [c["nav_end"] for c in again["cycles"]] == [c["nav_end"] for c in first]})
+    by_variant = {v["name"]: summarize([c for c in cycles if c["variant"] == v["name"]],
+                                       [w for w in windows if w["variant"] == v["name"]], protocol["recent_from"])
+                  for v in variants}
     summary = {"experiment_id": protocol["experiment_id"],
-               "status": "COMPLETED_DAILY_AUCTION_REPLAY_NOT_BROKER_FILLS", **summarize(cycles, windows, protocol["recent_from"]),
+               "status": "COMPLETED_DAILY_AUCTION_REPLAY_NOT_BROKER_FILLS", **by_variant[variants[0]["name"]],
+               "variants": {v["name"]: {"overrides": v["overrides"], **by_variant[v["name"]]} for v in variants}
+               if len(variants) > 1 else {},
                "events_by_side_reason": {f"{side}:{reason}": n for (side, reason), n in sorted(events.items())},
                "corporate_action_records": action_counts,
                "qa": qa, "qa_all_passed": all(q["passed"] for q in qa), "limits": protocol["limits"],
