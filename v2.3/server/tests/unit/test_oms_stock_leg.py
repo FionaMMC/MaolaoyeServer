@@ -12,7 +12,7 @@ from app.oms.ledger import OrderLedger
 from app.oms.models import OmsCycle, OmsOrder
 from app.oms.planner import Policy, policy_to_dict
 from app.oms.v713 import build_publication, validate_v713_policy
-from app.oms.v713_stock_leg import expand_policy, instrument_rule
+from app.oms.v713_stock_leg import STATE_STOCK_WEIGHT, derive_stock_leg, expand_policy, instrument_rule
 from app.services.reconcile import ReconcileService
 from app.services.settlement import SettlementService
 from plugins.v713_relay import basket_hash
@@ -104,3 +104,41 @@ def test_liquidation_target_rejects_weights_and_an_instance_without_stock(tmp_pa
     _, svc = _service(tmp_path / "cash")
     with pytest.raises(ValueError, match="nothing to liquidate"):
         _liquidate(svc)
+
+
+def _basket(tmp_path, rows, sleeve, *, decision="20261008", as_of="20260930"):
+    frame = pd.DataFrame([{"code": code, "weight": weight, "strategy_version": "v7.13-base", "sleeve": sleeve,
+                           "decision_date": decision, "as_of_date": as_of} for code, weight in rows])
+    frame["basket_sha256"] = basket_hash(frame)
+    path = tmp_path / f"{sleeve}.parquet"
+    frame.to_parquet(path, index=False)
+    return path
+
+
+def _base(path, held=()):
+    return build_publication(path, closes=CLOSES, calendar=CAL, now=NOW, held_symbols=list(held),
+                             policy_payload=_policy())
+
+
+def test_t1_basket_rescales_stock_names_to_the_whole_leg(tmp_path):
+    path = _basket(tmp_path, [("600001.SH", .25), ("600002.SH", .25), ("511260.SH", .5)], "T1_5050")
+    leg = derive_stock_leg(_base(path))
+    assert leg["weights"] == {"600001.SH": .5, "600002.SH": .5}
+    assert leg["liquidate"] is False
+    assert leg["provenance"]["sleeve"] == "T1_5050"
+    assert leg["provenance"]["transform"] == "v713-stock-leg-v1"
+    assert leg["provenance"]["source_allocation_sha256"] != leg["source_sha256"]
+
+
+def test_top50_basket_is_unchanged_and_aux_basket_liquidates(tmp_path):
+    top = derive_stock_leg(_base(_basket(tmp_path, [("600001.SH", .6), ("600002.SH", .4)], "TOP50")))
+    assert top["weights"] == {"600001.SH": .6, "600002.SH": .4}
+    aux = derive_stock_leg(_base(_basket(tmp_path, [("511260.SH", 1.)], "AUX_HYDRA"), held=["600001.SH"]))
+    assert aux["weights"] == {} and aux["liquidate"] is True
+
+
+def test_stock_weight_must_match_the_sleeve(tmp_path):
+    assert STATE_STOCK_WEIGHT == {"TOP50": 1.0, "T1_5050": .5, "AUX_HYDRA": 0.0}
+    path = _basket(tmp_path, [("600001.SH", .7), ("511260.SH", .3)], "T1_5050")
+    with pytest.raises(ValueError, match="expected 0.5"):
+        derive_stock_leg(_base(path))

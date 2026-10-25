@@ -7,7 +7,11 @@ AUX. It never recomputes TOP50, Hydra or the state signal.
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 
+STATE_STOCK_WEIGHT = {"TOP50": 1.0, "T1_5050": 0.5, "AUX_HYDRA": 0.0}
+STOCK_LEG_TRANSFORM = "v713-stock-leg-v1"
 _RULES = ("stock_board_lot", "stock_star", "etf")
 
 
@@ -31,3 +35,35 @@ def expand_policy(template: dict, symbols) -> dict:
     payload["instruments"] = {symbol: dict(template["instrument_rules"][instrument_rule(symbol)])
                               for symbol in sorted(set(symbols))}
     return payload
+
+
+def _sha(payload) -> str:
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def derive_stock_leg(payload: dict) -> dict:
+    """Publication kwargs for the stock leg from ``app.oms.v713.build_publication`` output.
+
+    TOP50 and T1 hold the basket's stock names rescaled to the whole leg; AUX is an
+    explicit liquidation. The identity covers the transform, so a stock-leg target can
+    never be mistaken for the mixed V713 allocation it came from.
+    """
+    from app.oms.planner import get_instrument
+
+    policy, sleeve = payload["policy"], payload["provenance"]["sleeve"]
+    if sleeve not in STATE_STOCK_WEIGHT:
+        raise ValueError(f"unknown V713 sleeve {sleeve}")
+    stocks = {symbol: float(weight) for symbol, weight in sorted(payload["weights"].items())
+              if weight > 0 and get_instrument(symbol, policy).asset_type == "stock"}
+    total = sum(stocks.values())
+    if abs(total - STATE_STOCK_WEIGHT[sleeve]) > 1e-4:
+        raise ValueError(f"{sleeve} basket carries stock weight {total:.6f}, expected {STATE_STOCK_WEIGHT[sleeve]}")
+    liquidate = sleeve == "AUX_HYDRA"
+    weights = {} if liquidate else {symbol: weight / total for symbol, weight in stocks.items()}
+    identity = _sha({"transform": STOCK_LEG_TRANSFORM, "sleeve": sleeve, "signal_date": payload["signal_date"],
+                     "weights": weights, "source_allocation_sha256": payload["source_sha256"]})
+    provenance = {**payload["provenance"], "transform": STOCK_LEG_TRANSFORM,
+                  "source_allocation_sha256": payload["source_sha256"],
+                  "stock_leg_allocation_sha256": identity, "liquidate": liquidate}
+    return {**payload, "weights": weights, "source_sha256": identity, "provenance": provenance,
+            "liquidate": liquidate}
