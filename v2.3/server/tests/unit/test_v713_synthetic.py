@@ -1,6 +1,8 @@
 """Synthetic V713 ledger over the live stock leg and live Hydra (read-only)."""
+import importlib.util
 import json
 from pathlib import Path
+import random
 
 import pytest
 
@@ -109,3 +111,29 @@ def test_an_unfinished_sell_order_blocks_the_aux_switch():
     # Residual stock is already <= 1% on 12/03, but a sell order is still open that close.
     out = _run([T1, AUX_MONTH], open_sell_dates={"20261203", "20261204"})
     assert [(e["date"], e["kind"]) for e in out["events"]] == [(D[0], "INIT"), ("20261205", "ENTER_AUX")]
+
+
+RESEARCH = Path(__file__).resolve().parents[4] / "tools" / "v713_combination_validation.py"
+
+
+def _research():
+    spec = importlib.util.spec_from_file_location("v713_combination_research", RESEARCH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("bps", [0.0, 20.0, 50.0])
+def test_all_virtual_replay_equals_the_oct16_engine(bps):
+    rng = random.Random(7)
+    bounds = [f"{2020 + k // 12}-{k % 12 + 1:02d}-28" for k in range(61)]
+    rows = [{"start": a, "end": b, "known_at": a, "sleeve": rng.choices(["TOP50", "T1_5050", "AUX_HYDRA"], (5, 4, 1))[0],
+             "stock_return": rng.uniform(-.1, .1), "hydra_return": rng.uniform(-.03, .03)}
+            for a, b in zip(bounds, bounds[1:])]
+    reference = _research().simulate_periods(rows, initial_capital=400_000, rebalance="monthly",
+                                             switch_bps=bps)["summary"]["final_nav"]
+    out = run_synthetic(POLICY, dates=bounds, exposure={}, bps=bps, all_virtual=True,
+                        unit_stock=unit_nav([(bounds[0], None)] + [(r["end"], r["stock_return"]) for r in rows]),
+                        unit_hydra=unit_nav([(bounds[0], None)] + [(r["end"], r["hydra_return"]) for r in rows]),
+                        months=[MonthState(r["start"], r["sleeve"], r["start"]) for r in rows])
+    assert out["rows"][-1]["value"] == pytest.approx(reference, rel=1e-12)
