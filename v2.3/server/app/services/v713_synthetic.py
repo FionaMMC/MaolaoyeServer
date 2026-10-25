@@ -89,3 +89,85 @@ def rebalance(values, cash, stock_weight, rates):
             cost += purchase * rates[i]
             traded += purchase
     return values, cash, cost, traded
+
+
+def run_synthetic(policy: SyntheticPolicy, *, dates, unit_stock, unit_hydra, exposure, months, bps,
+                  open_sell_dates=frozenset(), all_virtual=False) -> dict:
+    """Daily synthetic path at one overlay cost.
+
+    ``exposure`` maps a date to the stock leg's stock market value / NAV and
+    ``open_sell_dates`` holds the closes at which a stock-leg sell order was not yet
+    terminal; AUX entry needs both a liquidated leg and no open sell. With
+    ``all_virtual`` (research replay) every move charges both sides; otherwise a leg
+    that trades for real is not charged again.
+    """
+    rate = bps / 10_000
+    months = sorted(months, key=lambda month: month.signal_date)
+    for month in months:
+        if month.sleeve not in STATE_STOCK_WEIGHT:
+            raise ValueError(f"unknown sleeve {month.sleeve}")
+    dates = sorted(dates)
+    if not months:
+        return {"status": "WAITING_START", "rows": [], "events": []}
+    if months[0].anchor_date not in dates:
+        return {"status": "WAITING_LEG_NAV", "rows": [], "events": []}
+    first, pending = months[0], months[1:]
+    start = first.anchor_date
+    weight = STATE_STOCK_WEIGHT[first.sleeve]
+    units = [weight * policy.base_value / unit_stock[start], (1 - weight) * policy.base_value / unit_hydra[start]]
+    cash, sleeve, status = 0.0, first.sleeve, "CURRENT"
+    events = [{"date": start, "kind": "INIT", "signal_date": first.signal_date, "sleeve": first.sleeve,
+               "to_stock_weight": weight, "traded": 0.0, "cost": 0.0,
+               "value_before": policy.base_value, "value_after": policy.base_value}]
+    rows, waiting = [], None
+
+    def move(date, month, kind, rates):
+        nonlocal units, cash, sleeve
+        values = [units[0] * unit_stock[date], units[1] * unit_hydra[date]]
+        before = cash + values[0] + values[1]
+        values, cash, cost, traded = rebalance(values, cash, STATE_STOCK_WEIGHT[month.sleeve], rates)
+        units = [values[0] / unit_stock[date], values[1] / unit_hydra[date]]
+        events.append({"date": date, "kind": kind, "signal_date": month.signal_date, "sleeve": month.sleeve,
+                       "to_stock_weight": STATE_STOCK_WEIGHT[month.sleeve], "traded": traded, "cost": cost,
+                       "value_before": before, "value_after": cash + values[0] + values[1]})
+        sleeve = month.sleeve
+
+    for date in dates[dates.index(start):]:
+        if date != start:
+            due = pending[0] if pending and pending[0].anchor_date <= date else None
+            if due is not None and due.anchor_date != date:
+                raise ValueError(f"leg NAV missing on anchor date {due.anchor_date}")
+            if due is not None and waiting is not None:
+                status = "REVIEW_REQUIRED"
+                events.append({"date": date, "kind": "STOPPED", "signal_date": due.signal_date,
+                               "sleeve": due.sleeve})
+                break
+            if due is not None:
+                pending.pop(0)
+                if due.sleeve == AUX and sleeve == AUX:
+                    pass
+                elif due.sleeve == AUX and not all_virtual:
+                    waiting = [due, 0]
+                elif sleeve == AUX and not all_virtual:
+                    move(date, due, "EXIT_AUX", (0.0, rate))
+                else:
+                    move(date, due, "VIRTUAL", (rate, rate))
+            if waiting is not None:
+                if date not in exposure:
+                    raise ValueError(f"stock-leg valuation missing on {date}")
+                if exposure[date] <= policy.liquidated_stock_weight and date not in open_sell_dates:
+                    move(date, waiting[0], "ENTER_AUX", (0.0, rate))
+                    waiting = None
+                else:
+                    waiting[1] += 1
+                    if waiting[1] == policy.review_after_sessions + 1:
+                        status = "REVIEW_REQUIRED"
+                        events.append({"date": date, "kind": "REVIEW_REQUIRED",
+                                       "signal_date": waiting[0].signal_date, "sleeve": waiting[0].sleeve})
+        values = [units[0] * unit_stock[date], units[1] * unit_hydra[date]]
+        value = cash + values[0] + values[1]
+        rows.append({"date": date, "sleeve": sleeve, "unit_stock": unit_stock[date],
+                     "unit_hydra": unit_hydra[date], "stock_units": units[0], "hydra_units": units[1],
+                     "cash": cash, "value": value, "stock_weight": values[0] / value,
+                     "pending": None if waiting is None else "ENTER_AUX"})
+    return {"status": status, "rows": rows, "events": events}

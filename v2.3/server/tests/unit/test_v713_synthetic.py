@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from app.services.v713_synthetic import SyntheticPolicy, load_synthetic_policy, rebalance, unit_nav
+from app.services.v713_synthetic import (MonthState, SyntheticPolicy, load_synthetic_policy, rebalance,
+                                         run_synthetic, unit_nav)
 
 POLICY_FILE = Path(__file__).resolve().parents[2] / "plugins" / "v713" / "synthetic_policy_v1.json"
 POLICY = SyntheticPolicy(policy_id="V713_SYNTHETIC_TEST", stock_instance="live_v713_stockleg",
@@ -42,3 +43,69 @@ def test_frozen_policy_file_loads_and_unversioned_policy_is_rejected(tmp_path):
     path.write_text(json.dumps(bad))
     with pytest.raises(ValueError, match="V713_SYNTHETIC_"):
         load_synthetic_policy(path)
+
+
+D = [f"202612{x:02d}" for x in range(1, 21)]
+US = {d: 1.0 + .001 * i for i, d in enumerate(D)}
+UH = {d: 1.0 for d in D}
+T1 = MonthState("20261130", "T1_5050", D[0])
+AUX_MONTH = MonthState("20261231", "AUX_HYDRA", D[2])
+TOP = MonthState("20270129", "TOP50", D[10])
+
+
+def _run(months, exposure=None, dates=D, **changes):
+    return run_synthetic(POLICY, **({"dates": dates, "unit_stock": US, "unit_hydra": UH,
+                                     "exposure": exposure or {d: 0.0 for d in D}, "months": months,
+                                     "bps": 20.0} | changes))
+
+
+def test_init_splits_the_base_by_state_without_cost():
+    out = _run([T1])
+    assert out["status"] == "CURRENT"
+    assert out["events"][0]["kind"] == "INIT" and out["events"][0]["cost"] == 0.0
+    assert out["rows"][0]["value"] == pytest.approx(400_000.0)
+    assert out["rows"][0]["stock_weight"] == pytest.approx(.5)
+
+
+def test_virtual_switch_charges_both_sides():
+    out = _run([MonthState("20261130", "TOP50", D[0]), MonthState("20261231", "T1_5050", D[5])])
+    move = out["events"][1]
+    assert (move["kind"], move["date"]) == ("VIRTUAL", D[5])
+    sold = 400_000.0 * US[D[5]] / 2
+    assert move["cost"] == pytest.approx(sold * .002 + sold * (1 - .002) / (1 + .002) * .002)
+
+
+def test_aux_entry_waits_for_real_liquidation_then_exit_converts_back():
+    exposure = {d: (.99 if d < "20261205" else 0.0) for d in D}
+    out = _run([T1, AUX_MONTH, TOP], exposure=exposure)
+    kinds = [(e["date"], e["kind"]) for e in out["events"]]
+    assert kinds == [(D[0], "INIT"), ("20261205", "ENTER_AUX"), (D[10], "EXIT_AUX")]
+    assert [r["date"] for r in out["rows"] if r["pending"]] == ["20261203", "20261204"]
+    stock_value = 200_000.0 * US["20261205"]
+    assert out["events"][1]["cost"] == pytest.approx(stock_value * .002 / 1.002)
+    hydra_value = 200_000.0 + stock_value / 1.002
+    assert out["events"][2]["cost"] == pytest.approx(hydra_value * .002)
+    assert out["rows"][-1]["stock_weight"] == pytest.approx(1.0)
+
+
+def test_unfinished_liquidation_is_flagged_and_stops_at_the_next_month():
+    stuck = {d: .99 for d in D}
+    flagged = _run([T1, AUX_MONTH], exposure=stuck)
+    assert flagged["status"] == "REVIEW_REQUIRED"
+    assert (flagged["events"][-1]["date"], flagged["events"][-1]["kind"]) == (D[12], "REVIEW_REQUIRED")
+    assert len(flagged["rows"]) == len(D)
+    stopped = _run([T1, AUX_MONTH, TOP], exposure=stuck)
+    assert stopped["status"] == "REVIEW_REQUIRED"
+    assert stopped["events"][-1]["kind"] == "STOPPED" and stopped["rows"][-1]["date"] == D[9]
+
+
+def test_missing_leg_nav_on_an_anchor_is_an_error():
+    with pytest.raises(ValueError, match="20261203"):
+        _run([T1, AUX_MONTH], dates=[d for d in D if d != D[2]])
+    assert _run([])["status"] == "WAITING_START"
+
+
+def test_an_unfinished_sell_order_blocks_the_aux_switch():
+    # Residual stock is already <= 1% on 12/03, but a sell order is still open that close.
+    out = _run([T1, AUX_MONTH], open_sell_dates={"20261203", "20261204"})
+    assert [(e["date"], e["kind"]) for e in out["events"]] == [(D[0], "INIT"), ("20261205", "ENTER_AUX")]
