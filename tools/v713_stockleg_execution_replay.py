@@ -109,8 +109,8 @@ def ex_reference(prev_close: float, interest: float, bonus: float, allot_num: fl
 def run_window(periods, *, end, capital, template, market, participation=.01, rolling_anchor=False) -> dict:
     """One continuous stock-leg ledger from cash over consecutive monthly V713 targets.
 
-    ``rolling_anchor`` is a research variant, not live OMS behaviour: every retry prices off
-    the previous close instead of the frozen signal close (sells) and first sell-day close (buys).
+    A policy with ``anchor = previous_close`` (V713_STOCKLEG_V2) prices every session off the
+    previous close, as the live executor does; ``rolling_anchor`` forces that for any policy.
     """
     calendar = [d for d in market.calendar if periods[0]["signal"] <= d <= end]
     signals = {p["signal"]: p for p in periods}
@@ -146,7 +146,7 @@ def run_window(periods, *, end, capital, template, market, participation=.01, ro
 
     def buy_phase(date, previous):
         reasons = defaultdict(lambda: defaultdict(float))
-        if rolling_anchor and pending["buy_anchor"] is not None:
+        if (rolling_anchor or pending["policy"].anchor == "previous_close") and pending["buy_anchor"] is not None:
             pending["buy_anchor"].update(closing_anchors(previous, [s for s, q in pending["frozen"].items() if q > 0]))
         orders, deferrals = plan_buy_session(target=pending["frozen"], positions=positions, cash=state["cash"],
                                              buy_anchor=pending["buy_anchor"] or {}, policy=pending["policy"])
@@ -178,7 +178,7 @@ def run_window(periods, *, end, capital, template, market, participation=.01, ro
         reasons = defaultdict(lambda: defaultdict(float))
         sellable = {s: q - today_bought.get(s, 0) for s, q in positions.items()}
         anchors = pending["anchor"]
-        if rolling_anchor:
+        if rolling_anchor or pending["policy"].anchor == "previous_close":
             anchors = {s: market.mark(s, previous) or a for s, a in anchors.items()}
         orders, deferrals = plan_sell_session(target=pending["frozen"], positions=positions, sellable=sellable,
                                               sell_anchor=anchors, attempt=attempt, policy=pending["policy"])

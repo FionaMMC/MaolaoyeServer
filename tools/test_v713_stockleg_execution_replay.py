@@ -111,8 +111,11 @@ class WindowTests(unittest.TestCase):
                    {"signal": "20261030", "sleeve": "AUX_HYDRA", "codes": []}]
         fixed = run(periods, data=data)["cycles"][1]
         rolling = run(periods, data=data, rolling_anchor=True)["cycles"][1]
+        option_b = replay.run_window(periods, end=CAL[-1], capital=200_000.0, market=data,
+                                     template=TEMPLATE | {"anchor": "previous_close"})["cycles"][1]
         self.assertGreater(fixed["residual_stock_weight"], .3)
         self.assertAlmostEqual(rolling["residual_stock_weight"], 0.0)
+        self.assertEqual(option_b["residual_stock_weight"], rolling["residual_stock_weight"])
 
     def test_name_suspended_on_the_first_sell_day_waits_for_a_later_anchor(self):
         data = market()
