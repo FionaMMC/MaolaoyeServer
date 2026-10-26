@@ -4,6 +4,24 @@
 
 本文只列规则与代码来源，不授权部署、划拨或下单。
 
+## 零 现行规则：`V713_STOCKLEG_V2`（2026-10-26 决策）
+
+按决策 V713-STOCKLEG-DECISION-20261026-01（方案 B）实现。冻结规则文件：[stockleg_policy_template_v2.json](../v2.3/server/plugins/v713/stockleg_policy_template_v2.json)。下文第一、二节是 V1 与 Hydra 的逐项对照，V1 保留作对照。
+
+| 项目 | `V713_STOCKLEG_V2` | 与 V1 的差别 | 代码位置 |
+|---|---|---|---|
+| 参考价 | 每个执行日取前一交易日、经校验的不复权收盘价。每天收盘快照后更新卖出和买入参考价，当天没有有效收盘价的证券沿用上一次 | V1 卖出参考价固定为信号日收盘，买入参考价固定为首个卖出日收盘 | `planner.py` 的 `Policy.anchor = "previous_close"`；`cycles.py` 的 `_advance` |
+| 买入限价 | 参考价 +0.5%，向下取整到价格档位 | 价格带相同，参考价每天更新 | `planner.py` 的 `buy_limit` |
+| 卖出限价 | 周期内首次安排的卖出 −0.5%，之后每次 −2%，向上取整 | 价格带相同，参考价每天更新 | `planner.py` 的 `sell_limit` |
+| 补单窗口 | 从首个买入日起最多 10 个交易日；只补冻结目标的剩余数量 | V1 为 3 个交易时段 | `Policy.window = 10` |
+| 新月目标先到 | 旧周期以 `SUPERSEDED` 关闭，未发出的计划单记 `NOT_SUBMITTED`；仍有委托在券商时拒绝发布；只能被更晚的信号取代 | V1 遇到未关闭的周期直接拒绝发布 | `cycles.py` 的 `_supersede`、`close_superseded` |
+| 晚发布 | 首个卖出时段的前一交易日不是信号日时，必须提供那一天的收盘价（`publish-v713-stock-leg --reference-closes`） | 新增 | `cycles.py` 的 `publish_target` |
+| 现金预留 | 股票腿内 1%，合成账本不重复 | 相同 | `reserve = 0.01` |
+| 日历与先卖后买 | 收盘集合竞价卖，下一自然日开盘集合竞价买；10 个交易日不等于 10 轮买卖 | 相同 | `planner.py` 的 `session_schedule` |
+| 费用与板块规则 | 佣金万 0.854、最低 5 元只对佣金，印花税、过户费另计；科创板部分卖出不少于 200 股 | 相同 | 模板的 `instrument_rules` |
+
+`anchor` 等于默认值 `fixed` 时不写入序列化后的 policy，Hydra 的周期和计划逐字节不变。合成账本研究成本按同一决策改为主线 13bp（[synthetic_policy_v2.json](../v2.3/server/plugins/v713/synthetic_policy_v2.json)），另报 0、18、20、23bp。
+
 ## 一 规则逐项对照
 
 行号对应本分支 `v2.3/server/app/oms/`。

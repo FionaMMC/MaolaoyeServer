@@ -21,7 +21,8 @@
 3. **新增冻结规则模板。**`plugins/v713/stockleg_policy_template_v1.json` 按 10/25 确认的费率与 Hydra 流程填写，对照说明见 [V713_STOCKLEG_EXECUTION_RULES_20261025.md](V713_STOCKLEG_EXECUTION_RULES_20261025.md)。
 4. **测试数。**`test_oms_stock_leg.py` 13 项、`test_v713_synthetic.py` 15 项、`test_v713_synthetic_api.py` 3 项。全量单元测试 907 项通过，另有 76 项失败，与改动前完全相同，都是 Windows 测试环境问题（缺 `fcntl`、GBK 解码）。
 5. **Linux 全量测试（2026-10-26）。**在 qmt 隔离目录（`research-runs/v713-linux-tests-20261026-01`，用生产 venv，测试依赖另装在隔离目录）运行服务器单元测试和客户端测试：本分支 1253 项、PR #3 基线 1214 项全部通过。Windows 上失败的 76 项和 2 项客户端测试在 Linux 上都通过。
-6. **远程核对。**qmt 隔离目录 `research-runs/v713-stock-leg-checks-20261025-01` 用本分支代码复现 10/16 结果，误差 ≤ 8e-16；用当期生产篮子的副本导出股票腿，得到 50 只、各 2%。汇总见 [checks.json](../reports/v713_stock_leg_checks_20261025/checks.json)。
+6. **决策 V713-STOCKLEG-DECISION-20261026-01（2026-10-26）。**在计划之外新增：`Policy.anchor`（`previous_close`，每天收盘快照后更新参考价）、10 个交易日补单窗口、新月目标取代未关闭的周期（`supersede`、`close_superseded`）、晚发布需提供前一交易日收盘价（`--reference-closes`）、`V713_STOCKLEG_V2` 模板，以及 `V713_SYNTHETIC_V2`（主线 13bp）。
+7. **远程核对。**qmt 隔离目录 `research-runs/v713-stock-leg-checks-20261025-01` 用本分支代码复现 10/16 结果，误差 ≤ 8e-16；用当期生产篮子的副本导出股票腿，得到 50 只、各 2%。汇总见 [checks.json](../reports/v713_stock_leg_checks_20261025/checks.json)。
 
 ## 范围与前提
 
@@ -1545,9 +1546,9 @@ git commit -m "docs(v713): record synthetic ledger storage and state records"
 
 ```bash
 PYTHONPATH=. python -m scripts.oms_ops publish-v713-stock-leg --instance live_v713_stockleg --account <alias> \
-  --basket plugins/v713/data/v713_target_latest.parquet --policy-template <V713_STOCKLEG_v1 模板> \
+  --basket plugins/v713/data/v713_target_latest.parquet --policy-template plugins/v713/stockleg_policy_template_v2.json \
   --closes <当日不复权收盘价.json> --calendar <交易日历.json>
 ```
 
-3. **每日收盘后**：先运行 `scripts.run_live_performance --instance live_v713_stockleg --instance live_hydra_v481_rb --raw-price-evidence <证据>`，再运行 `scripts.run_v713_synthetic --policy plugins/v713/synthetic_policy_v1.json`（设置 `QMT_V713_SYNTHETIC_OUTPUT`）。定时器和部署需单独批准。
+3. **每日收盘后**：先运行 `scripts.run_live_performance --instance live_v713_stockleg --instance live_hydra_v481_rb --raw-price-evidence <证据>`，再运行 `scripts.run_v713_synthetic --policy plugins/v713/synthetic_policy_v2.json`（设置 `QMT_V713_SYNTHETIC_OUTPUT`）。定时器和部署需单独批准。
 4. **首轮**：最早用 as-of 2026-11-30 的篮子，执行日 2026-12-01。
