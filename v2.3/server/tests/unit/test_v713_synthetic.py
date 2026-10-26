@@ -14,6 +14,12 @@ POLICY = SyntheticPolicy(policy_id="V713_SYNTHETIC_TEST", stock_instance="live_v
                          hydra_instance="live_hydra_v481_rb", label="test")
 
 
+
+def test_v2_policy_makes_13bp_the_primary_line_with_stress_and_old_lines():
+    policy = load_synthetic_policy(POLICY_FILE.with_name("synthetic_policy_v2.json"))
+    assert policy.policy_id == "V713_SYNTHETIC_V2"
+    assert (policy.primary_bps, policy.cost_bps) == (13.0, (0.0, 13.0, 18.0, 20.0, 23.0))
+
 def test_unit_nav_chains_flow_adjusted_returns():
     units = unit_nav([("20261202", .1), ("20261201", None), ("20261203", -.5)])
     assert units == pytest.approx({"20261201": 1.0, "20261202": 1.1, "20261203": .55})

@@ -164,10 +164,10 @@ def test_state_record_is_idempotent_and_frozen(tmp_path):
         assert (row.sleeve, row.decision_date, row.target_version_id) == ("TOP50", "20261008", "tv_1")
 
 
-def _cli_args(tmp_path, basket):
+def _cli_args(tmp_path, basket, *, calendar=CAL, template=None, now=NOW):
     args = ["publish-v713-stock-leg", "--instance", INSTANCE, "--account", ALIAS, "--basket", str(basket),
-            "--now", NOW]
-    for name, value in {"policy-template": _template(), "closes": CLOSES, "calendar": CAL}.items():
+            "--now", now]
+    for name, value in {"policy-template": template or _template(), "closes": CLOSES, "calendar": calendar}.items():
         path = tmp_path / f"{name}.json"
         path.write_text(json.dumps(value))
         args += [f"--{name}", str(path)]
@@ -237,3 +237,131 @@ def test_frozen_template_carries_the_confirmed_execution_and_fee_rules():
     assert estimate_fees(spec, 100_000.0, "SELL") == pytest.approx(59.54)
     # The 5-yuan minimum applies to commission alone, not to all fees together.
     assert estimate_fees(spec, 10_000.0, "BUY") == pytest.approx(5.10)
+
+
+from datetime import datetime, timedelta, timezone
+
+from app.oms.models import OmsSession, OmsTargetVersion
+from app.oms.schemas import Quote, SnapshotIn
+
+CN = timezone(timedelta(hours=8))
+CAL_LONG = CAL + ["20261022", "20261023", "20261026", "20261027", "20261028", "20261029", "20261030",
+                  "20261102", "20261103", "20261104", "20261105", "20261106", "20261109", "20261110",
+                  "20261111", "20261112", "20261113", "20261116", "20261117"]
+TEMPLATE_V2 = Path(__file__).resolve().parents[2] / "plugins" / "v713" / "stockleg_policy_template_v2.json"
+
+
+def _policy_v2(**changes):
+    return _policy() | {"policy_id": "V713_STOCKLEG_TEST_V2", "anchor": "previous_close", "window": 10} | changes
+
+
+def _eod(svc, day, closes, positions, cash):
+    stamp = f"{day[:4]}-{day[4:6]}-{day[6:]}T15:00:05+08:00"
+    snap = SnapshotIn(account_alias=ALIAS, kind="EOD", trade_date=day,
+                      taken_at=datetime(int(day[:4]), int(day[4:6]), int(day[6:]), 15, 30, tzinfo=CN),
+                      available_cash=cash, total_asset=cash, positions=positions, sellable=positions, orders=[],
+                      trades=None, quotes={s: Quote(last_price=p, source_time=stamp, adjustment="none",
+                                                    price_source="raw_daily_close") for s, p in closes.items()})
+    return svc.ingest_snapshot(snap, now=snap.taken_at.isoformat())
+
+
+def _second_sell_limit(tmp_path, policy):
+    sf, svc = _service(tmp_path, positions={"600001.SH": 1000}, cash=5000.0)
+    out = _liquidate(svc, policy=policy, calendar=CAL_LONG)
+    svc.approve(out["cycle_id"], "tester", NOW)
+    for day, close in (("20261008", 9.0), ("20261009", 9.2)):
+        _eod(svc, day, {"600001.SH": close}, {"600001.SH": 1000}, 5000.0)
+    with sf() as s:
+        order = s.query(OmsOrder).filter_by(trade_date="20261012", side="SELL").one()
+        return order.limit_price, order.reference_price
+
+
+def test_previous_close_anchor_reprices_every_session_from_the_latest_close(tmp_path):
+    assert _second_sell_limit(tmp_path / "v2", _policy_v2()) == (9.02, 9.2)
+    assert _second_sell_limit(tmp_path / "fixed", _policy() | {"window": 10}) == (9.8, 10.0)
+
+
+def test_late_previous_close_publication_needs_the_previous_day_closes(tmp_path):
+    _, svc = _service(tmp_path, positions={"600001.SH": 1000}, cash=5000.0)
+    late = {"policy": _policy_v2(), "calendar": CAL_LONG, "now": "2026-10-09T20:00:00+08:00"}
+    with pytest.raises(ValueError, match="20261009"):
+        _liquidate(svc, **late)
+    out = _liquidate(svc, **late, reference_closes={"600001.SH": 9.5})
+    assert [x["limit_price"] for x in out["first_session"]["orders"]] == [9.46]
+
+
+def _publish_month(svc, signal, now, **changes):
+    return svc.publish_target(**({"instance_id": INSTANCE, "account_alias": ALIAS, "signal_date": signal,
+                                  "weights": {"600002.SH": 1.0}, "signal_closes": CLOSES, "calendar": CAL_LONG,
+                                  "source_sha256": signal * 8, "now": now, "policy": _policy()} | changes))
+
+
+def test_a_new_month_target_supersedes_the_open_cycle(tmp_path):
+    sf, svc = _service(tmp_path, positions={"600001.SH": 5000}, cash=150000.0)
+    old = _publish_month(svc, "20260930", NOW)
+    with pytest.raises(CycleConflict, match="open cycle"):
+        _publish_month(svc, "20261030", "2026-10-30T20:00:00+08:00")
+    with pytest.raises(CycleConflict, match="later signal"):
+        _publish_month(svc, "20260929", "2026-10-30T20:00:00+08:00", supersede=True)
+    new = _publish_month(svc, "20261030", "2026-10-30T20:00:00+08:00", supersede=True)
+    with sf() as s:
+        closed = s.get(OmsCycle, old["cycle_id"])
+        assert (closed.status, closed.close_reason) == ("CLOSED", "SUPERSEDED")
+        assert {o.state for o in s.query(OmsOrder).filter_by(cycle_id=old["cycle_id"])} == {"NOT_SUBMITTED"}
+        assert s.query(OmsSession).filter_by(cycle_id=old["cycle_id"], status="PLANNED").count() == 0
+        assert s.get(OmsCycle, new["cycle_id"]).status == "PENDING_APPROVAL"
+
+
+def test_supersede_refuses_while_an_order_is_at_the_broker(tmp_path):
+    sf, svc = _service(tmp_path, positions={"600001.SH": 5000}, cash=150000.0)
+    old = _publish_month(svc, "20260930", NOW)
+    with sf() as s:
+        s.query(OmsOrder).filter_by(cycle_id=old["cycle_id"]).update({"state": "ACKED"})
+        s.commit()
+    with pytest.raises(CycleConflict, match="in flight"):
+        _publish_month(svc, "20261030", "2026-10-30T20:00:00+08:00", supersede=True)
+
+
+def test_frozen_v2_template_is_option_b_with_a_ten_session_window():
+    template = json.loads(TEMPLATE_V2.read_text(encoding="utf-8"))
+    payload = expand_policy(template, ["600001.SH", "688981.SH", "511260.SH"])
+    policy = validate_v713_policy(payload, list(payload["instruments"]))
+    assert (policy.policy_id, policy.anchor, policy.window) == ("V713_STOCKLEG_V2", "previous_close", 10)
+    assert (policy.default_buy_bps, policy.sell_schedule, policy.buy_bps, policy.reserve) == (50.0, (50.0, 200.0), (), .01)
+    assert payload["instruments"]["688981.SH"]["min_sell_quantity"] == 200
+    assert payload["instruments"]["600001.SH"]["commission_rate"] == .0000854
+
+
+def test_cli_next_month_supersedes_the_open_cycle(tmp_path, capsys):
+    sf, _ = _service(tmp_path, positions={"600001.SH": 5000}, cash=150000.0)
+    (tmp_path / "sep").mkdir()
+    first = _basket(tmp_path / "sep", [("600002.SH", 1.0)], "TOP50")
+    args = _cli_args(tmp_path, first, calendar=CAL_LONG, template=_template() | {"window": 10})
+    assert oms_ops.main(args + ["--apply"], session_factory=sf, settings=_settings(tmp_path)) == 0
+    (tmp_path / "oct").mkdir()
+    second = _basket(tmp_path / "oct", [("600001.SH", 1.0)], "TOP50", decision="20261102", as_of="20261030")
+    later = _cli_args(tmp_path, second, calendar=CAL_LONG, template=_template() | {"window": 10},
+                      now="2026-11-01T20:00:00+08:00")
+    assert oms_ops.main(later, session_factory=sf, settings=_settings(tmp_path)) == 0
+    assert "WILL SUPERSEDE C00001" in capsys.readouterr().out
+    assert oms_ops.main(later + ["--apply"], session_factory=sf, settings=_settings(tmp_path)) == 0
+    with sf() as s:
+        assert [(c.cycle_id, c.status) for c in s.query(OmsCycle).order_by(OmsCycle.cycle_no)] == [
+            ("C00001", "CLOSED"), ("C00002", "PENDING_APPROVAL")]
+        assert s.query(V713StateRecord).count() == 2
+
+
+def test_cli_aux_month_in_cash_still_ends_the_open_cycle(tmp_path):
+    sf, _ = _service(tmp_path)
+    (tmp_path / "sep").mkdir()
+    first = _basket(tmp_path / "sep", [("600002.SH", 1.0)], "TOP50")
+    assert oms_ops.main(_cli_args(tmp_path, first, calendar=CAL_LONG) + ["--apply"], session_factory=sf,
+                        settings=_settings(tmp_path)) == 0
+    (tmp_path / "oct").mkdir()
+    aux = _basket(tmp_path / "oct", [("511260.SH", 1.0)], "AUX_HYDRA", decision="20261102", as_of="20261030")
+    assert oms_ops.main(_cli_args(tmp_path, aux, calendar=CAL_LONG, now="2026-11-01T20:00:00+08:00") + ["--apply"],
+                        session_factory=sf, settings=_settings(tmp_path)) == 0
+    with sf() as s:
+        cycle = s.query(OmsCycle).one()
+        assert (cycle.status, cycle.close_reason) == ("CLOSED", "SUPERSEDED")
+        assert [r.sleeve for r in s.query(V713StateRecord).order_by(V713StateRecord.signal_date)] == ["TOP50", "AUX_HYDRA"]

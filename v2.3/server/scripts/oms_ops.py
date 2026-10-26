@@ -86,6 +86,8 @@ def main(argv=None, *, session_factory=None, settings=None) -> int:
         k.add_argument(name, required=True)
     k.add_argument("--apply", action="store_true")
     k.add_argument("--now", default=None, help="zoned ISO publication time for an isolated rehearsal")
+    k.add_argument("--reference-closes", default=None,
+                   help="late publication with previous-close anchors: closes of the day before the first sell session")
     a = sub.add_parser("approve")
     a.add_argument("--cycle-id", required=True)
     a.add_argument("--approver", required=True)
@@ -138,14 +140,26 @@ def main(argv=None, *, session_factory=None, settings=None) -> int:
             payload = build_publication(args.basket, closes=closes, calendar=calendar,
                                         policy_payload=policy_payload, now=now, held_symbols=held)
             if args.command == "publish-v713-stock-leg":
+                from app.oms.cycles import CycleService
                 from app.oms.v713_stock_leg import derive_stock_leg, record_state
                 payload = derive_stock_leg(payload)
+                # A later monthly target ends the previous cycle's catch-up instead of being refused.
+                payload["supersede"] = True
+                if args.reference_closes:
+                    payload["reference_closes"] = json.loads(Path(args.reference_closes).read_text(encoding="utf-8"))
+                with session_factory() as session:
+                    open_cycle = CycleService._open_cycle(session, args.account, args.instance)
+                if open_cycle is not None:
+                    print(f"WILL SUPERSEDE {open_cycle.cycle_id}: a later monthly target ends its catch-up")
                 if payload["liquidate"] and not held:
                     print(json.dumps({"sleeve": payload["provenance"]["sleeve"], "action": "STATE_ONLY",
                                       "reason": "the stock leg already holds no stock"}, ensure_ascii=False))
                     if not args.apply:
                         print("DRY RUN: nothing written.")
                         return 0
+                    if open_cycle is not None:
+                        service.close_superseded(instance_id=args.instance, account_alias=args.account,
+                                                 signal_date=payload["signal_date"], closes=closes, now=now)
                     print(json.dumps(record_state(session_factory, instance_id=args.instance, payload=payload,
                                                   target_version_id=None, now=now), ensure_ascii=False))
                     return 0

@@ -128,3 +128,13 @@ def test_star_partial_sale_below_200_shares_waits_but_a_full_exit_is_allowed():
                                   sellable={"688001.SH": 150}, sell_anchor={"688001.SH": 50.},
                                   attempt=0, policy=specs)
     assert [o.quantity for o in orders] == [150]
+
+
+def test_anchor_mode_defaults_to_fixed_and_only_previous_close_is_serialized():
+    fixed = Policy()
+    assert fixed.anchor == "fixed" and "anchor" not in policy_to_dict(fixed)
+    rolling = Policy(strategy_id="v713", policy_id="V713_TEST_V2", anchor="previous_close")
+    assert policy_to_dict(rolling)["anchor"] == "previous_close"
+    assert policy_from_dict(policy_to_dict(rolling)) == rolling
+    with pytest.raises(ValueError, match="anchor"):
+        Policy(anchor="intraday")
