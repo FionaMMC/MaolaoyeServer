@@ -494,6 +494,7 @@ def main(argv=None) -> int:
     from live_client.gateway import XtQMTGateway
     from live_client.http_client import LiveServerClient
     from live_client.oms_journal import OmsJournal
+    from live_client.oms_clock import RuntimeClock
 
     parser = argparse.ArgumentParser(prog="python -m live_client.oms_agent")
     parser.add_argument("command", choices=["pre", "sell", "buy", "cancel", "eod", "intraday", "upload-spool",
@@ -513,17 +514,19 @@ def main(argv=None) -> int:
         return 0
     if args.command in ("sell", "buy") and not args.dry_run:
         cfg.require_submission_enabled()
-    journal = OmsJournal(cfg.state_db.with_name("oms-agent.db"))
-    journal.bind(account_alias=cfg.account_alias, execution_domain=cfg.execution_domain,
-                 account_fingerprint=cfg.expected_account_sha256, client_id=cfg.task_prefix)
     try:
         with account_submission_lock(cfg.userdata_dir, cfg.expected_account_sha256,
                                      wait_seconds=LOCK_WAIT_SECONDS[args.command]):
+            runtime_clock = RuntimeClock(on_calibration=lambda evidence: logger.info(
+                "OMS_CLOCK_CALIBRATED %s", json.dumps(evidence, ensure_ascii=False)))
+            journal = OmsJournal(cfg.state_db.with_name("oms-agent.db"), clock=runtime_clock.now)
+            journal.bind(account_alias=cfg.account_alias, execution_domain=cfg.execution_domain,
+                         account_fingerprint=cfg.expected_account_sha256, client_id=cfg.task_prefix)
             gateway = XtQMTGateway(cfg)
             gateway.connect()
             try:
                 agent = OmsAgent(account_alias=cfg.account_alias, gateway=gateway, server=server, journal=journal,
-                                 clock=_china_now, symbols=sorted(HYDRA_LIVE_EXECUTABLE_SYMBOLS), cfg=cfg)
+                                 clock=runtime_clock.now, symbols=sorted(HYDRA_LIVE_EXECUTABLE_SYMBOLS), cfg=cfg)
                 if args.command == "pre":
                     result = agent.pre(args.date)
                 elif args.command in ("sell", "buy"):

@@ -40,7 +40,8 @@ def run_acceptance(root: Path) -> dict:
                     account_fingerprint=cfg.expected_account_sha256, cycle_id=f'C{index}', session_id=f'S{index}',
                     trade_date='20990105', phase='BUY', frozen_target={'000001.SZ': 100},
                     orders=[dict(client_order_id=f'H{index:09d}', symbol='000001.SZ', side='BUY', quantity=100, limit_price=10.)],
-                    policy={'reference_prices': {'000001.SZ': 10.}}, instrument_specs={'000001.SZ': dict(
+                    policy={'reference_prices': {'000001.SZ': 10.}, 'default_buy_bps': 50.,
+                            'buy_bps': [], 'sell_schedule': [50., 200.]}, instrument_specs={'000001.SZ': dict(
                         asset_type='stock', price_tick=.01, buy_lot=100, min_buy_quantity=100,
                         sell_lot=100, odd_lot_sell_all=True, t_plus_one=True, commission_rate=.0003,
                         min_commission=5., stamp_duty_sell=.0005, transfer_fee_rate=.00001, buy_reserve_rate=None)},
