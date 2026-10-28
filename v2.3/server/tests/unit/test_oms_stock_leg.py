@@ -9,7 +9,7 @@ from app.models import InstanceState
 from app.oms.cycles import CycleConflict, CycleService
 from app.oms.instruments import InstrumentSpec, instrument_to_dict
 from app.oms.ledger import OrderLedger
-from app.oms.models import OmsCycle, OmsOrder, V713StateRecord
+from app.oms.models import OmsCycle, OmsOrder, OmsOverride, V713StateRecord
 from app.oms.planner import Policy, policy_to_dict
 from app.oms.v713 import build_publication, validate_v713_policy
 from app.oms.v713_stock_leg import (STATE_STOCK_WEIGHT, derive_stock_leg, expand_policy, instrument_rule,
@@ -216,6 +216,24 @@ def test_cli_aux_month_with_cash_only_records_state(tmp_path, capsys):
         assert s.query(V713StateRecord).one().target_version_id is None
 
 
+def test_cli_conflicting_stock_target_after_cash_aux_leaves_no_cycle(tmp_path):
+    sf, _ = _service(tmp_path)
+    aux = _basket(tmp_path, [("511260.SH", 1.)], "AUX_HYDRA")
+    settings = _settings(tmp_path)
+    assert oms_ops.main(_cli_args(tmp_path, aux) + ["--apply"], session_factory=sf, settings=settings) == 0
+    top = _basket(tmp_path, [("600001.SH", 1.)], "TOP50")
+    with pytest.raises(CycleConflict, match="different allocation"):
+        oms_ops.main(_cli_args(tmp_path, top) + ["--apply"], session_factory=sf, settings=settings)
+    with sf() as s:
+        assert s.query(OmsCycle).count() == 0
+        assert s.query(OmsTargetVersion).count() == 0
+        assert s.query(OmsSession).count() == 0
+        assert s.query(OmsOrder).count() == 0
+        state = s.query(V713StateRecord).one()
+        assert (state.sleeve, state.target_version_id) == ("AUX_HYDRA", None)
+        assert not s.get(InstanceState, INSTANCE).strategy_state
+
+
 from pathlib import Path
 
 from app.oms.instruments import estimate_fees, instrument_from_dict
@@ -290,6 +308,50 @@ def test_late_previous_close_publication_needs_the_previous_day_closes(tmp_path)
     assert [x["limit_price"] for x in out["first_session"]["orders"]] == [9.46]
 
 
+def test_cli_late_previous_close_preview_matches_the_published_order(tmp_path, capsys):
+    sf, _ = _service(tmp_path, positions={"600001.SH": 1000}, cash=5000.0)
+    basket = _basket(tmp_path, [("600002.SH", 1.0)], "TOP50")
+    args = _cli_args(tmp_path, basket, calendar=CAL_LONG,
+                     template=_template() | {"anchor": "previous_close"},
+                     now="2026-10-09T20:00:00+08:00")
+    references = tmp_path / "reference-closes.json"
+    references.write_text(json.dumps({"600001.SH": 9.5, "600002.SH": 19.0}))
+    args += ["--reference-closes", str(references)]
+
+    assert oms_ops.main(args, session_factory=sf, settings=_settings(tmp_path)) == 0
+    output = capsys.readouterr().out
+    preview, _ = json.JSONDecoder().raw_decode(output[output.index("{\n"):])
+    preview_sell = preview["first_session_sells"][0]
+    assert (preview_sell["symbol"], preview_sell["quantity"], preview_sell["limit_price"],
+            preview_sell["reference_price"]) == ("600001.SH", 1000, 9.46, 9.5)
+    with sf() as s:
+        assert s.query(OmsCycle).count() == 0 and s.query(V713StateRecord).count() == 0
+
+    assert oms_ops.main(args + ["--apply"], session_factory=sf, settings=_settings(tmp_path)) == 0
+    with sf() as s:
+        order = s.query(OmsOrder).filter_by(side="SELL").one()
+        assert (order.symbol, order.quantity, order.limit_price, order.reference_price) == (
+            preview_sell["symbol"], preview_sell["quantity"], preview_sell["limit_price"],
+            preview_sell["reference_price"])
+
+
+@pytest.mark.parametrize("references", [None, {"600002.SH": 19.0}])
+def test_cli_late_previous_close_preview_rejects_missing_anchors(tmp_path, references):
+    sf, _ = _service(tmp_path, positions={"600001.SH": 1000}, cash=5000.0)
+    basket = _basket(tmp_path, [("600002.SH", 1.0)], "TOP50")
+    args = _cli_args(tmp_path, basket, calendar=CAL_LONG,
+                     template=_template() | {"anchor": "previous_close"},
+                     now="2026-10-09T20:00:00+08:00")
+    if references is not None:
+        path = tmp_path / "reference-closes.json"
+        path.write_text(json.dumps(references))
+        args += ["--reference-closes", str(path)]
+    with pytest.raises(ValueError, match="20261009|reference closes missing"):
+        oms_ops.main(args, session_factory=sf, settings=_settings(tmp_path))
+    with sf() as s:
+        assert s.query(OmsCycle).count() == 0 and s.query(V713StateRecord).count() == 0
+
+
 def _publish_month(svc, signal, now, **changes):
     return svc.publish_target(**({"instance_id": INSTANCE, "account_alias": ALIAS, "signal_date": signal,
                                   "weights": {"600002.SH": 1.0}, "signal_closes": CLOSES, "calendar": CAL_LONG,
@@ -310,6 +372,11 @@ def test_a_new_month_target_supersedes_the_open_cycle(tmp_path):
         assert {o.state for o in s.query(OmsOrder).filter_by(cycle_id=old["cycle_id"])} == {"NOT_SUBMITTED"}
         assert s.query(OmsSession).filter_by(cycle_id=old["cycle_id"], status="PLANNED").count() == 0
         assert s.get(OmsCycle, new["cycle_id"]).status == "PENDING_APPROVAL"
+        receipt = s.query(OmsOverride).filter_by(action="CYCLE_SUPERSEDED").one()
+        assert receipt.payload["cycle_id"] == old["cycle_id"]
+        assert receipt.payload["prior_cycle_status"] == "PENDING_APPROVAL"
+        assert {row["safety_basis"] for row in receipt.payload["not_submitted_orders"]} == {"UNAPPROVED_CYCLE"}
+        assert receipt.effect == {"status": "CLOSED", "close_reason": "SUPERSEDED"}
 
 
 def test_supersede_refuses_while_an_order_is_at_the_broker(tmp_path):
@@ -320,6 +387,62 @@ def test_supersede_refuses_while_an_order_is_at_the_broker(tmp_path):
         s.commit()
     with pytest.raises(CycleConflict, match="in flight"):
         _publish_month(svc, "20261030", "2026-10-30T20:00:00+08:00", supersede=True)
+
+
+def test_supersede_refuses_a_still_valid_offline_grant_until_broker_evidence(tmp_path):
+    from types import SimpleNamespace
+    from live_client.oms_shared import validate_grant
+
+    sf, svc = _service(tmp_path, positions={"600001.SH": 1000}, cash=150000.0)
+    svc.account_fingerprint = "a" * 64
+    old = _publish_month(svc, "20260831", "2026-09-29T10:00:00+08:00", policy=_policy() | {"window": 10})
+    svc.approve(old["cycle_id"], "tester", "2026-09-29T10:01:00+08:00")
+    with sf() as s:
+        inst = s.get(InstanceState, INSTANCE)
+        inst.strategy_state = {**inst.strategy_state, "oms_enabled": True}
+        s.commit()
+    for day in ("20260929", "20260930"):
+        _eod(svc, day, CLOSES, {"600001.SH": 1000}, 150000.0)
+    snap = SnapshotIn(account_alias=ALIAS, kind="PRE", trade_date="20261008",
+                      taken_at="2026-10-08T14:41:00+08:00", available_cash=150000.0, frozen_cash=0.0,
+                      total_asset=160000.0, positions={"600001.SH": 1000}, sellable={"600001.SH": 1000},
+                      orders=[], trades=[], quotes={})
+    svc.ingest_snapshot(snap, "2026-10-08T14:41:00+08:00")
+    cached = svc.plan_for(ALIAS, "20261008", "SELL", instance_id=INSTANCE, wire_version=2,
+                          executable_flag=True, now="2026-10-08T14:42:00+08:00").model_dump(mode="json")
+    assert cached["executable"] and cached["lease_expires_at"] == "2026-10-08T15:00:00+08:00"
+    agent = SimpleNamespace(account_alias=ALIAS, cfg=SimpleNamespace(expected_account_sha256="a" * 64))
+    validate_grant(agent, cached, datetime.fromisoformat("2026-10-08T14:57:05+08:00"), "SELL")
+    with pytest.raises(CycleConflict, match="broker terminal/day-end evidence"):
+        _publish_month(svc, "20260930", "2026-10-08T14:44:00+08:00", supersede=True)
+    with sf() as s:
+        assert s.get(OmsCycle, old["cycle_id"]).status == "ACTIVE"
+        assert s.get(OmsOrder, cached["orders"][0]["client_order_id"]).state == "PLANNED"
+        assert s.query(OmsCycle).count() == 1 and s.query(OmsOverride).count() == 0
+
+    # The normal same-day broker snapshot settles today's responsibility. Only the
+    # future orders (which could never have an executable grant today) are cancelled.
+    _eod(svc, "20261008", CLOSES, {"600001.SH": 1000}, 150000.0)
+    _publish_month(svc, "20260930", "2026-10-08T15:30:00+08:00", supersede=True)
+    with sf() as s:
+        assert s.get(OmsCycle, old["cycle_id"]).close_reason == "SUPERSEDED"
+        receipt = s.query(OmsOverride).filter_by(action="CYCLE_SUPERSEDED").one()
+        assert receipt.created_at == "2026-10-08T15:30:00+08:00"
+        assert receipt.payload["not_submitted_orders"]
+        assert all(row["trade_date"] > "20261008" and row["safety_basis"] == "FUTURE_TRADE_DATE"
+                   for row in receipt.payload["not_submitted_orders"])
+
+
+def test_supersede_requires_broker_evidence_even_after_an_unreported_plan_expires(tmp_path):
+    sf, svc = _service(tmp_path, positions={"600001.SH": 1000}, cash=150000.0)
+    old = _publish_month(svc, "20260930", NOW)
+    svc.approve(old["cycle_id"], "tester", NOW)
+    with pytest.raises(CycleConflict, match="broker terminal/day-end evidence"):
+        _publish_month(svc, "20261030", "2026-10-30T20:00:00+08:00", supersede=True)
+    with sf() as s:
+        assert s.get(OmsCycle, old["cycle_id"]).status == "ACTIVE"
+        assert {order.state for order in s.query(OmsOrder)} == {"PLANNED"}
+        assert s.query(OmsCycle).count() == 1 and s.query(OmsOverride).count() == 0
 
 
 def test_frozen_v2_template_is_option_b_with_a_ten_session_window():
@@ -365,3 +488,33 @@ def test_cli_aux_month_in_cash_still_ends_the_open_cycle(tmp_path):
         cycle = s.query(OmsCycle).one()
         assert (cycle.status, cycle.close_reason) == ("CLOSED", "SUPERSEDED")
         assert [r.sleeve for r in s.query(V713StateRecord).order_by(V713StateRecord.signal_date)] == ["TOP50", "AUX_HYDRA"]
+
+
+@pytest.mark.parametrize("state_only", [False, True])
+def test_cli_state_conflict_rolls_back_the_old_cycle_supersession(tmp_path, state_only):
+    positions = {} if state_only else {"600001.SH": 5000}
+    sf, svc = _service(tmp_path, positions=positions, cash=150000.0)
+    old = _publish_month(svc, "20260930", NOW)
+    svc.approve(old["cycle_id"], "tester", NOW)
+    now = "2026-11-01T20:00:00+08:00"
+    # An already-frozen state for the newer month must be checked in the same transaction
+    # as closing the old cycle, including the AUX path that creates no new target.
+    existing_sleeve = "TOP50" if state_only else "AUX_HYDRA"
+    existing_rows = [("600002.SH", 1.)] if state_only else [("511260.SH", 1.)]
+    existing = _basket(tmp_path, existing_rows, existing_sleeve, decision="20261102", as_of="20261030")
+    payload = derive_stock_leg(build_publication(existing, closes=CLOSES, calendar=CAL_LONG, now=now,
+                                                held_symbols=list(positions), policy_payload=_policy()))
+    record_state(sf, instance_id=INSTANCE, payload=payload, target_version_id=None, now=now)
+    attempted_sleeve = "AUX_HYDRA" if state_only else "TOP50"
+    attempted_rows = [("511260.SH", 1.)] if state_only else [("600001.SH", 1.)]
+    basket = _basket(tmp_path, attempted_rows, attempted_sleeve, decision="20261102", as_of="20261030")
+    args = _cli_args(tmp_path, basket, calendar=CAL_LONG, now=now)
+    with pytest.raises(CycleConflict, match="different allocation"):
+        oms_ops.main(args + ["--apply"], session_factory=sf, settings=_settings(tmp_path))
+    with sf() as s:
+        cycle = s.query(OmsCycle).one()
+        assert (cycle.cycle_id, cycle.status, cycle.close_reason) == (old["cycle_id"], "ACTIVE", None)
+        assert s.query(OmsTargetVersion).one().status == "ACTIVE"
+        assert {o.state for o in s.query(OmsOrder)} <= {"PLANNED"}
+        assert {row.status for row in s.query(OmsSession)} == {"PLANNED"}
+        assert s.query(V713StateRecord).one().sleeve == existing_sleeve

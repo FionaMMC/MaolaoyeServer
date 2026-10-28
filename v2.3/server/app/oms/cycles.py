@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 from app.models import InstanceState
 from app.oms.ledger import OPEN_QMT_STATUSES as OPEN_BROKER_STATUSES, OrderLedger
 from app.oms.models import (OmsBrokerSnapshot, OmsCycle, OmsOrder, OmsReconciliation, OmsSession,
-                            OmsTargetVersion)
+                            OmsTargetVersion, OmsOverride)
 from app.oms.planner import (Policy, Session, lot_target, plan_buy_session, plan_sell_session,
                              session_schedule, policy_from_dict, policy_to_dict, get_instrument as instrument)
 from app.oms.schemas import PlanOrder, PlanOut, SnapshotIn, plan_content_sha256
@@ -69,7 +69,7 @@ class CycleService:
                        policy: Policy | dict | None = None, metadata: dict | None = None,
                        provenance: dict | None = None, earliest_execution_date: str | None = None,
                        liquidate: bool = False, supersede: bool = False,
-                       reference_closes: dict | None = None) -> dict:
+                       reference_closes: dict | None = None, v713_state: dict | None = None) -> dict:
         policy = policy_from_dict(policy) if isinstance(policy, dict) else (policy or self.policy)
         if liquidate:
             # An explicit all-cash target (V713 AUX): every held symbol is frozen at zero below.
@@ -87,6 +87,11 @@ class CycleService:
                 raise ValueError(f"unknown live instance {instance_id} for {account_alias}")
             version_id = "tv_" + _sha({"instance": instance_id, "signal": signal_date, "weights": weights,
                                        "source": source_sha256})[:24]
+            state_result = None
+            if v713_state is not None:
+                from app.oms.v713_stock_leg import record_state_in_session
+                state_result = record_state_in_session(session, instance_id=instance_id, payload=v713_state,
+                                                       target_version_id=version_id, now=now)
             previous = session.get(OmsTargetVersion, version_id)
             if previous is not None:
                 prior_cycle = session.execute(select(OmsCycle).where(
@@ -94,7 +99,11 @@ class CycleService:
                 if (previous.weights != weights or previous.signal_closes != signal_closes
                         or _sha(prior_cycle.policy) != _sha(policy_to_dict(policy))):
                     raise CycleConflict("target id already exists with different prices or policy")
-                return self._publication(session, prior_cycle)
+                result = self._publication(session, prior_cycle)
+                if state_result is not None:
+                    result["v713_state"] = state_result
+                    session.commit()
+                return result
             open_cycle = self._open_cycle(session, account_alias, instance_id)
             if open_cycle is not None:
                 if not supersede:
@@ -172,9 +181,12 @@ class CycleService:
             shares = [{"symbol": s, "weight": float(weights.get(s, 0.)), "close": signal_closes.get(s),
                        "target": frozen.get(s, 0), "held": positions.get(s, 0),
                        "delta": frozen.get(s, 0) - positions.get(s, 0)} for s in sorted(set(frozen) | set(positions))]
-            return {"cycle_id": cycle.cycle_id, "target_version_id": version_id, "status": cycle.status,
-                    "nav": nav, "lot_gap": lot_gap, "schedule": cycle.schedule, "shares": shares,
-                    "first_session": first}
+            result = {"cycle_id": cycle.cycle_id, "target_version_id": version_id, "status": cycle.status,
+                      "nav": nav, "lot_gap": lot_gap, "schedule": cycle.schedule, "shares": shares,
+                      "first_session": first}
+            if state_result is not None:
+                result["v713_state"] = state_result
+            return result
 
     @staticmethod
     def _publication(session, cycle: OmsCycle) -> dict:
@@ -389,16 +401,19 @@ class CycleService:
                 "orders": [asdict(o) for o in orders], "deferrals": row.deferrals}
 
     def close_superseded(self, *, instance_id: str, account_alias: str, signal_date: str, closes: dict,
-                         now: str) -> str | None:
+                         now: str, v713_state: dict | None = None) -> str | None:
         """End the open cycle for a later target that needs no cycle of its own (an AUX month already in cash)."""
         with self.session_factory() as session:
             begin_ledger_transaction(session, "live", account_alias)
             cycle = self._open_cycle(session, account_alias, instance_id)
-            if cycle is None:
-                return None
-            self._supersede(session, cycle, signal_date, closes, now)
+            if v713_state is not None:
+                from app.oms.v713_stock_leg import record_state_in_session
+                record_state_in_session(session, instance_id=instance_id, payload=v713_state,
+                                        target_version_id=None, now=now)
+            if cycle is not None:
+                self._supersede(session, cycle, signal_date, closes, now)
             session.commit()
-            return cycle.cycle_id
+            return cycle.cycle_id if cycle is not None else None
 
     def _supersede(self, session, cycle: OmsCycle, signal_date: str, closes: dict, now: str) -> None:
         """A newer monthly target ends the old cycle's catch-up instead of trading an expired list."""
@@ -410,6 +425,18 @@ class CycleService:
             OmsOrder.state.not_in([state.value for state in TERMINAL]))).scalars().all()
         if any(order.state != OrderState.PLANNED.value for order in orders):
             raise CycleConflict(f"cycle {cycle.cycle_id} still has broker orders in flight")
+        today = _date(now)
+        never_approved = cycle.status == "PENDING_APPROVAL" and cycle.approved_at is None
+        # PLANNED is only the server's last observed state. An approved same-day or past
+        # order may already have a leased offline grant or an unreported broker submission.
+        # Expiry alone does not prove it was never sent: require normal terminal evidence.
+        if not never_approved and any(order.trade_date <= today for order in orders):
+            raise CycleConflict(f"cycle {cycle.cycle_id} has planned orders that may have executable grants; "
+                                "reconcile broker terminal/day-end evidence before superseding")
+        not_submitted = [{"client_order_id": order.client_order_id, "trade_date": order.trade_date,
+                          "safety_basis": "UNAPPROVED_CYCLE" if never_approved else "FUTURE_TRADE_DATE"}
+                         for order in orders]
+        prior_status = cycle.status
         for order in orders:
             order.state = transition(OrderState.PLANNED, OrderState.NOT_SUBMITTED).value
             order.updated_at = now
@@ -418,6 +445,13 @@ class CycleService:
             planned.status, planned.closed_at = "CLOSED", now
         self._close(session, cycle, "SUPERSEDED", None, now,
                     marks={s: float(p) for s, p in closes.items() if p is not None})
+        session.add(OmsOverride(account_alias=cycle.account_alias, action="CYCLE_SUPERSEDED",
+                                payload={"cycle_id": cycle.cycle_id, "instance_id": cycle.instance_id,
+                                         "signal_date": signal_date, "prior_cycle_status": prior_status,
+                                         "not_submitted_orders": not_submitted},
+                                reason="Later monthly target superseded safely unsubmitted plans",
+                                operator="cycle_service", created_at=now,
+                                effect={"status": "CLOSED", "close_reason": "SUPERSEDED"}))
 
     def _close(self, session, cycle: OmsCycle, reason: str, snap: SnapshotIn | None, now: str,
                marks: dict | None = None) -> None:

@@ -22,6 +22,7 @@
 <label>账户 <input id="account" autocomplete="off"></label>
 <button id="load">读取</button>
 <p>状态：<span id="status" class="status">未读取</span> · 生成于 <span id="generated">—</span></p>
+<p>净值截至 <span id="asof">—</span> · 应完成交易日 <span id="expected">—</span></p>
 <svg id="chart" viewBox="0 0 600 220" preserveAspectRatio="none"></svg>
 <h2>最近 20 个交易日（主线）</h2>
 <table id="rows"><thead><tr><th>日期</th><th>状态</th><th>合成值</th><th>股票腿占比</th><th>待完成</th></tr></thead><tbody></tbody></table>
@@ -42,7 +43,7 @@ function chart(lines) {
   const all = Object.values(lines).flatMap((line) => line.rows.map((row) => row.value));
   if (!all.length) return;
   const lo = Math.min(...all), hi = Math.max(...all), span = hi - lo || 1;
-  const colors = {"0": "#8c959f", "20": "#0969da", "50": "#bf8700"};
+  const colors = {"0": "#8c959f", "13": "#0969da", "18": "#8250df", "20": "#1a7f37", "23": "#bf8700", "50": "#cf222e"};
   for (const [bps, line] of Object.entries(lines)) {
     const n = Math.max(line.rows.length - 1, 1);
     const points = line.rows.map((row, i) => `${(i / n) * 600},${210 - ((row.value - lo) / span) * 200}`).join(" ");
@@ -59,9 +60,12 @@ $("load").addEventListener("click", async () => {
   const body = await response.json().catch(() => ({}));
   if (!response.ok || body.code !== 0) { $("status").textContent = body.message || ("HTTP " + response.status); return; }
   const doc = body.data, primary = doc.lines[String(doc.primary_bps)] || {rows: [], events: []};
-  $("label").textContent = doc.label + " · 主线 " + doc.primary_bps + "bp（另有 0bp、50bp）";
+  const alternatives = Object.keys(doc.lines).filter((bps) => Number(bps) !== Number(doc.primary_bps)).map((bps) => bps + "bp");
+  $("label").textContent = doc.label + " · 主线 " + doc.primary_bps + "bp" + (alternatives.length ? "（另有 " + alternatives.join("、") + "）" : "");
   $("status").textContent = doc.status; $("status").className = "status " + doc.status;
   $("generated").textContent = doc.generated_at;
+  $("asof").textContent = doc.as_of_date || "尚无净值";
+  $("expected").textContent = doc.expected_date || "尚未确定";
   chart(doc.lines);
   fill("rows", primary.rows.slice(-20).reverse().map((r) => [r.date, r.sleeve, r.value.toFixed(2), (r.stock_weight * 100).toFixed(1) + "%", r.pending || ""]));
   fill("events", primary.events.slice().reverse().map((e) => [e.date, e.kind, e.signal_date, e.sleeve, e.cost === undefined ? "" : e.cost.toFixed(2)]));

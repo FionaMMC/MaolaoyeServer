@@ -18,6 +18,14 @@ AUX = "AUX_HYDRA"
 CHINA = timezone(timedelta(hours=8))
 
 
+class SyntheticEvidenceUnavailable(ValueError):
+    """An order's current state cannot establish its historical terminal date."""
+
+    def __init__(self, order_ids):
+        self.order_ids = sorted(order_ids)
+        super().__init__(f"immutable terminal evidence missing for sells: {', '.join(self.order_ids)}")
+
+
 @dataclass(frozen=True)
 class SyntheticPolicy:
     policy_id: str
@@ -94,7 +102,7 @@ def rebalance(values, cash, stock_weight, rates):
 
 
 def run_synthetic(policy: SyntheticPolicy, *, dates, unit_stock, unit_hydra, exposure, months, bps,
-                  open_sell_dates=frozenset(), all_virtual=False) -> dict:
+                  open_sell_dates=frozenset(), all_virtual=False, expected_date=None) -> dict:
     """Daily synthetic path at one overlay cost.
 
     ``exposure`` maps a date to the stock leg's stock market value / NAV and
@@ -154,7 +162,7 @@ def run_synthetic(policy: SyntheticPolicy, *, dates, unit_stock, unit_hydra, exp
                     move(date, due, "EXIT_AUX", (0.0, rate))
                 else:
                     move(date, due, "VIRTUAL", (rate, rate))
-            if waiting is not None:
+            if waiting is not None and status != "REVIEW_REQUIRED":
                 if date not in exposure:
                     raise ValueError(f"stock-leg valuation missing on {date}")
                 if exposure[date] <= policy.liquidated_stock_weight and date not in open_sell_dates:
@@ -172,12 +180,83 @@ def run_synthetic(policy: SyntheticPolicy, *, dates, unit_stock, unit_hydra, exp
                      "unit_hydra": unit_hydra[date], "stock_units": units[0], "hydra_units": units[1],
                      "cash": cash, "value": value, "stock_weight": values[0] / value,
                      "pending": None if waiting is None else "ENTER_AUX"})
+    if status == "CURRENT" and expected_date is not None and dates[-1] < expected_date:
+        status = "WAITING_LEG_NAV"
     return {"status": status, "rows": rows, "events": events}
 
 
 def _china_date(stamp: str) -> str:
     moment = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
     return (moment if moment.tzinfo is None else moment.astimezone(CHINA)).strftime("%Y%m%d")
+
+
+def _terminal_date(order, snapshots, rejected_events, reconciled_snapshots, supersessions, instance_id):
+    """Use append-only broker/agent evidence, never the mutable order.updated_at.
+
+    A passed same-day EOD receipt also proves the existing OMS day-expiry rule ran.
+    Missing broker rows alone are not proof that a submission never happened.
+    """
+    from app.oms.schemas import BrokerOrder
+    from app.oms.states import OrderState as S, classify_qmt
+
+    candidates = []
+    for snapshot in snapshots:
+        if snapshot.account_alias != order.account_alias:
+            continue
+        moment = datetime.fromisoformat(snapshot.taken_at.replace("Z", "+00:00"))
+        if moment.tzinfo is None:
+            continue
+        local = moment.astimezone(CHINA)
+        date = local.strftime("%Y%m%d")
+        if date < order.trade_date:
+            continue
+        eod = (snapshot.kind == "EOD" and snapshot.trade_date == order.trade_date == date
+               and local.hour >= 15 and snapshot.snapshot_id in reconciled_snapshots)
+        matches = [item for item in snapshot.payload.get("orders", [])
+                   if str(item.get("remark", "")).strip() == order.client_order_id]
+        if not matches:
+            # The successful finalize/reconciliation receipt, after the intent existed,
+            # is essential; an arbitrary account query with an absent order is not enough.
+            created = datetime.fromisoformat(order.created_at.replace("Z", "+00:00"))
+            if order.state == "NOT_SUBMITTED" and eod and created.tzinfo and moment >= created:
+                candidates.append(date)
+            continue
+        if len(matches) != 1:
+            continue
+        broker = BrokerOrder.model_validate(matches[0])
+        if (broker.symbol != order.symbol or broker.side != order.side
+                or broker.quantity > order.quantity or broker.traded_volume > broker.quantity
+                or abs(broker.price - order.limit_price) > 1e-8
+                or (order.broker_order_id is not None and broker.broker_order_id != order.broker_order_id)):
+            continue
+        observed = classify_qmt(broker.status, broker.traded_volume, order.quantity)
+        if observed.value == order.state or (order.state == "EXPIRED_DAY" and eod
+                and observed in {S.ACKED, S.PARTIAL, S.PENDING_CANCEL}):
+            candidates.append(date)
+    if order.state == "REJECTED":
+        candidates.extend(_china_date(event.observed_at) for event in rejected_events
+                          if event.client_order_id == order.client_order_id)
+    if order.state == "NOT_SUBMITTED":
+        for receipt in supersessions:
+            payload, effect = receipt.payload, receipt.effect or {}
+            if (receipt.account_alias != order.account_alias or receipt.action != "CYCLE_SUPERSEDED"
+                    or receipt.operator != "cycle_service" or payload.get("cycle_id") != order.cycle_id
+                    or payload.get("instance_id") != instance_id
+                    or effect.get("status") != "CLOSED" or effect.get("close_reason") != "SUPERSEDED"):
+                continue
+            moment = datetime.fromisoformat(receipt.created_at.replace("Z", "+00:00"))
+            if moment.tzinfo is None:
+                continue
+            date = moment.astimezone(CHINA).strftime("%Y%m%d")
+            for item in payload.get("not_submitted_orders", []):
+                if (item.get("client_order_id") != order.client_order_id
+                        or item.get("trade_date") != order.trade_date):
+                    continue
+                if ((item.get("safety_basis") == "FUTURE_TRADE_DATE" and date < order.trade_date)
+                        or (item.get("safety_basis") == "UNAPPROVED_CYCLE"
+                            and payload.get("prior_cycle_status") == "PENDING_APPROVAL")):
+                    candidates.append(date)
+    return min(candidates) if candidates else None
 
 
 def load_inputs(session_factory, policy: SyntheticPolicy) -> dict:
@@ -188,7 +267,8 @@ def load_inputs(session_factory, policy: SyntheticPolicy) -> dict:
     """
     from sqlalchemy import select
     from app.models import PerfSnapshot, PerfValuation
-    from app.oms.models import OmsCycle, OmsOrder, V713StateRecord
+    from app.oms.models import (OmsBrokerSnapshot, OmsCycle, OmsOrder, OmsOrderEvent, OmsOverride,
+                                OmsReconciliation, V713StateRecord)
     from app.oms.states import TERMINAL
 
     terminal = {state.value for state in TERMINAL}
@@ -199,14 +279,39 @@ def load_inputs(session_factory, policy: SyntheticPolicy) -> dict:
 
         unit_stock = unit_nav(snapshots(policy.stock_instance))
         unit_hydra = unit_nav(snapshots(policy.hydra_instance))
+        dates = sorted(set(unit_stock) & set(unit_hydra))
         exposure = {row.date: max(0.0, (row.nav - row.cash - row.dividend_receivable) / row.nav)
                     for row in session.scalars(select(PerfValuation).where(
                         PerfValuation.instance_id == policy.stock_instance,
                         PerfValuation.execution_domain == "live"))}
-        sells = [(order.trade_date, order.state in terminal and _china_date(order.updated_at))
-                 for order in session.scalars(select(OmsOrder).join(
-                     OmsCycle, OmsCycle.cycle_id == OmsOrder.cycle_id).where(
-                     OmsCycle.instance_id == policy.stock_instance, OmsOrder.side == "SELL"))]
+        sell_orders = list(session.scalars(select(OmsOrder).join(
+            OmsCycle, OmsCycle.cycle_id == OmsOrder.cycle_id).where(
+            OmsCycle.instance_id == policy.stock_instance, OmsOrder.side == "SELL",
+            OmsOrder.trade_date <= dates[-1]))) if dates else []
+        # Future intents have no economic effect on the history being valued. In
+        # particular, a superseded future NOT_SUBMITTED intent must not invalidate
+        # earlier closes. Once its execution date enters the valued range, it needs
+        # the same immutable terminal evidence as every other sell.
+        aliases = {order.account_alias for order in sell_orders}
+        snapshots = list(session.scalars(select(OmsBrokerSnapshot).where(
+            OmsBrokerSnapshot.account_alias.in_(aliases)))) if aliases else []
+        rejected = list(session.scalars(select(OmsOrderEvent).where(
+            OmsOrderEvent.client_order_id.in_([order.client_order_id for order in sell_orders]),
+            OmsOrderEvent.applied.is_(True), OmsOrderEvent.kind == "SUBMIT_REJECTED"))) if sell_orders else []
+        reconciled = set(session.scalars(select(OmsReconciliation.snapshot_id).where(
+            OmsReconciliation.snapshot_id.in_([snapshot.snapshot_id for snapshot in snapshots]),
+            OmsReconciliation.passed.is_(True)))) if snapshots else set()
+        supersessions = list(session.scalars(select(OmsOverride).where(
+            OmsOverride.account_alias.in_(aliases), OmsOverride.action == "CYCLE_SUPERSEDED"))) if aliases else []
+        sells, missing = [], []
+        for order in sell_orders:
+            finished = (_terminal_date(order, snapshots, rejected, reconciled, supersessions, policy.stock_instance)
+                        if order.state in terminal else None)
+            if order.state in terminal and finished is None:
+                missing.append(order.client_order_id)
+            sells.append((order.trade_date, finished))
+        if missing:
+            raise SyntheticEvidenceUnavailable(missing)
         months = []
         for record in session.scalars(select(V713StateRecord).where(
                 V713StateRecord.instance_id == policy.stock_instance).order_by(V713StateRecord.signal_date)):
@@ -216,8 +321,8 @@ def load_inputs(session_factory, policy: SyntheticPolicy) -> dict:
                     OmsCycle.target_version_id == record.target_version_id)).one()
                 anchor = cycle.schedule[0]["trade_date"]
             months.append(MonthState(record.signal_date, record.sleeve, anchor))
-    dates = sorted(set(unit_stock) & set(unit_hydra))
     open_sell_dates = {date for date in dates for traded, finished in sells
                        if traded <= date and not (finished and finished <= date)}
     return {"dates": dates, "unit_stock": unit_stock, "unit_hydra": unit_hydra, "exposure": exposure,
-            "open_sell_dates": open_sell_dates, "months": months}
+            "open_sell_dates": open_sell_dates, "months": months,
+            "expected_date": max(set(unit_stock) | set(unit_hydra), default=None)}

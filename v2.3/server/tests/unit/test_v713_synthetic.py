@@ -107,6 +107,16 @@ def test_unfinished_liquidation_is_flagged_and_stops_at_the_next_month():
     assert stopped["events"][-1]["kind"] == "STOPPED" and stopped["rows"][-1]["date"] == D[9]
 
 
+def test_liquidation_after_review_deadline_does_not_switch_without_review():
+    exposure = {d: .99 if i < 14 else 0.0 for i, d in enumerate(D)}
+    out = _run([T1, AUX_MONTH], exposure=exposure)
+    assert out["status"] == "REVIEW_REQUIRED"
+    assert [event["kind"] for event in out["events"]] == ["INIT", "REVIEW_REQUIRED"]
+    assert out["rows"][-1]["sleeve"] == "T1_5050"
+    assert out["rows"][-1]["pending"] == "ENTER_AUX"
+    assert out["rows"][-1]["stock_units"] == out["rows"][0]["stock_units"]
+
+
 def test_missing_leg_nav_on_an_anchor_is_an_error():
     with pytest.raises(ValueError, match="20261203"):
         _run([T1, AUX_MONTH], dates=[d for d in D if d != D[2]])
@@ -147,8 +157,8 @@ def test_all_virtual_replay_equals_the_oct16_engine(bps):
 
 from app.db import init_db, make_engine, make_session_factory
 from app.models import PerfSnapshot, PerfValuation
-from app.oms.models import OmsCycle, OmsOrder, V713StateRecord
-from app.services.v713_synthetic import load_inputs
+from app.oms.models import OmsBrokerSnapshot, OmsCycle, OmsOrder, OmsOverride, OmsReconciliation, V713StateRecord
+from app.services.v713_synthetic import SyntheticEvidenceUnavailable, load_inputs
 from scripts import run_v713_synthetic
 
 
@@ -182,6 +192,29 @@ def _sell(client_order_id, trade_date, state, updated_at):
                     reference_price=10.0, state=state, created_at=updated_at, updated_at=updated_at)
 
 
+def _broker_snapshot(snapshot_id, day, orders, *, account_alias="shared"):
+    return OmsBrokerSnapshot(snapshot_id=snapshot_id, account_alias=account_alias, kind="EOD",
+                             trade_date=day, taken_at=f"{day[:4]}-{day[4:6]}-{day[6:]}T15:30:00+08:00",
+                             received_at=f"{day[:4]}-{day[4:6]}-{day[6:]}T15:30:01+08:00",
+                             payload={"orders": orders})
+
+
+def _broker_order(order_id, status=56):
+    return {"broker_order_id": "broker-" + order_id, "symbol": "600001.SH", "side": "SELL",
+            "quantity": 100, "price": 9.95, "status": status,
+            "traded_volume": 100 if status == 56 else 0, "traded_price": 9.95, "remark": order_id}
+
+
+def _supersession(order_id, trade_date, basis, *, created_at="2026-12-04T18:00:00+08:00"):
+    return OmsOverride(account_alias="shared", action="CYCLE_SUPERSEDED", operator="cycle_service",
+                       reason="new monthly target", created_at=created_at,
+                       payload={"cycle_id": "C00001", "instance_id": "live_v713_stockleg",
+                                "signal_date": "20261231", "prior_cycle_status": "PENDING_APPROVAL",
+                                "not_submitted_orders": [{"client_order_id": order_id, "trade_date": trade_date,
+                                                          "safety_basis": basis}]},
+                       effect={"status": "CLOSED", "close_reason": "SUPERSEDED"})
+
+
 def test_job_reads_leg_navs_and_states_and_writes_every_cost_line(tmp_path):
     sf = _database(tmp_path)
     output = tmp_path / "v713_synthetic.json"
@@ -199,9 +232,161 @@ def test_job_reads_leg_navs_and_states_and_writes_every_cost_line(tmp_path):
 def test_a_sell_is_open_until_the_close_of_the_day_it_became_terminal(tmp_path):
     sf = _database(tmp_path)
     with sf() as s:
-        s.add(_sell("S1", D[0], "EXPIRED_DAY", "2026-12-03T15:30:00+08:00"))
+        s.add(_sell("S1", D[2], "EXPIRED_DAY", "2026-12-03T15:30:00+08:00"))
         s.add(_sell("S2", D[3], "UNKNOWN", "2026-12-04T14:57:05+08:00"))
+        s.add(_broker_snapshot("snap-expiry", D[2], [_broker_order("S1", status=50)]))
+        s.add(OmsReconciliation(snapshot_id="snap-expiry", cycle_id="C00001", passed=True,
+                                discrepancies=[], created_at="2026-12-03T15:30:01+08:00"))
         s.commit()
     inputs = load_inputs(sf, load_synthetic_policy(POLICY_FILE))
-    assert inputs["open_sell_dates"] == {D[0], D[1], D[3], D[4]}
+    assert inputs["open_sell_dates"] == {D[3], D[4]}
     assert inputs["exposure"][D[0]] == pytest.approx(.99)
+
+
+def test_reobserving_terminal_sell_cannot_rewrite_historical_aux_entry(tmp_path):
+    from app.oms.ledger import OrderLedger
+    from app.oms.schemas import BrokerOrder
+
+    sf = _database(tmp_path)
+    with sf() as s:
+        order = _sell("S1", D[0], "FILLED", "2026-12-03T15:30:00+08:00")
+        order.filled_qty = 100
+        s.add(order)
+        s.add(_broker_snapshot("snap-original", D[2], [_broker_order("S1")]))
+        s.commit()
+    policy = load_synthetic_policy(POLICY_FILE)
+    before = load_inputs(sf, policy)
+    with sf() as s:
+        OrderLedger._merge_observation(s.get(OmsOrder, "S1"), BrokerOrder(**_broker_order("S1")),
+                                       "2026-12-05T15:30:00+08:00", [])
+        s.add(_broker_snapshot("snap-repeat", D[4], [_broker_order("S1")]))
+        s.commit()
+    after = load_inputs(sf, policy)
+    assert before["open_sell_dates"] == after["open_sell_dates"] == {D[0], D[1]}
+    for inputs in (before, after):
+        inputs.update(months=[T1, AUX_MONTH], exposure={d: 0.0 for d in D})
+    assert run_synthetic(policy, bps=20, **before) == run_synthetic(policy, bps=20, **after)
+
+
+@pytest.mark.parametrize("bad_evidence", ["absent", "other_account", "other_symbol", "expiry_without_receipt"])
+def test_terminal_sell_requires_matching_immutable_evidence(tmp_path, bad_evidence):
+    sf = _database(tmp_path)
+    with sf() as s:
+        state = "EXPIRED_DAY" if bad_evidence == "expiry_without_receipt" else "FILLED"
+        s.add(_sell("S1", D[2], state, "2026-12-03T15:30:00+08:00"))
+        if bad_evidence != "absent":
+            broker = _broker_order("S1", status=50 if state == "EXPIRED_DAY" else 56)
+            if bad_evidence == "other_symbol":
+                broker["symbol"] = "600002.SH"
+            s.add(_broker_snapshot("invalid", D[2], [broker],
+                                   account_alias="unrelated" if bad_evidence == "other_account" else "shared"))
+        s.commit()
+    with pytest.raises(SyntheticEvidenceUnavailable, match="S1"):
+        load_inputs(sf, load_synthetic_policy(POLICY_FILE))
+    output = tmp_path / "synthetic.json"
+    output.write_text('{"status": "CURRENT"}')
+    assert run_v713_synthetic.main(["--policy", str(POLICY_FILE), "--output", str(output)],
+                                   session_factory=sf) == 0
+    document = json.loads(output.read_text())
+    assert document["status"] == "WAITING_ORDER_EVIDENCE"
+    assert document["missing_order_evidence"] == ["S1"]
+    assert document["as_of_date"] is None
+
+
+def test_cash_only_not_submitted_sell_needs_completed_eod_receipt(tmp_path):
+    sf = _database(tmp_path)
+    with sf() as s:
+        s.add(_sell("S1", D[2], "NOT_SUBMITTED", "2026-12-03T14:56:00+08:00"))
+        s.add(_broker_snapshot("empty-eod", D[2], []))
+        s.commit()
+    with pytest.raises(SyntheticEvidenceUnavailable):
+        load_inputs(sf, load_synthetic_policy(POLICY_FILE))
+    with sf() as s:
+        s.add(OmsReconciliation(snapshot_id="empty-eod", cycle_id="C00001", passed=True,
+                                discrepancies=[], created_at="2026-12-03T15:30:01+08:00"))
+        s.commit()
+    assert not load_inputs(sf, load_synthetic_policy(POLICY_FILE))["open_sell_dates"]
+
+
+def test_future_superseded_intent_does_not_block_earlier_closes(tmp_path):
+    sf = _database(tmp_path)
+    policy = load_synthetic_policy(POLICY_FILE)
+    before = run_synthetic(policy, bps=20, **load_inputs(sf, policy))
+    with sf() as s:
+        # This is a historical unsafe supersede shape: the current terminal flag
+        # alone does not prove a previously cached offline plan was revoked.
+        s.add(_sell("future", D[6], "NOT_SUBMITTED", "2026-12-04T18:00:00+08:00"))
+        s.commit()
+    assert run_synthetic(policy, bps=20, **load_inputs(sf, policy)) == before
+    with sf() as s:
+        for instance in ("live_v713_stockleg", "live_hydra_v481_rb"):
+            s.add(PerfSnapshot(instance_id=instance, date=D[6], execution_domain="live",
+                               nav=200_000.0, daily_return=0.0, positions_snapshot={}))
+        s.commit()
+    # Reaching the intent's actual trade date still requires proof; do not silently
+    # treat the mutable NOT_SUBMITTED flag as a confirmed cancellation.
+    with pytest.raises(SyntheticEvidenceUnavailable, match="future"):
+        load_inputs(sf, policy)
+    with sf() as s:
+        # The immutable same-transaction cancellation receipt is sufficient even
+        # after the never-issued intent's future trade date has passed.
+        s.add(_supersession("future", D[6], "FUTURE_TRADE_DATE"))
+        s.commit()
+    assert not load_inputs(sf, policy)["open_sell_dates"]
+
+
+def test_never_approved_cycle_cancellation_has_immutable_evidence(tmp_path):
+    sf = _database(tmp_path)
+    with sf() as s:
+        s.add(_sell("unapproved", D[1], "NOT_SUBMITTED", "2026-12-04T18:00:00+08:00"))
+        s.add(_supersession("unapproved", D[1], "UNAPPROVED_CYCLE"))
+        s.commit()
+    # The intent was safely terminated on Dec 4, not at its mutable updated_at.
+    assert load_inputs(sf, load_synthetic_policy(POLICY_FILE))["open_sell_dates"] == {D[1], D[2]}
+
+
+@pytest.mark.parametrize("bad_receipt", ["wrong_account", "wrong_order", "wrong_instance",
+                                       "not_future", "approved_cycle"])
+def test_supersession_evidence_must_prove_this_intent_was_safe(tmp_path, bad_receipt):
+    sf = _database(tmp_path)
+    with sf() as s:
+        s.add(_sell("S1", D[4], "NOT_SUBMITTED", "2026-12-04T18:00:00+08:00"))
+        receipt = _supersession("S1", D[4], "FUTURE_TRADE_DATE")
+        if bad_receipt == "wrong_account":
+            receipt.account_alias = "other"
+        elif bad_receipt == "wrong_order":
+            receipt.payload["not_submitted_orders"][0]["client_order_id"] = "different"
+        elif bad_receipt == "wrong_instance":
+            receipt.payload["instance_id"] = "another-strategy"
+        elif bad_receipt == "not_future":
+            receipt.created_at = "2026-12-05T18:00:00+08:00"
+        else:
+            receipt.payload["not_submitted_orders"][0]["safety_basis"] = "UNAPPROVED_CYCLE"
+            receipt.payload["prior_cycle_status"] = "ACTIVE"
+        s.add(receipt)
+        s.commit()
+    with pytest.raises(SyntheticEvidenceUnavailable, match="S1"):
+        load_inputs(sf, load_synthetic_policy(POLICY_FILE))
+
+
+def test_one_stale_leg_is_waiting_even_when_the_job_is_new(tmp_path):
+    sf = _database(tmp_path)
+    with sf() as s:
+        s.delete(s.get(PerfSnapshot, ("live_hydra_v481_rb", D[4])))
+        s.commit()
+    output = tmp_path / "synthetic.json"
+    run_v713_synthetic.main(["--policy", str(POLICY_FILE), "--output", str(output)], session_factory=sf,
+                            now="2026-12-05T18:00:00+08:00")
+    document = json.loads(output.read_text())
+    assert document["status"] == "WAITING_LEG_NAV"
+    assert document["as_of_date"] == D[3] and document["expected_date"] == D[4]
+
+
+def test_explicit_expected_session_detects_both_legs_stale(tmp_path):
+    sf = _database(tmp_path)
+    output = tmp_path / "synthetic.json"
+    run_v713_synthetic.main(["--policy", str(POLICY_FILE), "--output", str(output), "--as-of", D[7]],
+                            session_factory=sf)
+    document = json.loads(output.read_text())
+    assert document["status"] == "WAITING_LEG_NAV"
+    assert document["as_of_date"] == D[4] and document["expected_date"] == D[7]

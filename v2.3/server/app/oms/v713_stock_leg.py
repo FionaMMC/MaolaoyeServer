@@ -72,25 +72,36 @@ def derive_stock_leg(payload: dict) -> dict:
 def record_state(session_factory, *, instance_id: str, payload: dict, target_version_id: str | None,
                  now: str) -> dict:
     """Record the month's V713 state for the synthetic ledger; idempotent and never rewritten."""
+    from app.services.ledger_transaction import begin_ledger_transaction
+
+    with session_factory() as session:
+        begin_ledger_transaction(session, "live", None)
+        result = record_state_in_session(session, instance_id=instance_id, payload=payload,
+                                         target_version_id=target_version_id, now=now)
+        session.commit()
+        return result
+
+
+def record_state_in_session(session, *, instance_id: str, payload: dict, target_version_id: str | None,
+                            now: str) -> dict:
+    """Freeze monthly state inside the caller's locked publication transaction; never commit here."""
     from app.oms.cycles import CycleConflict
     from app.oms.models import V713StateRecord
 
     provenance = payload["provenance"]
-    with session_factory() as session:
-        row = session.get(V713StateRecord, (instance_id, payload["signal_date"]))
-        if row is None:
-            row = V713StateRecord(instance_id=instance_id, signal_date=payload["signal_date"],
-                                  sleeve=provenance["sleeve"], decision_date=provenance["decision_date"],
-                                  basket_sha256=provenance["basket_sha256"],
-                                  allocation_sha256=payload["source_sha256"],
-                                  target_version_id=target_version_id, recorded_at=now)
-            session.add(row)
-        elif (row.sleeve, row.allocation_sha256) != (provenance["sleeve"], payload["source_sha256"]):
-            raise CycleConflict("V713 state for this month is already recorded with a different allocation")
-        elif target_version_id is not None and row.target_version_id not in (None, target_version_id):
-            raise CycleConflict("V713 state for this month already points to another target version")
-        elif target_version_id is not None:
-            row.target_version_id = target_version_id
-        session.commit()
-        return {"instance_id": row.instance_id, "signal_date": row.signal_date, "sleeve": row.sleeve,
-                "target_version_id": row.target_version_id}
+    row = session.get(V713StateRecord, (instance_id, payload["signal_date"]))
+    if row is None:
+        row = V713StateRecord(instance_id=instance_id, signal_date=payload["signal_date"],
+                              sleeve=provenance["sleeve"], decision_date=provenance["decision_date"],
+                              basket_sha256=provenance["basket_sha256"],
+                              allocation_sha256=payload["source_sha256"],
+                              target_version_id=target_version_id, recorded_at=now)
+        session.add(row)
+    elif (row.sleeve, row.allocation_sha256) != (provenance["sleeve"], payload["source_sha256"]):
+        raise CycleConflict("V713 state for this month is already recorded with a different allocation")
+    elif target_version_id is not None and row.target_version_id not in (None, target_version_id):
+        raise CycleConflict("V713 state for this month already points to another target version")
+    elif target_version_id is not None:
+        row.target_version_id = target_version_id
+    return {"instance_id": row.instance_id, "signal_date": row.signal_date, "sleeve": row.sleeve,
+            "target_version_id": row.target_version_id}

@@ -38,7 +38,7 @@ def _table(rows: list[dict]) -> str:
 
 
 def _preview(sf, policy, *, instance, account, signal_date, weights, closes, calendar, now,
-             earliest_execution_date=None) -> dict:
+             earliest_execution_date=None, reference_closes=None) -> dict:
     """What publish would freeze, computed read-only."""
     import math
     from app.models import InstanceState
@@ -56,7 +56,17 @@ def _preview(sf, policy, *, instance, account, signal_date, weights, closes, cal
     frozen = lot_target(nav, complete_weights, closes, policy)
     earliest = max(earliest_sell_day(now), earliest_execution_date or "")
     schedule = session_schedule(calendar, signal_date, policy.window, earliest_sell=earliest)
-    sells, deferrals = plan_sell_session(target=frozen, positions=positions, sellable=positions, sell_anchor=closes,
+    sell_anchor = closes
+    if policy.anchor == "previous_close":
+        before = max(d for d in sorted(set(calendar)) if d < schedule[0].trade_date)
+        if before != signal_date:
+            if reference_closes is None:
+                raise ValueError(f"previous-close anchors: the first session needs the {before} closes")
+            missing = sorted(s for s in frozen if not (float(reference_closes.get(s) or 0) > 0))
+            if missing:
+                raise ValueError(f"reference closes missing for {missing}")
+            sell_anchor = {s: float(reference_closes[s]) for s in frozen}
+    sells, deferrals = plan_sell_session(target=frozen, positions=positions, sellable=positions, sell_anchor=sell_anchor,
                                          attempt=0, policy=policy)
     rows = [{"symbol": s, "weight": float(weights.get(s, 0.)), "close": closes.get(s), "target": frozen.get(s, 0),
              "held": positions.get(s, 0), "delta": frozen.get(s, 0) - positions.get(s, 0)}
@@ -141,7 +151,7 @@ def main(argv=None, *, session_factory=None, settings=None) -> int:
                                         policy_payload=policy_payload, now=now, held_symbols=held)
             if args.command == "publish-v713-stock-leg":
                 from app.oms.cycles import CycleService
-                from app.oms.v713_stock_leg import derive_stock_leg, record_state
+                from app.oms.v713_stock_leg import derive_stock_leg
                 payload = derive_stock_leg(payload)
                 # A later monthly target ends the previous cycle's catch-up instead of being refused.
                 payload["supersede"] = True
@@ -157,11 +167,12 @@ def main(argv=None, *, session_factory=None, settings=None) -> int:
                     if not args.apply:
                         print("DRY RUN: nothing written.")
                         return 0
-                    if open_cycle is not None:
-                        service.close_superseded(instance_id=args.instance, account_alias=args.account,
-                                                 signal_date=payload["signal_date"], closes=closes, now=now)
-                    print(json.dumps(record_state(session_factory, instance_id=args.instance, payload=payload,
-                                                  target_version_id=None, now=now), ensure_ascii=False))
+                    service.close_superseded(instance_id=args.instance, account_alias=args.account,
+                                             signal_date=payload["signal_date"], closes=closes, now=now,
+                                             v713_state=payload)
+                    print(json.dumps({"instance_id": args.instance, "signal_date": payload["signal_date"],
+                                      "sleeve": payload["provenance"]["sleeve"], "target_version_id": None},
+                                     ensure_ascii=False))
                     return 0
         else:
             policy = policy_from_dict(json.loads(Path(args.policy).read_text(encoding="utf-8"))) if args.policy else service.policy
@@ -172,7 +183,8 @@ def main(argv=None, *, session_factory=None, settings=None) -> int:
                        "source_sha256": args.source_sha256, "policy": policy, "now": now}
         preview = _preview(session_factory, payload["policy"], instance=args.instance, account=args.account,
                            signal_date=payload["signal_date"], weights=payload["weights"], closes=closes,
-                           calendar=calendar, now=now, earliest_execution_date=payload.get("earliest_execution_date"))
+                           calendar=calendar, now=now, earliest_execution_date=payload.get("earliest_execution_date"),
+                           reference_closes=payload.get("reference_closes"))
         print(_table(preview["shares"]))
         print(json.dumps({k: preview[k] for k in ("nav", "cash", "schedule", "first_session_sells", "deferrals")},
                          ensure_ascii=False, indent=2))
@@ -181,11 +193,11 @@ def main(argv=None, *, session_factory=None, settings=None) -> int:
         if not args.apply:
             print("DRY RUN: nothing written. Re-run with --apply to create the cycle (status PENDING_APPROVAL).")
             return 0
-        out = service.publish_target(instance_id=args.instance, account_alias=args.account, **payload)
+        out = service.publish_target(instance_id=args.instance, account_alias=args.account, **payload,
+                                     v713_state=payload if args.command == "publish-v713-stock-leg" else None)
         print(json.dumps({k: out[k] for k in ("cycle_id", "status", "target_version_id", "lot_gap")}, indent=2))
         if args.command == "publish-v713-stock-leg":
-            print(json.dumps(record_state(session_factory, instance_id=args.instance, payload=payload,
-                                          target_version_id=out["target_version_id"], now=now), ensure_ascii=False))
+            print(json.dumps(out["v713_state"], ensure_ascii=False))
         return 0
 
     if args.command == "approve":
