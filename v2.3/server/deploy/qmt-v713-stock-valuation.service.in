@@ -1,0 +1,18 @@
+[Unit]
+Description=V713 stock-leg valuation (only derived performance tables)
+After=qmt-live-performance.service
+Before=qmt-v713-synthetic.service
+
+[Service]
+Type=oneshot
+User=qmtserver
+Group=qmtserver
+WorkingDirectory=/opt/qmt-server/v2.3/server
+EnvironmentFile=/opt/qmt-server/v2.3/server/.env
+Environment=PYTHONPATH=@V713_RELEASE_SERVER@
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/qmt-server/venv/bin/python @V713_RELEASE_SERVER@/scripts/run_v713_stock_valuation.py --raw-price-evidence /opt/qmt-server/v2.3/server/reports/v713-synthetic/raw-price-evidence.json
+TimeoutStartSec=4min
+UMask=0027
+NoNewPrivileges=true
+

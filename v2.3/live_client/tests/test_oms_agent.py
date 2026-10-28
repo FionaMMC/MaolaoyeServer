@@ -344,12 +344,17 @@ class _Gateway:
 
 def test_intraday_skips_a_busy_minute_but_a_cycle_step_waits_for_the_lock(tmp_path, monkeypatch, capsys):
     """Bug: the minute task and a cycle step started in the same second; the loser failed outright."""
+    from types import SimpleNamespace
     from live_client import oms_agent
     from live_client.execution_queue import SubmissionLockBusy, account_submission_lock
     _Config.ROOT = tmp_path
     monkeypatch.setattr("live_client.config.LiveClientConfig", _Config)
     monkeypatch.setattr("live_client.gateway.XtQMTGateway", _Gateway)
     monkeypatch.setattr("live_client.http_client.LiveServerClient", lambda *a, **k: None)
+    # This test exercises the real account lock, not network time calibration.
+    instant = datetime.strptime(D1, "%Y%m%d").replace(hour=15, minute=5, tzinfo=oms_agent.CHINA)
+    monkeypatch.setattr("live_client.oms_clock.RuntimeClock",
+                        lambda **kwargs: SimpleNamespace(now=lambda: instant))
     monkeypatch.setattr(OmsAgent, "eod", lambda self: {"status": "EOD_TAKEN"})
     monkeypatch.setitem(LOCK_WAIT_SECONDS, "eod", .6)
     with account_submission_lock(tmp_path, "a" * 64):

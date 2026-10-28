@@ -120,12 +120,26 @@ for path in root.rglob("*.py"):
     try {
         $env:PYTHONPATH = $ModuleRoot
         $env:PYTHONDONTWRITEBYTECODE = "1"
-        & $PythonExe -m live_client.offline_acceptance
-        if ($LASTEXITCODE -ne 0) {
+        $savedNativePreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            $nativeGateOutput = @(& $PythonExe -m live_client.offline_acceptance 2>&1)
+            $nativeGateExitCode = $LASTEXITCODE
+        }
+        finally { $ErrorActionPreference = $savedNativePreference }
+        $nativeGateOutput | ForEach-Object { [string]$_ } | Write-Output
+        if ($nativeGateExitCode -ne 0) {
             throw "Offline-submit acceptance failed"
         }
-        & $PythonExe -m live_client.oms_offline_acceptance
-        if ($LASTEXITCODE -ne 0) {
+        $savedNativePreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            $nativeGateOutput = @(& $PythonExe -m live_client.oms_offline_acceptance 2>&1)
+            $nativeGateExitCode = $LASTEXITCODE
+        }
+        finally { $ErrorActionPreference = $savedNativePreference }
+        $nativeGateOutput | ForEach-Object { [string]$_ } | Write-Output
+        if ($nativeGateExitCode -ne 0) {
             throw "Shared-OMS offline acceptance failed"
         }
     }
@@ -289,6 +303,7 @@ $runtimeScriptNames = @(
     "Register-HydraOmsTasks.ps1",
     "Inspect-V713SharedOms.ps1",
     "Run-V713OmsAcceptance.ps1",
+    "hydra_oms_notify.py",
     "hydra_live_market_backup.py"
 )
 $stateDb = Get-HydraEnvValue -Path $EnvFile -Name "HYDRA_LIVE_STATE_DB"

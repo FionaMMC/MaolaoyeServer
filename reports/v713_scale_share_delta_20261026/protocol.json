@@ -1,0 +1,23 @@
+{
+  "experiment_id": "BASELINES-V713-SCALE-SHARE-DELTA-20261026-01",
+  "case_id": "BASELINES-V713-SCALE",
+  "trial_count": 2,
+  "question": "With the stock-account fees confirmed on 2026-10-25 (commission 0.0000854, 5-yuan minimum on commission only, stamp duty and transfer fee separate), how large is the 400k-model vs 200k-scaled paired gap and the 200k drag vs theory under share-count fees?",
+  "scope": "Fee-rate rerun of the 2026-10-23 share-count audit on the frozen Oct-16 stock inputs; not alpha selection, no production change",
+  "prior_exposure": "2026-10-23 run BASELINES-V713-SCALE-SHARE-DELTA-20261023-01 (commission 2bp, min 5): share-count gap +0.558%, proportional +0.058%",
+  "source": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock",
+  "primary_pair": [200000, 400000],
+  "capitals": [200000, 400000],
+  "scenarios": ["minimum_5", "confirmed_20261025"],
+  "scenario_roles": {"minimum_5": "control: reproduces 2026-10-19 and 2026-10-23 with the old 2bp assumption", "confirmed_20261025": "primary: confirmed commission 0.0000854 with a 5-yuan minimum on commission only; stamp duty 0.1% before 2023-08-28 and 0.05% after on sells; transfer fee 0.002% before 2022-04-29 and 0.001% after on both sides"},
+  "variants": {"archived_value_delta": "only for the archived fee scenarios", "share_delta_band_0.00": "integer shares carried; order only when the target share count differs from the held count"},
+  "bands": [0.0],
+  "band_rule": "no-trade bands are not used (2026-10-23 result); band 0 only",
+  "carry_rule": "as in 2026-10-23",
+  "cash_rule": "archived 1% post-fee cash reserve",
+  "metrics": ["paired terminal gap (V400_end/(2*V200_end)-1): min p05 median p95 max, all and clean windows", "per leg: relative NAV deviation vs the continuous no-fee 50-name theory, tracking error, orders per month, fees"],
+  "sample_unit": "paired 12-month window; 114 overlapping windows are not independent",
+  "qa": "archived script and input hashes; archived value-delta replay equals Oct-16 rolling metrics; band-0 share ledger equals the archived path with no fees; archived minimum-5 paired median equals Oct-19; Decimal ratio recomputation",
+  "limits": ["same archived economic monthly ledger: adjusted-return valuation, month-end same-close sizing", "fees as confirmed by the business owner on 2026-10-25, not yet checked against a broker statement; transfer fee is the statutory rate", "dividend tax and broker-specific charges not modelled", "no fills, slippage, T+1, suspensions, limit moves or rejections"],
+  "stopping_rule": "run once; report both scenarios; no parameter change after seeing results"
+}

@@ -30,6 +30,8 @@ class InstrumentSpec:
     stamp_duty_sell: float = 0.
     transfer_fee_rate: float = 0.
     buy_reserve_rate: float | None = None
+    # A partial sale below this is not a valid declaration (STAR: 200); a full exit always is.
+    min_sell_quantity: int = 1
 
     def __post_init__(self):
         if self.asset_type not in ("stock", "etf"):
@@ -43,7 +45,7 @@ class InstrumentSpec:
         for name in ("commission_rate", "stamp_duty_sell", "transfer_fee_rate"):
             if getattr(self, name) > 1:
                 raise ValueError(f"invalid instrument {name}")
-        for name in ("buy_lot", "min_buy_quantity", "sell_lot"):
+        for name in ("buy_lot", "min_buy_quantity", "sell_lot", "min_sell_quantity"):
             if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
                 raise ValueError(f"invalid instrument {name}")
         if self.min_buy_quantity % self.buy_lot:
@@ -70,7 +72,11 @@ def instrument_from_dict(payload: Mapping) -> InstrumentSpec:
 
 
 def instrument_to_dict(spec: InstrumentSpec) -> dict:
-    return asdict(spec)
+    payload = asdict(spec)
+    # Absent means 1: plans and frozen policies written before the field existed stay byte-identical.
+    if payload["min_sell_quantity"] == 1:
+        del payload["min_sell_quantity"]
+    return payload
 
 
 def hydra_instrument(symbol: str) -> InstrumentSpec:

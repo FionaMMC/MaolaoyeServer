@@ -36,10 +36,15 @@ class Policy:
     execution_windows: dict = field(default_factory=lambda: {
         "BUY": ["09:14:00", "09:16:00"], "SELL": ["14:56:00", "15:00:00"]})
     submit_at: dict = field(default_factory=lambda: {"BUY": "09:15:05", "SELL": "14:57:05"})
+    # fixed: every attempt prices off the frozen signal close (sells) and first sell-day close (buys).
+    # previous_close: every session prices off the previous trading day's close (V713 stock leg, option B).
+    anchor: str = "fixed"
 
     def __post_init__(self):
         if not self.policy_id or not self.strategy_id:
             raise ValueError("policy_id and strategy_id are required")
+        if self.anchor not in ("fixed", "previous_close"):
+            raise ValueError("anchor must be fixed or previous_close")
         if self.lot not in ("floor", "nearest"):
             raise ValueError("lot must be floor or nearest")
         for name in ("size_factor", "default_buy_bps", "reserve"):
@@ -83,7 +88,11 @@ class Policy:
 
 
 def policy_to_dict(policy: Policy) -> dict:
-    return asdict(policy)
+    payload = asdict(policy)
+    # Absent means fixed: cycles frozen before the field existed keep their exact policy and hash.
+    if payload["anchor"] == "fixed":
+        del payload["anchor"]
+    return payload
 
 
 def policy_from_dict(payload: Mapping) -> Policy:
@@ -298,6 +307,8 @@ def plan_sell_session(*, target: Mapping[str, int], positions: Mapping[str, int]
         if can < excess:
             deferrals.append(Deferral(s, "SELL", excess - can, "NOT_SELLABLE"))
         legal = can if spec.odd_lot_sell_all and can == held else can // spec.sell_lot * spec.sell_lot
+        if legal < held and legal < spec.min_sell_quantity:
+            legal = 0
         if legal < can:
             deferrals.append(Deferral(s, "SELL", can - legal, "SELL_LOT"))
         if legal > 0:
@@ -317,9 +328,14 @@ def plan_buy_session(*, target: Mapping[str, int], positions: Mapping[str, int],
     """
     orders, deferrals, wanted = [], [], []
     specs = {}
+    buy_anchor = buy_anchor or {}
     for s in sorted(target):
         residual = max(0, int(target[s]) - int(positions.get(s, 0)))
         if not residual:
+            continue
+        if s not in buy_anchor:
+            # No usable close yet (suspended on the sell day): wait for a later anchor, spend nothing.
+            deferrals.append(Deferral(s, "BUY", residual, "NO_ANCHOR"))
             continue
         spec = specs[s] = get_instrument(s, policy)
         need = floor_buy_quantity(residual, spec)

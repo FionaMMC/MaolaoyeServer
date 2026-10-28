@@ -7,7 +7,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.models import Base
 
 __all__ = ["OmsTargetVersion", "OmsCycle", "OmsSession", "OmsOrder", "OmsOrderEvent", "OmsFill",
-           "OmsBrokerSnapshot", "OmsReconciliation", "OmsManualInstruction", "OmsOverride"]
+           "OmsBrokerSnapshot", "OmsReconciliation", "OmsManualInstruction", "OmsOverride",
+           "V713StateRecord"]
 
 
 class OmsTargetVersion(Base):
@@ -168,3 +169,16 @@ class OmsOverride(Base):
     operator: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[str] = mapped_column(String, nullable=False)
     effect: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class V713StateRecord(Base):
+    """Monthly V713 state as published to the stock leg; the synthetic ledger reads it."""
+    __tablename__ = "v713_state_records"
+    instance_id: Mapped[str] = mapped_column(String, primary_key=True)
+    signal_date: Mapped[str] = mapped_column(String, primary_key=True)
+    sleeve: Mapped[str] = mapped_column(String, nullable=False)
+    decision_date: Mapped[str] = mapped_column(String, nullable=False)
+    basket_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    allocation_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    target_version_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    recorded_at: Mapped[str] = mapped_column(String, nullable=False)

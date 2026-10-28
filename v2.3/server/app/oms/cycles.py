@@ -18,10 +18,11 @@ from sqlalchemy import func, select
 from app.models import InstanceState
 from app.oms.ledger import OPEN_QMT_STATUSES as OPEN_BROKER_STATUSES, OrderLedger
 from app.oms.models import (OmsBrokerSnapshot, OmsCycle, OmsOrder, OmsReconciliation, OmsSession,
-                            OmsTargetVersion)
+                            OmsTargetVersion, OmsOverride)
 from app.oms.planner import (Policy, Session, lot_target, plan_buy_session, plan_sell_session,
                              session_schedule, policy_from_dict, policy_to_dict, get_instrument as instrument)
 from app.oms.schemas import PlanOrder, PlanOut, SnapshotIn, plan_content_sha256
+from app.oms.states import TERMINAL, OrderState, transition
 from app.oms.account import instance_is_enabled, strategy_resources
 from app.oms.instruments import instrument_to_dict
 from app.services.ledger_transaction import begin_ledger_transaction
@@ -66,12 +67,19 @@ class CycleService:
     def publish_target(self, *, instance_id: str, account_alias: str, signal_date: str, weights: dict,
                        signal_closes: dict, calendar: list, source_sha256: str, now: str,
                        policy: Policy | dict | None = None, metadata: dict | None = None,
-                       provenance: dict | None = None, earliest_execution_date: str | None = None) -> dict:
+                       provenance: dict | None = None, earliest_execution_date: str | None = None,
+                       liquidate: bool = False, supersede: bool = False,
+                       reference_closes: dict | None = None, v713_state: dict | None = None) -> dict:
         policy = policy_from_dict(policy) if isinstance(policy, dict) else (policy or self.policy)
-        if not weights or any(not math.isfinite(float(w)) or float(w) < 0 for w in weights.values()):
-            raise ValueError("target weights must be finite, non-negative and nonempty")
-        if abs(sum(float(w) for w in weights.values()) - 1.0) > 1e-6:
-            raise ValueError("target weights must sum to one")
+        if liquidate:
+            # An explicit all-cash target (V713 AUX): every held symbol is frozen at zero below.
+            if weights:
+                raise ValueError("a liquidation target carries no weights")
+        else:
+            if not weights or any(not math.isfinite(float(w)) or float(w) < 0 for w in weights.values()):
+                raise ValueError("target weights must be finite, non-negative and nonempty")
+            if abs(sum(float(w) for w in weights.values()) - 1.0) > 1e-6:
+                raise ValueError("target weights must sum to one")
         with self.session_factory() as session:
             begin_ledger_transaction(session, "live", account_alias)
             inst = session.get(InstanceState, instance_id)
@@ -79,6 +87,11 @@ class CycleService:
                 raise ValueError(f"unknown live instance {instance_id} for {account_alias}")
             version_id = "tv_" + _sha({"instance": instance_id, "signal": signal_date, "weights": weights,
                                        "source": source_sha256})[:24]
+            state_result = None
+            if v713_state is not None:
+                from app.oms.v713_stock_leg import record_state_in_session
+                state_result = record_state_in_session(session, instance_id=instance_id, payload=v713_state,
+                                                       target_version_id=version_id, now=now)
             previous = session.get(OmsTargetVersion, version_id)
             if previous is not None:
                 prior_cycle = session.execute(select(OmsCycle).where(
@@ -86,9 +99,16 @@ class CycleService:
                 if (previous.weights != weights or previous.signal_closes != signal_closes
                         or _sha(prior_cycle.policy) != _sha(policy_to_dict(policy))):
                     raise CycleConflict("target id already exists with different prices or policy")
-                return self._publication(session, prior_cycle)
-            if self._open_cycle(session, account_alias, instance_id) is not None:
-                raise CycleConflict(f"open cycle exists for {instance_id}")
+                result = self._publication(session, prior_cycle)
+                if state_result is not None:
+                    result["v713_state"] = state_result
+                    session.commit()
+                return result
+            open_cycle = self._open_cycle(session, account_alias, instance_id)
+            if open_cycle is not None:
+                if not supersede:
+                    raise CycleConflict(f"open cycle exists for {instance_id}")
+                self._supersede(session, open_cycle, signal_date, signal_closes, now)
             if policy.strategy_id == "v713":
                 monthly = session.execute(select(OmsTargetVersion).where(
                     OmsTargetVersion.instance_id == instance_id,
@@ -96,6 +116,8 @@ class CycleService:
                 if monthly:
                     raise CycleConflict("V713 monthly allocation is already frozen; a different allocation needs review")
             positions = {s: int(q) for s, q in (inst.virtual_positions or {}).items() if int(q)}
+            if liquidate and not positions:
+                raise ValueError("nothing to liquidate: the instance holds no position")
             # Not-yet-listed or suspended symbols carry no close; they may only appear with zero weight.
             signal_closes = {s: float(p) for s, p in signal_closes.items()
                              if p is not None and math.isfinite(float(p)) and float(p) > 0}
@@ -118,6 +140,17 @@ class CycleService:
                                         earliest_sell=max(earliest_sell_day(now), earliest_execution_date or ""))
             lot_gap = sum(max(0., (1 - policy.reserve) * w - frozen[s] * signal_closes.get(s, 0.) / nav)
                           for s, w in weights.items())
+            sell_anchor = {s: signal_closes[s] for s in frozen if s in signal_closes}
+            if policy.anchor == "previous_close":
+                # Option B prices the first session off the close just before it, like every later one.
+                before = max(d for d in sorted(set(calendar)) if d < schedule[0].trade_date)
+                if before != signal_date:
+                    if reference_closes is None:
+                        raise ValueError(f"previous-close anchors: the first session needs the {before} closes")
+                    missing = sorted(s for s in frozen if not (float(reference_closes.get(s) or 0) > 0))
+                    if missing:
+                        raise ValueError(f"reference closes missing for {missing}")
+                    sell_anchor = {s: float(reference_closes[s]) for s in frozen}
             state = dict(inst.strategy_state or {})
             state["oms_instruments"] = {**state.get("oms_instruments", {}), **specs}
             state["oms_policy"] = policy_to_dict(policy)
@@ -136,7 +169,7 @@ class CycleService:
             cycle = OmsCycle(cycle_id=f"C{cycle_no:05d}", cycle_no=cycle_no, target_version_id=version_id,
                              account_alias=account_alias, instance_id=instance_id, policy=policy_to_dict(policy),
                              nav_at_signal=nav, frozen_target=frozen,
-                             sell_anchor={s: signal_closes[s] for s in frozen if s in signal_closes},
+                             sell_anchor=sell_anchor,
                              buy_anchor=None,
                              lot_gap=lot_gap, schedule=[asdict(x) for x in schedule], status="PENDING_APPROVAL",
                              created_at=now)
@@ -148,9 +181,12 @@ class CycleService:
             shares = [{"symbol": s, "weight": float(weights.get(s, 0.)), "close": signal_closes.get(s),
                        "target": frozen.get(s, 0), "held": positions.get(s, 0),
                        "delta": frozen.get(s, 0) - positions.get(s, 0)} for s in sorted(set(frozen) | set(positions))]
-            return {"cycle_id": cycle.cycle_id, "target_version_id": version_id, "status": cycle.status,
-                    "nav": nav, "lot_gap": lot_gap, "schedule": cycle.schedule, "shares": shares,
-                    "first_session": first}
+            result = {"cycle_id": cycle.cycle_id, "target_version_id": version_id, "status": cycle.status,
+                      "nav": nav, "lot_gap": lot_gap, "schedule": cycle.schedule, "shares": shares,
+                      "first_session": first}
+            if state_result is not None:
+                result["v713_state"] = state_result
+            return result
 
     @staticmethod
     def _publication(session, cycle: OmsCycle) -> dict:
@@ -263,32 +299,35 @@ class CycleService:
         if snap.trade_date < first_sell:
             # Before the first sell day nothing is scheduled; its plan was made at publish time.
             return []
+        wanted = [s for s, q in cycle.frozen_target.items() if int(q) > 0]
         if cycle.buy_anchor is None:
             if snap.trade_date != first_sell:
                 cycle.status = "HELD"
                 logger.error("oms cycle %s HELD: buy anchor needs the %s close", cycle.cycle_id, first_sell)
                 return []
-            wanted = [s for s, q in cycle.frozen_target.items() if int(q) > 0]
-            missing = [s for s in wanted if s not in snap.quotes]
-            if policy_from_dict(cycle.policy).require_instrument_specs:
-                for symbol in wanted:
-                    quote = snap.quotes.get(symbol)
-                    try:
-                        source = datetime.fromisoformat(quote.source_time).astimezone(CHINA)
-                        if (datetime.fromisoformat(quote.source_time).utcoffset() is None
-                                or source.strftime("%Y%m%d") != snap.trade_date
-                                or source.time() < time(15, 0)
-                                or quote.adjustment != "none"
-                                or quote.price_source not in {"raw_tick", "raw_daily_close"}
-                                or source > snap.taken_at.astimezone(CHINA)):
-                            missing.append(symbol)
-                    except (AttributeError, TypeError, ValueError):
-                        missing.append(symbol)
-            if missing:
+            anchors = self._closing_anchors(cycle, snap, wanted)
+            if wanted and not anchors:
+                # No target has a usable close at all: a data failure, not a suspension.
                 cycle.status = "HELD"
-                logger.error("oms cycle %s HELD: closing quotes missing for %s", cycle.cycle_id, missing)
+                logger.error("oms cycle %s HELD: closing quotes missing for %s", cycle.cycle_id, sorted(wanted))
                 return []
-            cycle.buy_anchor = {s: float(snap.quotes[s].last_price) for s in wanted}
+            missing = sorted(set(wanted) - set(anchors))
+            if missing:
+                logger.warning("oms cycle %s: no usable %s close for %s; their buys wait for a later close",
+                               cycle.cycle_id, snap.trade_date, missing)
+            cycle.buy_anchor = anchors
+        else:
+            # A target suspended on the sell day takes its anchor from the first usable close after it.
+            late = self._closing_anchors(cycle, snap, [s for s in wanted if s not in cycle.buy_anchor])
+            if late:
+                logger.info("oms cycle %s: late buy anchors from the %s close for %s",
+                            cycle.cycle_id, snap.trade_date, sorted(late))
+                cycle.buy_anchor = {**cycle.buy_anchor, **late}
+        if policy_from_dict(cycle.policy).anchor == "previous_close":
+            # Option B: the next session prices off tonight's close; a symbol without one keeps its last anchor.
+            closes = self._closing_anchors(cycle, snap, sorted(cycle.frozen_target))
+            cycle.sell_anchor = {**cycle.sell_anchor, **closes}
+            cycle.buy_anchor = {**(cycle.buy_anchor or {}), **{s: p for s, p in closes.items() if s in wanted}}
         remaining = [x for x in schedule if x.trade_date > snap.trade_date]
         if not remaining:
             self._close(session, cycle, "WINDOW_COMPLETE", snap, now)
@@ -312,6 +351,33 @@ class CycleService:
                                                   cash=cash, tradable=tradable, basis=snapshot_id, now=now))
         return planned
 
+    @staticmethod
+    def _closing_anchors(cycle: OmsCycle, snap: SnapshotIn, symbols) -> dict[str, float]:
+        """Same-day official closes usable as buy anchors. A symbol without one (suspended that
+        day, or no quote) gets no anchor; with instrument specs the close must be an unadjusted
+        price stamped at or after 15:00 of the snapshot's trade date."""
+        strict = policy_from_dict(cycle.policy).require_instrument_specs
+        taken = snap.taken_at.astimezone(CHINA)
+        anchors = {}
+        for symbol in symbols:
+            quote = snap.quotes.get(symbol)
+            try:
+                price = float(quote.last_price)
+                if not math.isfinite(price) or price <= 0:
+                    continue
+                if strict:
+                    stamp = datetime.fromisoformat(quote.source_time)
+                    source = stamp.astimezone(CHINA)
+                    if (stamp.utcoffset() is None or source.strftime("%Y%m%d") != snap.trade_date
+                            or source.time() < time(15, 0) or source > taken
+                            or quote.adjustment != "none"
+                            or quote.price_source not in {"raw_tick", "raw_daily_close"}):
+                        continue
+            except (AttributeError, TypeError, ValueError):
+                continue
+            anchors[symbol] = price
+        return anchors
+
     def _plan_session(self, session, cycle: OmsCycle, spec: Session, *, positions, sellable, cash, tradable,
                       basis, now) -> dict:
         policy = policy_from_dict(cycle.policy)
@@ -334,11 +400,67 @@ class CycleService:
         return {"session_id": row.session_id, "trade_date": row.trade_date, "phase": row.phase,
                 "orders": [asdict(o) for o in orders], "deferrals": row.deferrals}
 
-    def _close(self, session, cycle: OmsCycle, reason: str, snap: SnapshotIn, now: str) -> None:
+    def close_superseded(self, *, instance_id: str, account_alias: str, signal_date: str, closes: dict,
+                         now: str, v713_state: dict | None = None) -> str | None:
+        """End the open cycle for a later target that needs no cycle of its own (an AUX month already in cash)."""
+        with self.session_factory() as session:
+            begin_ledger_transaction(session, "live", account_alias)
+            cycle = self._open_cycle(session, account_alias, instance_id)
+            if v713_state is not None:
+                from app.oms.v713_stock_leg import record_state_in_session
+                record_state_in_session(session, instance_id=instance_id, payload=v713_state,
+                                        target_version_id=None, now=now)
+            if cycle is not None:
+                self._supersede(session, cycle, signal_date, closes, now)
+            session.commit()
+            return cycle.cycle_id if cycle is not None else None
+
+    def _supersede(self, session, cycle: OmsCycle, signal_date: str, closes: dict, now: str) -> None:
+        """A newer monthly target ends the old cycle's catch-up instead of trading an expired list."""
+        target = session.get(OmsTargetVersion, cycle.target_version_id)
+        if signal_date <= target.signal_date:
+            raise CycleConflict("only a later signal can supersede an open cycle")
+        orders = session.execute(select(OmsOrder).where(
+            OmsOrder.cycle_id == cycle.cycle_id,
+            OmsOrder.state.not_in([state.value for state in TERMINAL]))).scalars().all()
+        if any(order.state != OrderState.PLANNED.value for order in orders):
+            raise CycleConflict(f"cycle {cycle.cycle_id} still has broker orders in flight")
+        today = _date(now)
+        never_approved = cycle.status == "PENDING_APPROVAL" and cycle.approved_at is None
+        # PLANNED is only the server's last observed state. An approved same-day or past
+        # order may already have a leased offline grant or an unreported broker submission.
+        # Expiry alone does not prove it was never sent: require normal terminal evidence.
+        if not never_approved and any(order.trade_date <= today for order in orders):
+            raise CycleConflict(f"cycle {cycle.cycle_id} has planned orders that may have executable grants; "
+                                "reconcile broker terminal/day-end evidence before superseding")
+        not_submitted = [{"client_order_id": order.client_order_id, "trade_date": order.trade_date,
+                          "safety_basis": "UNAPPROVED_CYCLE" if never_approved else "FUTURE_TRADE_DATE"}
+                         for order in orders]
+        prior_status = cycle.status
+        for order in orders:
+            order.state = transition(OrderState.PLANNED, OrderState.NOT_SUBMITTED).value
+            order.updated_at = now
+        for planned in session.execute(select(OmsSession).where(
+                OmsSession.cycle_id == cycle.cycle_id, OmsSession.status == "PLANNED")).scalars():
+            planned.status, planned.closed_at = "CLOSED", now
+        self._close(session, cycle, "SUPERSEDED", None, now,
+                    marks={s: float(p) for s, p in closes.items() if p is not None})
+        session.add(OmsOverride(account_alias=cycle.account_alias, action="CYCLE_SUPERSEDED",
+                                payload={"cycle_id": cycle.cycle_id, "instance_id": cycle.instance_id,
+                                         "signal_date": signal_date, "prior_cycle_status": prior_status,
+                                         "not_submitted_orders": not_submitted},
+                                reason="Later monthly target superseded safely unsubmitted plans",
+                                operator="cycle_service", created_at=now,
+                                effect={"status": "CLOSED", "close_reason": "SUPERSEDED"}))
+
+    def _close(self, session, cycle: OmsCycle, reason: str, snap: SnapshotIn | None, now: str,
+               marks: dict | None = None) -> None:
         cycle.status, cycle.close_reason, cycle.closed_at = "CLOSED", reason, now
         session.flush()
         try:
-            cycle.report = self._build_report(session, cycle, {s: float(q.last_price) for s, q in snap.quotes.items()})
+            if marks is None:
+                marks = {s: float(q.last_price) for s, q in snap.quotes.items()}
+            cycle.report = self._build_report(session, cycle, marks)
         except Exception:  # a report bug must never keep a finished cycle open
             logger.exception("oms cycle %s report failed", cycle.cycle_id)
             cycle.report = {"cycle_id": cycle.cycle_id, "close_reason": reason, "error": "REPORT_FAILED"}

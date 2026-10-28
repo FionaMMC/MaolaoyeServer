@@ -47,7 +47,7 @@ finally { $sha.Dispose() }
 $packageMatches = $manifest.source_commit -ceq $commit -and $manifest.package_sha256 -ceq $packageHash
 if (-not $packageMatches) { throw "Active package hash differs from its release manifest; refusing to import it" }
 $runtimeHashes = @()
-foreach ($name in @("Run-HydraLive.ps1", "Run-HydraOms.ps1", "Inspect-V713SharedOms.ps1", "Run-V713OmsAcceptance.ps1")) {
+foreach ($name in @("Run-HydraLive.ps1", "Run-HydraOms.ps1", "Inspect-V713SharedOms.ps1", "Run-V713OmsAcceptance.ps1", "hydra_oms_notify.py")) {
     $source = Join-Path $packageRoot "windows\$name"
     # A pre-upgrade inspection can target a release that predates these new tools.
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { continue }

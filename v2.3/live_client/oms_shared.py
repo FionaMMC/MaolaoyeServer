@@ -20,6 +20,24 @@ def order_cost(quantity, price, spec=None):
     return float((notional + fee).quantize(Decimal(".01"), rounding=ROUND_CEILING))
 
 
+# The cycle policy frozen at publish sets how far each limit may sit from its anchor; the
+# client re-derives that band from the signed plan, and no policy may ask for more than this.
+POLICY_BAND_CEILING_BPS = 300.
+
+
+def policy_band_bps(policy, symbol, side) -> float:
+    """Widest anchor distance the frozen policy allows for this order. The plan does not say
+    which sell attempt it is, so a sell may use the widest band of the sell schedule."""
+    if side == "BUY":
+        band = {str(s): b for s, b in (policy.get("buy_bps") or ())}.get(symbol, policy.get("default_buy_bps"))
+    else:
+        band = max((float(b) for b in policy.get("sell_schedule") or ()), default=None)
+    band = None if band is None else float(band)
+    if band is None or not math.isfinite(band) or band < 0:
+        raise ValueError("frozen policy gives no price band for this order")
+    return min(band, POLICY_BAND_CEILING_BPS)
+
+
 def require_guard(agent, item, quantity, *, allowed_symbols, spec=None, policy=None):
     """One entrypoint for both scheduled and manual broker submissions."""
     cfg = agent.cfg
@@ -39,6 +57,12 @@ def require_guard(agent, item, quantity, *, allowed_symbols, spec=None, policy=N
             lot = int(spec["buy_lot"])
             if lot <= 0 or quantity % lot or quantity < int(spec.get("min_buy_quantity", lot)):
                 raise ValueError("buy quantity is outside the instrument lot rules")
+    # Not the legacy relay's 50 bp setting: these prices come from the frozen cycle policy.
+    reference = ((policy or {}).get("reference_prices") or {}).get(item["symbol"])
+    if reference is not None:
+        allowed = policy_band_bps(policy, item["symbol"], item["side"])
+        if float(reference) <= 0 or abs(price / float(reference) - 1) * 10000 > allowed + .01:
+            raise ValueError("limit is farther from its anchor than the frozen policy allows")
     if cfg is None:  # injected synthetic agents; production always supplies the config
         return
     cfg.require_submission_enabled()
@@ -67,11 +91,6 @@ def require_guard(agent, item, quantity, *, allowed_symbols, spec=None, policy=N
               (cfg.max_daily_turnover_notional, sum(totals.values()) + notional))
     if any(limit > 0 and value > limit + 1e-8 for limit, value in limits):
         raise ValueError("configured notional risk limit")
-    references = (policy or {}).get("reference_prices", {})
-    reference = references.get(item["symbol"])
-    if reference is not None and cfg.effective_price_offset_bps > 0:
-        if float(reference) <= 0 or abs(price / float(reference) - 1) * 10000 > cfg.effective_price_offset_bps + 1e-6:
-            raise ValueError("configured price-offset risk limit")
 
 
 def validate_grant(agent, plan, now, phase):
@@ -227,6 +246,10 @@ def execute_bundle(agent, trade_date, phase, *, plans=None, dry_run=False):
                     raise ValueError("invalid sell lot")
                 if quantity % lot and not (spec.get("odd_lot_sell_all") and quantity == available):
                     quantity = quantity // lot * lot
+                # STAR: a sale under 200 shares is only valid for the whole remaining position.
+                if quantity < int(spec.get("min_sell_quantity", 1)) and quantity != int(
+                        plan["strategy_positions"].get(symbol, 0)):
+                    quantity = 0
             if quantity <= 0:
                 results.append({"client_order_id": coid, "status": "SKIPPED_NO_ROOM"})
                 continue

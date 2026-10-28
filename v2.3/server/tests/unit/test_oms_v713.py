@@ -86,6 +86,16 @@ def test_policy_is_explicit_and_covers_old_holdings(tmp_path):
         validate_v713_policy(payload)
 
 
+
+def test_star_instrument_must_carry_the_200_share_sell_minimum():
+    payload = _policy()
+    payload["instruments"]["688001.SH"] = instrument_to_dict(InstrumentSpec(
+        "stock", .01, buy_lot=1, min_buy_quantity=200, sell_lot=1, commission_rate=.0003, stamp_duty_sell=.0005))
+    with pytest.raises(ValueError, match="688001.SH"):
+        validate_v713_policy(payload)
+    payload["instruments"]["688001.SH"]["min_sell_quantity"] = 200
+    validate_v713_policy(payload)
+
 def test_calendar_rejects_ambiguous_dates_and_stale_month(tmp_path):
     with pytest.raises(ValueError, match="timezone"):
         _request(_basket(tmp_path), now="2026-10-07T20:00:00")
