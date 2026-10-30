@@ -38,41 +38,97 @@ def _table(rows: list[dict]) -> str:
 
 
 def _preview(sf, policy, *, instance, account, signal_date, weights, closes, calendar, now,
-             earliest_execution_date=None, reference_closes=None) -> dict:
+             earliest_execution_date=None, reference_closes=None, initial_cash_buy=False,
+             reference_close_evidence=None, source_sha256=None) -> dict:
     """What publish would freeze, computed read-only."""
     import math
     from app.models import InstanceState
-    from app.oms.cycles import earliest_sell_day
-    from app.oms.planner import lot_target, plan_sell_session, session_schedule
+    from app.oms.cycles import validate_initial_cash_buy
+    from app.oms.planner import lot_target, plan_buy_session, plan_sell_session, publication_plan
     closes = {s: float(p) for s, p in closes.items() if p is not None and math.isfinite(float(p)) and float(p) > 0}
     with sf() as session:
         inst = session.get(InstanceState, instance)
         if inst is None or inst.account_alias != account or inst.execution_domain != "live":
             raise SystemExit(f"unknown instance {instance} for {account}")
+        if source_sha256 is not None:
+            existing = _frozen_initial_preview(session, policy, instance=instance, signal_date=signal_date,
+                source_sha256=source_sha256, weights=weights, closes=closes, calendar=calendar,
+                initial_cash_buy=initial_cash_buy, reference_close_evidence=reference_close_evidence)
+            if existing is not None:
+                return existing
+        if initial_cash_buy:
+            validate_initial_cash_buy(session, inst)
         positions = {s: int(q) for s, q in (inst.virtual_positions or {}).items() if int(q)}
         cash = float(inst.virtual_cash)
     nav = cash + sum(q * closes[s] for s, q in positions.items())
     complete_weights = {s: 0. for s in positions} | weights
     frozen = lot_target(nav, complete_weights, closes, policy)
-    earliest = max(earliest_sell_day(now), earliest_execution_date or "")
-    schedule = session_schedule(calendar, signal_date, policy.window, earliest_sell=earliest)
-    sell_anchor = closes
-    if policy.anchor == "previous_close":
-        before = max(d for d in sorted(set(calendar)) if d < schedule[0].trade_date)
-        if before != signal_date:
-            if reference_closes is None:
-                raise ValueError(f"previous-close anchors: the first session needs the {before} closes")
-            missing = sorted(s for s in frozen if not (float(reference_closes.get(s) or 0) > 0))
-            if missing:
-                raise ValueError(f"reference closes missing for {missing}")
-            sell_anchor = {s: float(reference_closes[s]) for s in frozen}
-    sells, deferrals = plan_sell_session(target=frozen, positions=positions, sellable=positions, sell_anchor=sell_anchor,
-                                         attempt=0, policy=policy)
+    planned = publication_plan(policy=policy, calendar=calendar, signal_date=signal_date, now=now,
+        earliest_execution_date=earliest_execution_date, signal_closes=closes, symbols=frozen,
+        reference_closes=reference_closes, initial_cash_buy=initial_cash_buy,
+        reference_close_evidence=reference_close_evidence)
+    if initial_cash_buy:
+        orders, deferrals = plan_buy_session(target=frozen, positions=positions, cash=cash,
+            buy_anchor=planned.buy_anchor, tradable=set(frozen), policy=policy)
+    else:
+        orders, deferrals = plan_sell_session(target=frozen, positions=positions, sellable=positions,
+            sell_anchor=planned.sell_anchor, attempt=0, policy=policy)
     rows = [{"symbol": s, "weight": float(weights.get(s, 0.)), "close": closes.get(s), "target": frozen.get(s, 0),
              "held": positions.get(s, 0), "delta": frozen.get(s, 0) - positions.get(s, 0)}
             for s in sorted(set(frozen) | set(positions))]
-    return {"nav": nav, "cash": cash, "schedule": [x.__dict__ for x in schedule], "shares": rows,
-            "first_session_sells": [o.__dict__ for o in sells], "deferrals": [d.__dict__ for d in deferrals]}
+    return {"nav": nav, "cash": cash, "schedule": [x.__dict__ for x in planned.schedule], "shares": rows,
+            "initial_cash_buy": initial_cash_buy, "reference_date": planned.reference_date,
+            "first_session_sells": [o.__dict__ for o in orders if o.side == "SELL"],
+            "first_session_buys": [o.__dict__ for o in orders if o.side == "BUY"],
+            "deferrals": [d.__dict__ for d in deferrals]}
+
+
+def _frozen_initial_preview(session, policy, *, instance, signal_date, source_sha256, weights,
+                            closes, calendar, initial_cash_buy, reference_close_evidence):
+    """An existing first-entry publication is immutable, including when replayed after its cutoff."""
+    from app.models import InstanceState
+    from app.oms.cycles import CycleConflict, _sha
+    from app.oms.models import OmsCycle, OmsOrder, OmsOverride, OmsSession, OmsTargetVersion
+    from app.oms.planner import policy_to_dict, validate_initial_close_evidence
+    target = session.execute(select(OmsTargetVersion).where(
+        OmsTargetVersion.instance_id == instance, OmsTargetVersion.signal_date == signal_date,
+        OmsTargetVersion.source_sha256 == source_sha256)).scalar_one_or_none()
+    if target is None:
+        return None
+    cycle = session.execute(select(OmsCycle).where(
+        OmsCycle.target_version_id == target.target_version_id)).scalar_one()
+    stored_initial = cycle.schedule[0]["phase"] == "BUY"
+    if not initial_cash_buy and not stored_initial:
+        return None
+    if stored_initial != initial_cash_buy:
+        raise CycleConflict("target id already exists with a different initial cash buy mode")
+    if (target.weights != weights or target.signal_closes != closes
+            or _sha(cycle.policy) != _sha(policy_to_dict(policy)) or target.calendar != sorted(set(calendar))):
+        raise CycleConflict("target id already exists with different prices, calendar or policy")
+    receipts = session.execute(select(OmsOverride).where(
+        OmsOverride.account_alias == target.account_alias, OmsOverride.action == "INITIAL_CASH_ENTRY")).scalars()
+    receipt = next((r for r in receipts if r.payload.get("cycle_id") == cycle.cycle_id), None)
+    if receipt is None:
+        raise CycleConflict("initial cash buy publication has no frozen reference evidence")
+    normalized = validate_initial_close_evidence(reference_close_evidence, receipt.payload["reference_date"],
+                                                cycle.frozen_target, cycle.created_at)
+    if receipt.payload.get("reference_evidence_sha256") != _sha(normalized):
+        raise CycleConflict("initial cash buy reference evidence differs from the frozen publication")
+    inst = session.get(InstanceState, instance)
+    held = inst.virtual_positions or {}
+    first = session.execute(select(OmsSession).where(
+        OmsSession.cycle_id == cycle.cycle_id, OmsSession.seq == cycle.schedule[0]["seq"])).scalar_one()
+    orders = session.execute(select(OmsOrder).where(OmsOrder.session_id == first.session_id)
+                             .order_by(OmsOrder.client_order_id)).scalars()
+    buys = [{"symbol": o.symbol, "side": o.side, "quantity": o.quantity,
+             "limit_price": o.limit_price, "reference_price": o.reference_price} for o in orders]
+    return {"nav": cycle.nav_at_signal, "cash": float(inst.virtual_cash), "schedule": cycle.schedule,
+            "shares": [{"symbol": s, "weight": float(weights.get(s, 0)), "close": closes.get(s),
+                        "target": q, "held": held.get(s, 0), "delta": q - held.get(s, 0)}
+                       for s, q in sorted(cycle.frozen_target.items())],
+            "initial_cash_buy": True, "already_published": True,
+            "reference_date": receipt.payload["reference_date"],
+            "first_session_sells": [], "first_session_buys": buys, "deferrals": first.deferrals}
 
 
 def main(argv=None, *, session_factory=None, settings=None) -> int:
@@ -98,6 +154,10 @@ def main(argv=None, *, session_factory=None, settings=None) -> int:
     k.add_argument("--now", default=None, help="zoned ISO publication time for an isolated rehearsal")
     k.add_argument("--reference-closes", default=None,
                    help="late publication with previous-close anchors: closes of the day before the first sell session")
+    k.add_argument("--initial-cash-buy", action="store_true",
+                   help="first-ever cash-only stock-leg entry: buy from the next eligible opening, before 09:00 PRE")
+    k.add_argument("--reference-close-evidence", default=None,
+                   help="required with --initial-cash-buy: dated unadjusted previous-session closing quotes JSON")
     a = sub.add_parser("approve")
     a.add_argument("--cycle-id", required=True)
     a.add_argument("--approver", required=True)
@@ -110,6 +170,11 @@ def main(argv=None, *, session_factory=None, settings=None) -> int:
     s = sub.add_parser("status")
     s.add_argument("--account", required=True)
     args = parser.parse_args(argv)
+    if args.command == "publish-v713-stock-leg":
+        if bool(args.reference_close_evidence) != args.initial_cash_buy:
+            parser.error("--initial-cash-buy and --reference-close-evidence must be supplied together")
+        if args.initial_cash_buy and args.reference_closes:
+            parser.error("initial cash buy uses dated --reference-close-evidence, not --reference-closes")
 
     from app.db import make_engine, make_session_factory
     from app.dependencies import get_oms_cycle_service
@@ -153,6 +218,12 @@ def main(argv=None, *, session_factory=None, settings=None) -> int:
                 from app.oms.cycles import CycleService
                 from app.oms.v713_stock_leg import derive_stock_leg
                 payload = derive_stock_leg(payload)
+                if args.initial_cash_buy:
+                    if payload["liquidate"]:
+                        raise ValueError("initial cash buy requires a stock target, not AUX liquidation")
+                    payload["initial_cash_buy"] = True
+                    payload["reference_close_evidence"] = json.loads(
+                        Path(args.reference_close_evidence).read_text(encoding="utf-8"))
                 # A later monthly target ends the previous cycle's catch-up instead of being refused.
                 payload["supersede"] = True
                 if args.reference_closes:
@@ -184,9 +255,13 @@ def main(argv=None, *, session_factory=None, settings=None) -> int:
         preview = _preview(session_factory, payload["policy"], instance=args.instance, account=args.account,
                            signal_date=payload["signal_date"], weights=payload["weights"], closes=closes,
                            calendar=calendar, now=now, earliest_execution_date=payload.get("earliest_execution_date"),
-                           reference_closes=payload.get("reference_closes"))
+                           reference_closes=payload.get("reference_closes"),
+                           initial_cash_buy=payload.get("initial_cash_buy", False),
+                           reference_close_evidence=payload.get("reference_close_evidence"),
+                           source_sha256=payload["source_sha256"])
         print(_table(preview["shares"]))
-        print(json.dumps({k: preview[k] for k in ("nav", "cash", "schedule", "first_session_sells", "deferrals")},
+        print(json.dumps({k: preview[k] for k in ("nav", "cash", "schedule", "initial_cash_buy", "reference_date",
+                                                 "first_session_sells", "first_session_buys", "deferrals")},
                          ensure_ascii=False, indent=2))
         print(json.dumps({"policy": policy_to_dict(payload["policy"]), "provenance": payload.get("provenance")},
                          ensure_ascii=False, indent=2))
