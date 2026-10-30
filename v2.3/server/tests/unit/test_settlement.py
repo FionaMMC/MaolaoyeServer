@@ -125,6 +125,10 @@ def test_settle_records_directional_slippage_and_premium(tmp_path: Path):
         order.target_id = "ht-1"
         order.rebalance_id = "hr-1"
         order.attempt_id = "ha-1"
+        for instance in ("real_A_m", "real_A_r"):
+            s.get(InstanceState, instance).strategy_state = {"oms_instruments": {
+                "600519.SH": {"asset_type": "stock", "price_tick": .01,
+                              "commission_rate": .001, "min_commission": 0.0}}}
         s.commit()
     svc = _make_svc(sf, commission_rate=0.001, min_commission=0.0)
     svc.settle("20260430", [

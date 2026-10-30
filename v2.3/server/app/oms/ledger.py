@@ -15,7 +15,7 @@ import uuid
 from sqlalchemy import func, select
 
 from app.models import Order, OrderSignalMap, RawSignal
-from app.oms.models import OmsCycle, OmsFill, OmsOrder, OmsOrderEvent, OmsSession
+from app.oms.models import OmsBrokerSnapshot, OmsCycle, OmsFill, OmsOrder, OmsOrderEvent, OmsSession
 from app.oms.planner import PlannedOrder
 from app.oms.schemas import BrokerOrder, BrokerTrade, EventIn
 from app.oms.states import TERMINAL, IllegalTransition, OrderState as S, classify_qmt, legacy_status, transition
@@ -35,6 +35,8 @@ _EVENT_STATE = {"SUBMIT_STARTED": S.SUBMITTING, "ACKED": S.ACKED,
 
 def client_order_id(cycle_no: int, seq: int, leg: int) -> str:
     """Ten characters, so a 24-character QMT remark can never truncate it."""
+    if not (0 < cycle_no <= 99999 and 0 < seq <= 99 and 0 < leg <= 99):
+        raise ValueError("cycle/session/leg exceeds the QMT order-id namespace")
     return f"H{cycle_no:05d}{seq:02d}{leg:02d}"
 
 
@@ -138,11 +140,24 @@ class OrderLedger:
                                      "side": broker.side, "status": broker.status, "remark": remark,
                                      "open": broker.status in OPEN_QMT_STATUSES})
                     continue
+                if (broker.symbol != order.symbol or broker.side != order.side
+                        or broker.quantity > order.quantity or broker.traded_volume > broker.quantity
+                        or abs(broker.price - order.limit_price) > 1e-8):
+                    conflicts.append({"client_order_id": order.client_order_id,
+                                      "reason": "BROKER_ORDER_IDENTITY_MISMATCH",
+                                      "broker_order_id": broker.broker_order_id})
+                    continue
                 if order.broker_order_id is None:
                     order.broker_order_id = broker.broker_order_id
                 elif order.broker_order_id != broker.broker_order_id:
                     conflicts.append({"client_order_id": order.client_order_id, "reason": "DUPLICATE_BROKER_ORDER",
                                       "broker_order_id": broker.broker_order_id})
+                    continue
+                if self._repeated_expiry_observation(session, order, broker, observed_at):
+                    # QMT may keep 50/55 after the policy close. The immutable EOD
+                    # already proves this exact order and settled amount; do not
+                    # reopen it or move its terminal audit time on a later poll.
+                    matched += 1
                     continue
                 self._merge_observation(order, broker, stamp, conflicts)
                 matched += 1
@@ -150,6 +165,39 @@ class OrderLedger:
         if conflicts:
             logger.error("oms observe conflicts account=%s %s", account_alias, conflicts)
         return {"matched": matched, "external": external, "conflicts": conflicts}
+
+    @staticmethod
+    def _repeated_expiry_observation(session, order: OmsOrder, broker: BrokerOrder,
+                                    observed_at: datetime) -> bool:
+        local = observed_at.astimezone(CHINA)
+        if (order.state != S.EXPIRED_DAY.value or order.projected_status != "CANCELLED"
+                or order.projected_qty != order.filled_qty or broker.traded_volume != order.filled_qty
+                or broker.status not in (48, 49, 50, 51, 52, 55)
+                or local.strftime("%Y%m%d") != order.trade_date or local.hour < 15
+                or not order.last_observed_at or abs(broker.traded_price - order.avg_price) > 1e-8):
+            return False
+        terminal_at = datetime.fromisoformat(order.last_observed_at)
+        if terminal_at.utcoffset() is None or observed_at < terminal_at:
+            return False
+        # A client can legitimately submit fewer shares than the planned order.
+        # Compare that actual quantity to the terminal EOD, not the planned cap.
+        snapshots = session.scalars(select(OmsBrokerSnapshot).where(
+            OmsBrokerSnapshot.account_alias == order.account_alias,
+            OmsBrokerSnapshot.trade_date == order.trade_date,
+            OmsBrokerSnapshot.kind == "EOD",
+            OmsBrokerSnapshot.taken_at == order.last_observed_at))
+        for snapshot in snapshots:
+            for prior in snapshot.payload.get("orders", []):
+                if (prior.get("remark", "").strip() == order.client_order_id
+                        and prior.get("broker_order_id") == broker.broker_order_id
+                        and prior.get("symbol") == broker.symbol and prior.get("side") == broker.side
+                        and prior.get("quantity") == broker.quantity
+                        and prior.get("price") == broker.price
+                        and prior.get("traded_volume") == broker.traded_volume
+                        and prior.get("traded_price") == broker.traded_price
+                        and prior.get("status") in (48, 49, 50, 51, 52, 55)):
+                    return True
+        return False
 
     @staticmethod
     def _merge_observation(order: OmsOrder, broker: BrokerOrder, stamp: str, conflicts: list,
@@ -181,6 +229,9 @@ class OrderLedger:
                     order = session.execute(select(OmsOrder).where(
                         OmsOrder.account_alias == account_alias,
                         OmsOrder.broker_order_id == trade.broker_order_id)).scalar_one_or_none()
+                if order is not None and (order.account_alias != account_alias or order.symbol != trade.symbol
+                                          or order.side != trade.side):
+                    raise ValueError("trade identity does not match its attributed order")
                 session.add(OmsFill(account_alias=account_alias, broker_trade_id=trade.broker_trade_id,
                                     client_order_id=order.client_order_id if order is not None else None,
                                     symbol=trade.symbol, side=trade.side, quantity=trade.quantity,
@@ -211,10 +262,16 @@ class OrderLedger:
                     if state in (S.PLANNED, S.SUBMITTING, S.UNKNOWN):
                         order.state = transition(state, S.NOT_SUBMITTED).value
                         order.updated_at = stamp
+                        order.last_observed_at = stamp
                         finalized.append(order.client_order_id)
                     else:
                         anomalies.append({"client_order_id": order.client_order_id,
                                           "reason": "MISSING_FROM_BROKER_DAY_LIST"})
+                    continue
+                if (broker.symbol != order.symbol or broker.side != order.side
+                        or broker.quantity > order.quantity or abs(broker.price - order.limit_price) > 1e-8):
+                    anomalies.append({"client_order_id": order.client_order_id,
+                                      "reason": "BROKER_ORDER_IDENTITY_MISMATCH"})
                     continue
                 observed = classify_qmt(broker.status, max(order.filled_qty, broker.traded_volume), order.quantity)
                 if observed is S.UNKNOWN:

@@ -30,7 +30,7 @@ def _env(tmp_path):
         files[name].write_text(json.dumps(value))
     publish = ["publish", "--instance", "live_hydra_v481_rb", "--account", "hydra-live", "--signal-date", "20260930",
                "--weights", str(files["w"]), "--closes", str(files["c"]), "--calendar", str(files["cal"]),
-               "--source-sha256", "s" * 64]
+               "--source-sha256", "s" * 64, "--now", "2026-10-07T20:00:00+08:00"]
     return sf, settings, publish
 
 

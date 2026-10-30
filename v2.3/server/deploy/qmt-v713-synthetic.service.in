@@ -1,0 +1,19 @@
+[Unit]
+Description=Read-only V713 synthetic EOD report (no valuation or order writes)
+After=qmt-live-performance.service qmt-v713-stock-valuation.service
+
+[Service]
+Type=oneshot
+User=qmtserver
+Group=qmtserver
+WorkingDirectory=/opt/qmt-server/v2.3/server
+EnvironmentFile=/opt/qmt-server/v2.3/server/.env
+EnvironmentFile=-/opt/qmt-server/private/v713-synthetic.env
+Environment=PYTHONPATH=@V713_RELEASE_SERVER@
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=QMT_V713_SYNTHETIC_OUTPUT=/opt/qmt-server/v2.3/server/reports/v713-synthetic/v713_synthetic.json
+ExecStart=/opt/qmt-server/venv/bin/python @V713_RELEASE_SERVER@/scripts/run_v713_synthetic_eod.py --policy @V713_RELEASE_SERVER@/plugins/v713/synthetic_policy_v2.json
+TimeoutStartSec=5min
+UMask=0027
+NoNewPrivileges=true
+

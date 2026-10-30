@@ -1,0 +1,134 @@
+{
+  "experiment_id": "V713-STOCKLEG-EXECUTION-SENSITIVITY-20261026-05",
+  "case_id": "V713-STOCKLEG-E3",
+  "trial_count": 5,
+  "question": "Post-hoc: with fixed anchors even 300bp bands leave most rebalance cycles above 2%. Does re-anchoring every retry to the previous close (not live OMS behaviour; would need a code change) close the gap?",
+  "scope": "Daily-bar auction replay of the stock leg on the frozen Oct-16 monthly targets and V713 states; research only, no production change, no orders",
+  "policy_template": "v2.3/server/plugins/v713/stockleg_policy_template_v1.json",
+  "planner": "production app.oms.planner (lot_target, session_schedule, plan_sell_session, plan_buy_session) including the STAR min_sell_quantity fix",
+  "capitals": [
+    200000
+  ],
+  "participation": 0.01,
+  "windows": "114 rolling 12-month windows, each a continuous ledger from cash; cycle 0 of every window is a build from cash",
+  "fill_model": {
+    "sell": "closing auction of each sell session: fills at the raw close when close >= limit and the close is not at the down limit",
+    "buy": "opening auction of each buy session: fills at the raw open when open <= limit and the open is not at the up limit",
+    "capacity": "at most 1% of the day's volume per order",
+    "limits": "previous traded close times 10% (main board), 20% (STAR; ChiNext from 2020-08-24) or 5% (ST), rounded half up to the cent",
+    "corporate_actions": "none: the forward-adjusted series already contains dividends and splits",
+    "suspension": "suspendFlag or zero volume blocks the order"
+  },
+  "metrics": [
+    "exec underweight and overweight at cycle end vs the frozen lot target",
+    "first-session and final buy and sell completion at the signal reference price",
+    "unfinished share of NAV by cause",
+    "fees per cycle and bps of NAV",
+    "orders per cycle",
+    "AUX residual stock weight at cycle end",
+    "STAR SELL_LOT deferrals",
+    "12-month window NAV vs the monthly no-fee theory with cash in AUX"
+  ],
+  "sample_unit": "cycle; rebalance cycles of overlapping windows repeat calendar months, build cycles are 114 distinct months",
+  "qa": "archived script and frozen input hashes; every target name has bars; deterministic rerun of the first window",
+  "limits": [
+    "daily bars only: auction price and limit locks are exact, queue priority and auction depth are not; a fill is assumed whenever the price condition holds, up to 1% of daily volume",
+    "limit prices are approximated by board and ST flag; IPO days without limits and delisting arrangements are not modelled",
+    "dividends are reinvested implicitly through the adjusted series (no tax, no cash timing); absolute prices before later ex-dates are understated, so lot granularity is finer than it really was in older years",
+    "no broker rejections, latency, 14:55 cancels or Windows client guards beyond the planner rules",
+    "TOP50 names and equal weights are the frozen Oct-16 research targets, selected with the 1M AUM parameters",
+    "fees as confirmed on 2026-10-25, not yet checked against a broker statement"
+  ],
+  "stopping_rule": "run the whole grid once and report every cell; the frozen V713_STOCKLEG_V1 result stays the primary result",
+  "prior_runs": "20261026-01 void (corporate actions inferred from a noisy cached price ratio); 20261026-02 void (QMT dividend records applied on top of forward-adjusted bars, double-counting every dividend and split)",
+  "price_basis": "market/daily/stocks is forward-adjusted as of its download, not unadjusted: share of closes with more than two decimals 81% in 2016, 48% in 2023, 15% in 2025, 0.6% in 2026. The series is continuous total return, so fills, limit locks and returns are consistent, but absolute price levels (lot sizes, tick rounding) are understated before later ex-dates; cycles from recent_from on are close to raw",
+  "corporate_actions": "none",
+  "recent_from": "20250101",
+  "status_note": "EXPLORATORY, run after seeing the primary result; not an approved policy and not used to select returns",
+  "variants": [
+    {
+      "name": "fixed_buy50_sell50-200_w3",
+      "anchor": "fixed",
+      "overrides": {
+        "default_buy_bps": 50.0,
+        "sell_schedule": [
+          50.0,
+          200.0
+        ],
+        "window": 3
+      }
+    },
+    {
+      "name": "rolling_buy50_sell50-200_w3",
+      "anchor": "rolling",
+      "overrides": {
+        "default_buy_bps": 50.0,
+        "sell_schedule": [
+          50.0,
+          200.0
+        ],
+        "window": 3
+      }
+    },
+    {
+      "name": "rolling_buy100_sell100-300_w3",
+      "anchor": "rolling",
+      "overrides": {
+        "default_buy_bps": 100.0,
+        "sell_schedule": [
+          100.0,
+          300.0
+        ],
+        "window": 3
+      }
+    },
+    {
+      "name": "rolling_buy200_sell200-300_w3",
+      "anchor": "rolling",
+      "overrides": {
+        "default_buy_bps": 200.0,
+        "sell_schedule": [
+          200.0,
+          300.0
+        ],
+        "window": 3
+      }
+    },
+    {
+      "name": "rolling_buy300_sell300-300_w3",
+      "anchor": "rolling",
+      "overrides": {
+        "default_buy_bps": 300.0,
+        "sell_schedule": [
+          300.0,
+          300.0
+        ],
+        "window": 3
+      }
+    },
+    {
+      "name": "rolling_buy200_sell200-300_w5",
+      "anchor": "rolling",
+      "overrides": {
+        "default_buy_bps": 200.0,
+        "sell_schedule": [
+          200.0,
+          300.0
+        ],
+        "window": 5
+      }
+    },
+    {
+      "name": "rolling_buy300_sell300-300_w5",
+      "anchor": "rolling",
+      "overrides": {
+        "default_buy_bps": 300.0,
+        "sell_schedule": [
+          300.0,
+          300.0
+        ],
+        "window": 5
+      }
+    }
+  ]
+}

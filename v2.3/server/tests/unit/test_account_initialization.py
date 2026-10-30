@@ -1,5 +1,6 @@
 """QMT 首次只读快照只能初始化一次，不能伪装成重置工具。"""
 from pathlib import Path
+from datetime import datetime, timezone
 
 import pytest
 
@@ -9,12 +10,14 @@ from app.models import InstanceState
 from app.schemas.account_initialization import AccountInitializationRequest
 from app.services.account_initialization import AccountInitializationService
 
+NOW = datetime(2026, 10, 15, 8, 0, tzinfo=timezone.utc)
+
 
 def _service(tmp_path: Path):
     engine = make_engine(f"sqlite:///{tmp_path}/init.db")
     init_db(engine)
     sf = make_session_factory(engine)
-    return AccountInitializationService(sf), sf
+    return AccountInitializationService(sf, clock=lambda: NOW), sf
 
 
 def _request(**changes):
@@ -27,7 +30,7 @@ def _request(**changes):
         "qmt_total_asset": 700_000.0,
         "qmt_positions": {},
         "owned_symbols": ["510300.SH", "159915.SZ"],
-        "snapshot_time": "2026-08-23T16:00:00+08:00",
+        "snapshot_time": NOW.isoformat(),
         "evidence_sha256": "a" * 64,
     }
     payload.update(changes)
@@ -201,3 +204,43 @@ def test_attributed_initialization_rejects_double_allocation_across_strategies(
     assert captured.value.http_status == 409
     with sf() as session:
         assert session.get(InstanceState, "live_hydra") is None
+
+
+def test_opening_receipt_replays_after_real_state_changes(tmp_path):
+    service, sf = _service(tmp_path)
+    req = _request(ledger_mode="attributed", allocated_cash=10000, allocated_positions={})
+    service.initialize(req)
+    with sf() as session:
+        state = session.get(InstanceState, "live_hydra")
+        state.virtual_cash = 8995
+        state.virtual_positions = {"510300.SH": 100}
+        session.commit()
+    result = service.initialize(req)
+    assert result.idempotent_replay
+    assert result.virtual_cash == 10000 and result.positions == {}
+    assert result.current_virtual_cash == 8995 and result.current_positions == {"510300.SH": 100}
+
+
+@pytest.mark.parametrize("snapshot", ["2026-10-15T07:54:00+00:00", "2026-10-15T08:01:00+00:00"])
+def test_new_opening_requires_fresh_snapshot(tmp_path, snapshot):
+    service, sf = _service(tmp_path)
+    with pytest.raises(APIError, match="过期或来自未来"):
+        service.initialize(_request(snapshot_time=snapshot))
+    with sf() as session:
+        assert session.get(InstanceState, "live_hydra") is None
+
+
+def test_parallel_openings_cannot_claim_same_cash(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    service, sf = _service(tmp_path)
+    def attempt(instance):
+        try:
+            return service.initialize(_request(instance_id=instance, ledger_mode="attributed",
+                allocated_cash=600000, allocated_positions={}))
+        except APIError:
+            return None
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(attempt, ["owner1", "owner2"]))
+    assert sum(result is not None for result in results) == 1
+    with sf() as session:
+        assert sum(row.virtual_cash for row in session.query(InstanceState)) == 600000

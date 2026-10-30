@@ -1,0 +1,30 @@
+{
+  "question": "Can a separately operated 200k stock sleeve and the existing Hydra feed a self-financing V713 research combination without duplicating real capital?",
+  "research_only": true,
+  "production_mutations_authorized_by_this_design": false,
+  "data_location": "qmt; security prices, holdings, per-period return panels and detailed paths remain remote",
+  "comparisons": [
+    "Fixed 1M selection AUM, stock capital 100k/200k/400k/1M, fresh monthly sizing",
+    "Paired overlapping 12-month stock accounts, no-fee/proportional-fee/minimum-5 scenarios",
+    "Original stock states with original forward-rate Hydra research proxy versus old RB research ledger on identical complete periods",
+    "Monthly unit rebalance versus state-change-only rebalance and fixed 50/50",
+    "200k versus 400k reference NAV scaling tests fund-unit arithmetic only",
+    "Additional overlay unit-trade costs at 5/20/50 bps, one complete input-period allocation-state lag with current leg returns, half of desired fund-unit changes filled"
+  ],
+  "gates": {
+    "accounting": "Reject future signals, gaps, nonfinite returns, negative cash and failed value/fee identities; unit issuance/redemption must preserve unit NAV",
+    "identity": "Same signal date is insufficient: match model/inputs/ETF weights and return methodology before calling the replacement original V713",
+    "capital": "Never infer size-specific lots, minimum commissions or execution capacity from proportional scaling of fund units",
+    "data": "No missing-month zero fill; missing stock quotes must be explicitly reported as valuation assumptions",
+    "execution": "Historical month-end fund-unit research cannot certify QMT fills, T+1, switch timing, actual commissions or live acceptance",
+    "decision": "No return ranking selects a preferred Hydra variant, no fitted cost assumption is chosen after results, no statistical significance from overlapping windows"
+  },
+  "not_claimed": [
+    "Exact reproduction of Oct11 scripts or frozen inputs when unavailable",
+    "Authenticating an old RB ledger as the current aa6 live model",
+    "Measured actual stock/Hydra composite performance before a separate stock live ledger exists",
+    "Measured one-day delay using monthly data",
+    "Security-level net switching costs without trade overlap/corporate-action reconstruction",
+    "Funding, deployment or trade approval"
+  ]
+}

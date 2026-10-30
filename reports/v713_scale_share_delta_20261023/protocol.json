@@ -1,0 +1,36 @@
+{
+  "experiment_id": "BASELINES-V713-SCALE-SHARE-DELTA-20261023-01",
+  "case_id": "BASELINES-V713-SCALE",
+  "trial_count": 1,
+  "question": "How much of the Oct-19 minimum-5 paired gap (400k model vs 200k scaled, median +0.879%) remains when fees are charged only on changed share counts, and with a no-trade band?",
+  "scope": "Fee-counting sensitivity on the frozen Oct-16 stock inputs; not alpha selection, not an approved execution policy, no production change",
+  "prior_exposure": "Oct-16 and Oct-19 summaries read; reviewer expected the minimum-fee drag to be roughly one minimum commission per holding per month",
+  "source": "/opt/qmt-server/private/research-runs/v713-combination-validation-20261016/stock",
+  "primary_pair": [200000, 400000],
+  "capitals": [200000, 400000],
+  "scenarios": ["minimum_5", "proportional"],
+  "scenario_roles": {"minimum_5": "primary", "proportional": "control without minimum fee"},
+  "variants": {
+    "archived_value_delta": "archived stock.simulate: commission on every economic value change, every name re-targeted monthly",
+    "share_delta_band_0.00": "integer shares carried; order only when the archived target share count differs from the held count",
+    "share_delta_band_0.10/0.25/0.50": "as band 0, and a held name also keeps its shares while |value - equal-weight target value| <= band * target value"
+  },
+  "bands": [0.0, 0.10, 0.25, 0.50],
+  "band_rule": "bands fixed before results; all are reported; none is selected by return",
+  "carry_rule": "value/(shares*raw price) below 1.095 keeps the share count and books the residual as cash (dividends, rounded adjusted prices); above it the share count becomes floor(shares*ratio)",
+  "cash_rule": "archived 1% post-fee cash reserve; shortfall restored by the archived greedy trim, kept names included",
+  "metrics": [
+    "paired terminal gap (V400_end/(2*V200_end)-1): min p05 median p95 max, all and clean windows",
+    "per leg: relative NAV deviation vs the continuous no-fee 50-name theory, tracking error, orders per month, fees, post-trade weight deviation"
+  ],
+  "sample_unit": "paired 12-month window; 114 overlapping windows are not independent",
+  "qa": "archived script and input hashes; archived value-delta replay equals Oct-16 rolling metrics; band-0 share ledger equals archived path when fees are zero; archived minimum-5 paired median equals Oct-19; Decimal ratio recomputation",
+  "limits": [
+    "same archived economic monthly ledger: adjusted-return valuation, month-end same-close sizing",
+    "fees assumed (2bp, min 5, historical stamp duty), broker schedule not confirmed",
+    "no fills, slippage, T+1, suspensions, limit moves, odd-lot rules or rejections",
+    "a wider band trades fees for tracking error; tracking error and weight deviation are reported alongside",
+    "a band is a research sensitivity, not an approved execution policy"
+  ],
+  "stopping_rule": "run every variant once; report all; no parameter change after seeing results"
+}

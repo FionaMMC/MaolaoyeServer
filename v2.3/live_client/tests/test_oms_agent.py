@@ -321,6 +321,7 @@ class _Config:
         self.state_db = root / "state.db"
         self.server_base_url, self.api_key, self.execution_domain = "http://server", "key", "live"
         self.account_alias, self.expected_account_sha256 = ALIAS, "a" * 64
+        self.task_prefix, self.execution_profile = "HydraTest", "hydra"
 
     @classmethod
     def from_env(cls):
@@ -343,12 +344,17 @@ class _Gateway:
 
 def test_intraday_skips_a_busy_minute_but_a_cycle_step_waits_for_the_lock(tmp_path, monkeypatch, capsys):
     """Bug: the minute task and a cycle step started in the same second; the loser failed outright."""
+    from types import SimpleNamespace
     from live_client import oms_agent
     from live_client.execution_queue import SubmissionLockBusy, account_submission_lock
     _Config.ROOT = tmp_path
     monkeypatch.setattr("live_client.config.LiveClientConfig", _Config)
     monkeypatch.setattr("live_client.gateway.XtQMTGateway", _Gateway)
     monkeypatch.setattr("live_client.http_client.LiveServerClient", lambda *a, **k: None)
+    # This test exercises the real account lock, not network time calibration.
+    instant = datetime.strptime(D1, "%Y%m%d").replace(hour=15, minute=5, tzinfo=oms_agent.CHINA)
+    monkeypatch.setattr("live_client.oms_clock.RuntimeClock",
+                        lambda **kwargs: SimpleNamespace(now=lambda: instant))
     monkeypatch.setattr(OmsAgent, "eod", lambda self: {"status": "EOD_TAKEN"})
     monkeypatch.setitem(LOCK_WAIT_SECONDS, "eod", .6)
     with account_submission_lock(tmp_path, "a" * 64):
@@ -381,3 +387,12 @@ def test_task_schedule_fits_the_lock_waits_and_the_trading_windows():
     assert lock_by("Hydra-Oms-Sell-1456") < WINDOWS["SELL"][1]
     assert lock_by("Hydra-Oms-Cancel-1455") < CANCEL_DEADLINE
     assert tasks["Hydra-Oms-Intraday"]["start"] == INTRADAY_WINDOW[0] and LOCK_WAIT_SECONDS["intraday"] == 0
+
+
+def test_snapshot_reports_actual_simulated_broker_frozen_cash(tmp_path):
+    plans = {(D2,'BUY'):_plan(D2,'BUY',[dict(BUY,quantity=100,limit_price=2.15)],FROZEN,seq=2)}
+    agent, exchange, server, _ = _setup(tmp_path,plans,at=(D2,'091505'))
+    agent.execute(D2,'BUY')
+    agent.snapshot('ADHOC')
+    assert server.snapshots[-1]['frozen_cash'] == exchange.asset()['frozen_cash']
+    assert server.snapshots[-1]['frozen_cash'] == pytest.approx(220.)

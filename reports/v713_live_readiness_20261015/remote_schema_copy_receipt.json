@@ -1,0 +1,15 @@
+{
+  "passed": true,
+  "source_open_mode": "ro+query_only",
+  "schema_applied_to": "isolated_backup_only",
+  "existing_schema_unchanged": true,
+  "existing_table_counts_unchanged": true,
+  "integrity": "ok",
+  "mapped_tables_checked": 42,
+  "added_schema_objects": [
+    "accounting_receipts",
+    "ix_accounting_receipts_account_alias",
+    "ix_accounting_receipts_execution_domain"
+  ],
+  "production_services_changed": false
+}

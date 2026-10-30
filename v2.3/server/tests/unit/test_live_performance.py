@@ -92,3 +92,30 @@ def test_market_file_reads_do_not_hold_sqlite_write_lock_and_changed_ledger_retr
     with sf() as session:
         assert session.query(PerfSnapshot).count() == 0
         assert session.get(InstanceState,'live_test').virtual_cash == 1500
+
+
+def test_v713_nav_requires_verified_raw_files_and_risk_uses_same_marks(setup):
+    import hashlib
+    sf, store = setup
+    with sf() as session:
+        state = session.get(InstanceState, "live_test")
+        state.strategy_state = {"require_raw_valuation": True}
+        session.commit()
+    now = datetime(2026, 9, 16, 18, tzinfo=ZoneInfo("Asia/Shanghai"))
+    result = materialize_live_performance(sf, store, "live_test", now=now)
+    assert result["status"] == "WAITING_RAW_PRICE_EVIDENCE"
+    store.append("execution_raw", "511260.SH", pd.DataFrame({"trade_date": [20260916], "close": [110.]}))
+    path = store._file("execution_raw", "511260.SH")
+    evidence = {"511260.SH": {"source": "synthetic-qmt-raw", "adjustment": "none",
+        "category": "execution_raw", "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}}
+    result = materialize_live_performance(sf, store, "live_test", now=now, raw_price_evidence=evidence)
+    assert result["written"] == 1
+    with sf() as session:
+        assert session.get(PerfSnapshot, ("live_test", "20260916")).nav == 12000
+        risk = session.scalar(select(DailyRiskSnapshot).where(DailyRiskSnapshot.instance_id == "live_test"))
+        assert risk.long_market_value == 11000
+    evidence["511260.SH"]["adjustment"] = "front"
+    assert materialize_live_performance(sf, store, "live_test", now=now, raw_price_evidence=evidence)["written"] == 0
+    evidence["511260.SH"]["adjustment"] = "none"
+    evidence["511260.SH"]["sha256"] = "0" * 64
+    assert materialize_live_performance(sf, store, "live_test", now=now, raw_price_evidence=evidence)["written"] == 0

@@ -5,11 +5,14 @@ so the backtest and production compute identical lot targets, limits and orders.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date
+from dataclasses import asdict, dataclass, field, fields
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 import math
 from typing import Mapping, Sequence
+
+from app.oms.instruments import (InstrumentSpec, buy_cost, floor_buy_quantity, hydra_instrument,
+                                 instrument_from_dict, instrument_to_dict, next_buy_quantity)
 
 LOT = 100
 TICK = .001
@@ -26,12 +29,101 @@ class Policy:
     sell_schedule: tuple = (50., 200.)
     window: int = 3
     reserve: float = 0.
+    strategy_id: str = "hydra"
+    require_instrument_specs: bool = False
+    instruments: dict = field(default_factory=dict)
+    execution_model: str = "close_sell_next_adjacent_open"
+    execution_windows: dict = field(default_factory=lambda: {
+        "BUY": ["09:14:00", "09:16:00"], "SELL": ["14:56:00", "15:00:00"]})
+    submit_at: dict = field(default_factory=lambda: {"BUY": "09:15:05", "SELL": "14:57:05"})
+    # fixed: every attempt prices off the frozen signal close (sells) and first sell-day close (buys).
+    # previous_close: every session prices off the previous trading day's close (V713 stock leg, option B).
+    anchor: str = "fixed"
+
+    def __post_init__(self):
+        if not self.policy_id or not self.strategy_id:
+            raise ValueError("policy_id and strategy_id are required")
+        if self.anchor not in ("fixed", "previous_close"):
+            raise ValueError("anchor must be fixed or previous_close")
+        if self.lot not in ("floor", "nearest"):
+            raise ValueError("lot must be floor or nearest")
+        for name in ("size_factor", "default_buy_bps", "reserve"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value):
+                raise ValueError(f"invalid policy {name}")
+        if self.size_factor < 1 or not 0 <= self.reserve < 1 or not 0 <= self.default_buy_bps < 10000:
+            raise ValueError("invalid policy sizing or price band")
+        if type(self.window) is not int or not 1 <= self.window <= 60:
+            raise ValueError("execution window must be 1..60 trading sessions")
+        if type(self.require_instrument_specs) is not bool:
+            raise ValueError("require_instrument_specs must be boolean")
+        bands = list(self.sell_schedule) + [band for _, band in self.buy_bps]
+        if not self.sell_schedule or any(isinstance(b, bool) or not isinstance(b, (int, float))
+                                         or not math.isfinite(b) or not 0 <= b < 10000 for b in bands):
+            raise ValueError("invalid policy execution bands")
+        if len(dict(self.buy_bps)) != len(self.buy_bps):
+            raise ValueError("duplicate symbol buy band")
+        if self.execution_model != "close_sell_next_adjacent_open":
+            raise ValueError("unsupported execution model")
+        for symbol, spec in self.instruments.items():
+            if not isinstance(symbol, str) or not symbol:
+                raise ValueError("invalid instrument symbol")
+            instrument_from_dict(spec)
+        if set(self.execution_windows) != {"BUY", "SELL"} or set(self.submit_at) != {"BUY", "SELL"}:
+            raise ValueError("BUY and SELL execution windows and submit_at required")
+        for side in ("BUY", "SELL"):
+            bounds = self.execution_windows[side]
+            if not isinstance(bounds, (tuple, list)) or len(bounds) != 2:
+                raise ValueError("execution window requires start and end")
+            start, end = (time.fromisoformat(x) for x in bounds)
+            submit = time.fromisoformat(self.submit_at[side])
+            if start.tzinfo or end.tzinfo or submit.tzinfo or not start <= submit < end:
+                raise ValueError("submit time must fall inside its local execution window")
 
     def buy_band(self, symbol: str) -> float:
         return dict(self.buy_bps).get(symbol, self.default_buy_bps)
 
     def sell_band(self, attempt: int) -> float:
         return self.sell_schedule[min(attempt, len(self.sell_schedule) - 1)]
+
+
+def policy_to_dict(policy: Policy) -> dict:
+    payload = asdict(policy)
+    # Absent means fixed: cycles frozen before the field existed keep their exact policy and hash.
+    if payload["anchor"] == "fixed":
+        del payload["anchor"]
+    return payload
+
+
+def policy_from_dict(payload: Mapping) -> Policy:
+    if not isinstance(payload, Mapping):
+        raise ValueError("policy must be an object")
+    unknown = set(payload) - {f.name for f in fields(Policy)}
+    if unknown:
+        raise ValueError(f"unknown policy fields: {sorted(unknown)}")
+    data = dict(payload)
+    if "buy_bps" in data:
+        raw = data["buy_bps"]
+        data["buy_bps"] = tuple(tuple(x) for x in (raw.items() if isinstance(raw, Mapping) else raw))
+    if "sell_schedule" in data:
+        data["sell_schedule"] = tuple(data["sell_schedule"])
+    # Copy nested dictionaries: caller mutations must not change a frozen policy.
+    if "instruments" in data:
+        data["instruments"] = {s: instrument_to_dict(instrument_from_dict(v)) for s, v in data["instruments"].items()}
+    if "execution_windows" in data:
+        data["execution_windows"] = {s: list(v) for s, v in data["execution_windows"].items()}
+    if "submit_at" in data:
+        data["submit_at"] = dict(data["submit_at"])
+    return Policy(**data)
+
+
+def get_instrument(symbol: str, policy: Policy) -> InstrumentSpec:
+    specs = getattr(policy, "instruments", {})
+    if symbol in specs:
+        return instrument_from_dict(specs[symbol])
+    if getattr(policy, "require_instrument_specs", False):
+        raise ValueError(f"explicit instrument specification required for {symbol}")
+    return hydra_instrument(symbol)
 
 
 @dataclass(frozen=True)
@@ -41,6 +133,7 @@ class PlannedOrder:
     quantity: int
     limit_price: float
     reference_price: float
+    instrument: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -62,8 +155,18 @@ class Session:
 def lot_target(nav, weights, prices, policy) -> dict[str, int]:
     """Whole-lot target. ``nearest`` adds a lot only while it cuts the error and
     the whole basket, grossed up by ``size_factor``, still fits the budget."""
+    if not math.isfinite(float(nav)) or nav <= 0:
+        raise ValueError("NAV must be finite and positive")
+    if any(isinstance(w, bool) or not math.isfinite(float(w)) or w < 0 for w in weights.values()):
+        raise ValueError("weights must be finite and nonnegative")
+    if sum(weights.values()) > 1 + 1e-6:
+        raise ValueError("weights exceed the available portfolio")
     investable = nav * (1 - policy.reserve)
-    target = {s: (math.floor(investable * w / prices[s] / policy.size_factor / LOT) * LOT if w > 0 else 0)
+    specs = {s: get_instrument(s, policy) for s, w in weights.items() if w > 0}
+    for s in specs:
+        if s not in prices or not math.isfinite(float(prices[s])) or prices[s] <= 0:
+            raise ValueError(f"positive signal price required for {s}")
+    target = {s: (floor_buy_quantity(investable * w / prices[s] / policy.size_factor, specs[s]) if w > 0 else 0)
               for s, w in weights.items()}
     if policy.lot == "floor":
         return target
@@ -76,22 +179,36 @@ def lot_target(nav, weights, prices, policy) -> dict[str, int]:
             if weights[s] <= 0:
                 continue
             gap = investable * weights[s] - target[s] * prices[s]
-            step = LOT * prices[s]
+            increment = next_buy_quantity(target[s], specs[s]) - target[s]
+            step = increment * prices[s]
             gain = gap - abs(gap - step)
             if gain > best_gain + 1e-9 and spent + step * policy.size_factor <= investable + 1e-9:
                 best, best_gain = s, gain
         if best is None:
             return target
-        target[best] += LOT
-        spent += LOT * prices[best] * policy.size_factor
+        increment = next_buy_quantity(target[best], specs[best]) - target[best]
+        target[best] += increment
+        spent += increment * prices[best] * policy.size_factor
 
 
-def buy_limit(anchor: float, bps: float) -> float:
-    return math.floor(anchor * (1 + bps / 1e4) / TICK + 1e-8) * TICK
+def buy_limit(anchor: float, bps: float, tick: float = TICK) -> float:
+    if tick == TICK:
+        return math.floor(anchor * (1 + bps / 1e4) / TICK + 1e-8) * TICK
+    step = _number(tick)
+    if step <= 0:
+        raise ValueError("tick must be positive")
+    value = _number(anchor) * (Decimal(1) + _number(bps) / 10000)
+    return float((value / step).to_integral_value(rounding=ROUND_FLOOR) * step)
 
 
-def sell_limit(anchor: float, bps: float) -> float:
-    return math.ceil(anchor * (1 - bps / 1e4) / TICK - 1e-8) * TICK
+def sell_limit(anchor: float, bps: float, tick: float = TICK) -> float:
+    if tick == TICK:
+        return math.ceil(anchor * (1 - bps / 1e4) / TICK - 1e-8) * TICK
+    step = _number(tick)
+    if step <= 0:
+        raise ValueError("tick must be positive")
+    value = _number(anchor) * (Decimal(1) - _number(bps) / 10000)
+    return float((value / step).to_integral_value(rounding=ROUND_CEILING) * step)
 
 
 def _number(value) -> Decimal:
@@ -101,14 +218,16 @@ def _number(value) -> Decimal:
     return number
 
 
-def _cost(order, quantity) -> int:
+def _cost(order, quantity, spec: InstrumentSpec | None = None) -> int:
     if not quantity:
         return 0
+    if spec is not None:
+        return int(Decimal(str(buy_cost(spec, order["limit_price"], quantity))) * 100)
     notional = _number(order["limit_price"]) * quantity
     return int(((notional + max(Decimal(5), notional / 1000)) * 100).to_integral_value(rounding=ROUND_CEILING))
 
 
-def allocate_buys(orders, cash, lot_size, priorities):
+def allocate_buys(orders, cash, lot_size, priorities, instruments=None):
     """Priority tiers, proportional lots within a tier, then largest remainder.
 
     Verbatim port of reports/hydra_fill_replay_20261002/allocation_code.py; integer-cent
@@ -120,28 +239,40 @@ def allocate_buys(orders, cash, lot_size, priorities):
     if len({o["symbol"] for o in orders}) != len(orders):
         raise ValueError("Duplicate allocation symbol")
     default_priority = max(priorities.values(), default=0) + 1
+    specs = {s: (v if isinstance(v, InstrumentSpec) else instrument_from_dict(v))
+             for s, v in (instruments or {}).items()}
+    if instruments is not None and any(o["symbol"] not in specs for o in orders):
+        raise ValueError("missing allocation instrument specification")
     result = []
     for tier in sorted({priorities.get(o["symbol"], default_priority) for o in orders}):
         group = sorted((dict(o) for o in orders if priorities.get(o["symbol"], default_priority) == tier),
                        key=lambda o: o["symbol"])
         for order in group:
+            spec = specs.get(order["symbol"])
+            step = spec.buy_lot if spec else lot_size
             if (order["direction"] != "BUY" or type(order["quantity"]) is not int or order["quantity"] <= 0
-                    or order["quantity"] % lot_size or _number(order["limit_price"]) <= 0):
+                    or order["quantity"] % step or _number(order["limit_price"]) <= 0
+                    or (spec and order["quantity"] < spec.min_buy_quantity)):
                 raise ValueError("Invalid buy allocation")
         scale_base = 10**12
 
         def quantities(scale):
-            return [o["quantity"] * scale // scale_base // lot_size * lot_size for o in group]
+            return [(floor_buy_quantity(o["quantity"] * scale // scale_base, specs[o["symbol"]])
+                     if o["symbol"] in specs else o["quantity"] * scale // scale_base // lot_size * lot_size)
+                    for o in group]
+
+        def cost(o, q):
+            return _cost(o, q, specs.get(o["symbol"]))
 
         low, high = 0, scale_base
         while low < high:
             middle = (low + high + 1) // 2
-            if sum(_cost(o, q) for o, q in zip(group, quantities(middle))) <= budget:
+            if sum(cost(o, q) for o, q in zip(group, quantities(middle))) <= budget:
                 low = middle
             else:
                 high = middle - 1
         allocated = quantities(low)
-        budget -= sum(_cost(o, q) for o, q in zip(group, allocated))
+        budget -= sum(cost(o, q) for o, q in zip(group, allocated))
         # One remaining lot per symbol; tie by code for reproducible plans.
         remainders = sorted(range(len(group)), key=lambda i: (
             -(group[i]["quantity"] * low - allocated[i] * scale_base), group[i]["symbol"]))
@@ -149,9 +280,13 @@ def allocate_buys(orders, cash, lot_size, priorities):
             order, quantity = group[index], allocated[index]
             if quantity >= order["quantity"]:
                 continue
-            increment = _cost(order, quantity + lot_size) - _cost(order, quantity)
+            spec = specs.get(order["symbol"])
+            next_quantity = next_buy_quantity(quantity, spec) if spec else quantity + lot_size
+            if next_quantity > order["quantity"]:
+                continue
+            increment = cost(order, next_quantity) - cost(order, quantity)
             if increment <= budget:
-                allocated[index] += lot_size
+                allocated[index] = next_quantity
                 budget -= increment
         result.extend({**o, "quantity": q} for o, q in zip(group, allocated) if q)
     return sorted(result, key=lambda o: o["symbol"])
@@ -162,40 +297,63 @@ def plan_sell_session(*, target: Mapping[str, int], positions: Mapping[str, int]
     """Sell the overweight part of the frozen target, never more than is sellable now."""
     band = policy.sell_band(attempt)
     orders, deferrals = [], []
-    for s in sorted(target):
-        excess = int(positions.get(s, 0)) - int(target[s])
+    for s in sorted(set(target) | set(positions)):
+        held = int(positions.get(s, 0))
+        excess = held - int(target.get(s, 0))
         if excess <= 0:
             continue
-        can = min(excess, int(sellable.get(s, 0)))
+        spec = get_instrument(s, policy)
+        can = max(0, min(excess, int(sellable.get(s, 0))))
         if can < excess:
             deferrals.append(Deferral(s, "SELL", excess - can, "NOT_SELLABLE"))
-        if can > 0:
+        legal = can if spec.odd_lot_sell_all and can == held else can // spec.sell_lot * spec.sell_lot
+        if legal < held and legal < spec.min_sell_quantity:
+            legal = 0
+        if legal < can:
+            deferrals.append(Deferral(s, "SELL", can - legal, "SELL_LOT"))
+        if legal > 0:
             anchor = float(sell_anchor[s])
-            orders.append(PlannedOrder(s, "SELL", can, sell_limit(anchor, band), anchor))
+            orders.append(PlannedOrder(s, "SELL", legal, sell_limit(anchor, band, spec.price_tick), anchor,
+                                       instrument_to_dict(spec)))
     return orders, deferrals
 
 
 def plan_buy_session(*, target: Mapping[str, int], positions: Mapping[str, int], cash: float,
-                     buy_anchor: Mapping[str, float], tradable, policy: Policy):
-    """Buy the remaining frozen-target shares that the actual cash can pay for."""
+                     buy_anchor: Mapping[str, float], policy: Policy, tradable=None):
+    """Plan next-session residuals using cash and frozen rules.
+
+    ``tradable`` is accepted for wire/backtest compatibility only. A previous
+    closing snapshot's is_trading flag cannot establish next-session suspension;
+    the executor must check dated, current market eligibility before submission.
+    """
     orders, deferrals, wanted = [], [], []
+    specs = {}
+    buy_anchor = buy_anchor or {}
     for s in sorted(target):
-        need = (int(target[s]) - int(positions.get(s, 0))) // LOT * LOT
-        if need <= 0:
+        residual = max(0, int(target[s]) - int(positions.get(s, 0)))
+        if not residual:
             continue
-        if s not in tradable:
-            deferrals.append(Deferral(s, "BUY", need, "SUSPENDED"))
+        if s not in buy_anchor:
+            # No usable close yet (suspended on the sell day): wait for a later anchor, spend nothing.
+            deferrals.append(Deferral(s, "BUY", residual, "NO_ANCHOR"))
+            continue
+        spec = specs[s] = get_instrument(s, policy)
+        need = floor_buy_quantity(residual, spec)
+        if need < residual:
+            deferrals.append(Deferral(s, "BUY", residual - need, "BUY_LOT"))
+        if not need:
             continue
         wanted.append(dict(symbol=s, direction="BUY", quantity=need,
-                           limit_price=buy_limit(float(buy_anchor[s]), policy.buy_band(s))))
-    allocated = ({o["symbol"]: o["quantity"] for o in allocate_buys(wanted, max(0., float(cash)), LOT, {})}
+                           limit_price=buy_limit(float(buy_anchor[s]), policy.buy_band(s), spec.price_tick)))
+    allocated = ({o["symbol"]: o["quantity"] for o in allocate_buys(wanted, max(0., float(cash)), LOT, {}, specs)}
                  if wanted else {})
     for o in wanted:
         q = allocated.get(o["symbol"], 0)
         if q < o["quantity"]:
             deferrals.append(Deferral(o["symbol"], "BUY", o["quantity"] - q, "CASH"))
         if q:
-            orders.append(PlannedOrder(o["symbol"], "BUY", q, o["limit_price"], float(buy_anchor[o["symbol"]])))
+            orders.append(PlannedOrder(o["symbol"], "BUY", q, o["limit_price"], float(buy_anchor[o["symbol"]]),
+                                       instrument_to_dict(specs[o["symbol"]])))
     return orders, deferrals
 
 
@@ -236,3 +394,103 @@ def session_schedule(calendar: Sequence[str], signal_date: str, window: int,
             sessions.append(Session(seq, d, "SELL", attempt))
             attempt += 1
     return sessions
+
+
+@dataclass(frozen=True)
+class PublicationPlan:
+    """The shared preview/publication decision, before any database mutation."""
+    schedule: list[Session]
+    sell_anchor: dict[str, float]
+    buy_anchor: dict[str, float] | None
+    reference_date: str | None
+    reference_close_evidence: dict | None = None
+
+
+def earliest_execution_day(now: str, phase: str) -> str:
+    """A newly published plan must precede that phase's scheduled PRE snapshot."""
+    stamp = datetime.fromisoformat(now)
+    if stamp.utcoffset() is None:
+        raise ValueError("publication timestamp must carry a timezone")
+    local = stamp.astimezone(timezone(timedelta(hours=8)))
+    cutoff = {"BUY": time(9), "SELL": time(14, 45)}[phase]
+    return (local if local.time() < cutoff else local + timedelta(days=1)).strftime("%Y%m%d")
+
+
+def validate_initial_close_evidence(evidence: dict | None, reference_date: str, symbols, now: str) -> dict:
+    """Validate dated, unadjusted closes; a flat price map cannot prove the price date."""
+    if not isinstance(evidence, dict) or evidence.get("trade_date") != reference_date:
+        raise ValueError(f"initial cash buy needs dated close evidence for {reference_date}")
+    china = timezone(timedelta(hours=8))
+    try:
+        taken = datetime.fromisoformat(evidence["taken_at"])
+        published = datetime.fromisoformat(now)
+        if (taken.utcoffset() is None or taken.astimezone(china).strftime("%Y%m%d") != reference_date
+                or taken.astimezone(china).time() < time(15) or taken > published):
+            raise ValueError("invalid evidence time")
+        quotes = evidence["quotes"]
+        normalized = {}
+        for symbol in symbols:
+            quote = quotes[symbol]
+            price = float(quote["last_price"])
+            source = datetime.fromisoformat(quote["source_time"])
+            if (not math.isfinite(price) or price <= 0 or isinstance(quote["last_price"], bool)
+                    or source.utcoffset() is None or source.astimezone(china).strftime("%Y%m%d") != reference_date
+                    or source.astimezone(china).time() < time(15) or source > taken
+                    or quote.get("adjustment") != "none"
+                    or quote.get("price_source") not in {"raw_tick", "raw_daily_close"}):
+                raise ValueError(f"invalid close for {symbol}")
+            normalized[symbol] = {"last_price": price, "source_time": source.astimezone(china).isoformat(),
+                                  "adjustment": "none", "price_source": quote["price_source"]}
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"invalid initial cash buy close evidence for {reference_date}: {exc}") from exc
+    return {"trade_date": reference_date, "taken_at": taken.astimezone(china).isoformat(), "quotes": normalized}
+
+
+def publication_plan(*, policy: Policy, calendar: Sequence[str], signal_date: str, now: str,
+                     signal_closes: Mapping[str, float], symbols, earliest_execution_date: str | None = None,
+                     reference_closes: dict | None = None, initial_cash_buy: bool = False,
+                     reference_close_evidence: dict | None = None) -> PublicationPlan:
+    """Pure schedule and anchor selection shared by dry-run and committed publication.
+
+    Initial cash entry is an explicit V713-only path. Its first BUY and all retries
+    use trading days, including Mondays; ordinary close-sell cycles are unchanged.
+    Strategy eligibility is checked separately under the account transaction lock.
+    """
+    if type(initial_cash_buy) is not bool:
+        raise ValueError("initial_cash_buy must be boolean")
+    days = sorted(set(calendar))
+    symbols = list(symbols)
+    if initial_cash_buy:
+        if (policy.strategy_id != "v713" or policy.anchor != "previous_close"
+                or not policy.policy_id.startswith("V713_STOCKLEG_") or not policy.require_instrument_specs):
+            raise ValueError("initial cash buy requires an explicit V713_STOCKLEG previous_close policy")
+        if any(get_instrument(symbol, policy).asset_type != "stock" for symbol in symbols):
+            raise ValueError("initial cash buy accepts only stock-leg instruments")
+        first = max(earliest_execution_day(now, "BUY"), earliest_execution_date or "")
+        eligible = [day for day in days if day > signal_date and day >= first]
+        if len(eligible) < policy.window:
+            raise ValueError("calendar shorter than initial cash buy execution window")
+        schedule = [Session(i + 1, day, "BUY", None) for i, day in enumerate(eligible[:policy.window])]
+        previous = [day for day in days if day < schedule[0].trade_date]
+        if not previous:
+            raise ValueError("calendar missing the trading day before initial cash buy")
+        reference_date = previous[-1]
+        evidence = validate_initial_close_evidence(reference_close_evidence, reference_date, symbols, now)
+        anchors = {s: quote["last_price"] for s, quote in evidence["quotes"].items()}
+        if reference_date == signal_date and any(anchors[s] != float(signal_closes[s]) for s in symbols):
+            raise ValueError("initial cash buy signal closes differ from the dated signal-day evidence")
+        return PublicationPlan(schedule, dict(anchors), dict(anchors), reference_date, evidence)
+    schedule = session_schedule(days, signal_date, policy.window,
+        earliest_sell=max(earliest_execution_day(now, "SELL"), earliest_execution_date or ""))
+    sell_anchor = {s: float(signal_closes[s]) for s in symbols if s in signal_closes}
+    reference_date = None
+    if policy.anchor == "previous_close":
+        reference_date = max(day for day in days if day < schedule[0].trade_date)
+        if reference_date != signal_date:
+            if reference_closes is None:
+                raise ValueError(f"previous-close anchors: the first session needs the {reference_date} closes")
+            missing = sorted(s for s in symbols if not (float(reference_closes.get(s) or 0) > 0))
+            if missing:
+                raise ValueError(f"reference closes missing for {missing}")
+            sell_anchor = {s: float(reference_closes[s]) for s in symbols}
+    return PublicationPlan(schedule, sell_anchor, None, reference_date)

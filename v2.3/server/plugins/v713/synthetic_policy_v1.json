@@ -1,0 +1,11 @@
+{
+  "policy_id": "V713_SYNTHETIC_V1",
+  "stock_instance": "live_v713_stockleg",
+  "hydra_instance": "live_hydra_v481_rb",
+  "label": "V713（511260 版 Hydra，20 万股票腿合成 40 万）",
+  "base_value": 400000.0,
+  "cost_bps": [0.0, 20.0, 50.0],
+  "primary_bps": 20.0,
+  "liquidated_stock_weight": 0.01,
+  "review_after_sessions": 10
+}

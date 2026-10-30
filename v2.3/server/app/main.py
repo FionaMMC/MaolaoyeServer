@@ -181,6 +181,8 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
     from app.oms import dashboard as oms_dashboard
     app.include_router(oms_api.router, tags=["oms"])
     app.include_router(oms_dashboard.router, tags=["oms-dashboard"])
+    from app.api import accounting_operations
+    app.include_router(accounting_operations.router, tags=["accounting-operations"])
     app.include_router(admin.router, tags=["admin"])
     from app.api import pipeline_jobs
     app.include_router(pipeline_jobs.router, tags=["paper-pipeline-jobs"])

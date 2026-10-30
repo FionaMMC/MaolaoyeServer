@@ -1,0 +1,56 @@
+{
+  "passed": true,
+  "source_commit": "bcdfd166faf13281c535d514c73d809570231ac9",
+  "source_sha256": "e8c520e5b9da3957ca31927ade58ce0aefb40f2bb83d49c8c25fb965ac276eab",
+  "stage_dir": "/opt/qmt-server/private/research-runs/v713-live-readiness-20261015-0pvund_4",
+  "archive_sha256": "89c8bf38f0aa0085aaae6d4c3d119bc8c91d68803aa0942d4226d5e114e57730",
+  "changed_from_full_suite_package": [
+    "docs/V713_SHARED_OMS_WINDOWS_ACCEPTANCE_20261015.md",
+    "tools/build_v713_readiness.py",
+    "v2.3/client/__init__.py",
+    "v2.3/client/market_push.py",
+    "v2.3/live_client/windows/Inspect-V713SharedOms.ps1"
+  ],
+  "full_server_sources_unchanged": true,
+  "full_server": {
+    "tests": 965,
+    "errors": 0,
+    "failures": 0,
+    "skipped": 1
+  },
+  "full_client": {
+    "tests": 266,
+    "errors": 0,
+    "failures": 0,
+    "skipped": 0
+  },
+  "final_integration_safety": {
+    "tests": 11,
+    "errors": 0,
+    "failures": 0,
+    "skipped": 0
+  },
+  "checks": [
+    {
+      "check": "final_client",
+      "exit_code": 0
+    },
+    {
+      "check": "final_integration_safety",
+      "exit_code": 0
+    }
+  ],
+  "runtime": {
+    "python": "3.11.15",
+    "fastapi": "0.136.1",
+    "pydantic": "2.13.3",
+    "sqlalchemy": "2.0.49",
+    "pytest": "8.3.5",
+    "pytest-asyncio": "0.25.3",
+    "httpx": "0.28.1",
+    "requests": "2.32.3"
+  },
+  "test_dependencies_added_only_in_isolated_directory": true,
+  "production_services_changed": false,
+  "real_broker_orders": 0
+}

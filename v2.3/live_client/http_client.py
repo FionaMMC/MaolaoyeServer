@@ -87,6 +87,21 @@ class LiveServerClient:
     def post_oms_snapshot(self, payload: dict) -> dict:
         return self._post("/oms/live/snapshot", payload)
 
+    def _oms_get(self, path: str, params: dict) -> dict:
+        response = requests.get(f"{self.base_url}/oms/live/{path}", params=params,
+                                headers=self.headers, timeout=self.timeout)
+        response.raise_for_status()
+        body = response.json()
+        if body.get("code") != 0:
+            raise RuntimeError(f"GET /oms/live/{path} failed: {body}")
+        return body["data"]
+
+    def get_oms_plans(self, account_alias: str, trade_date: str, phase: str) -> dict:
+        return self._oms_get("plans", {"account_alias": account_alias, "trade_date": trade_date, "phase": phase})
+
+    def get_oms_universe(self, account_alias: str) -> dict:
+        return self._oms_get("universe", {"account_alias": account_alias})
+
     def get_oms_plan(self, account_alias: str, trade_date: str, phase: str) -> dict:
         response = requests.get(
             f"{self.base_url}/oms/live/plan",

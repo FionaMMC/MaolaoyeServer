@@ -1,0 +1,33 @@
+{
+  "policy_id": "V713_STOCKLEG_V1",
+  "strategy_id": "v713",
+  "lot": "nearest",
+  "size_factor": 1.001,
+  "default_buy_bps": 50.0,
+  "buy_bps": [],
+  "sell_schedule": [50.0, 200.0],
+  "window": 3,
+  "reserve": 0.01,
+  "require_instrument_specs": true,
+  "execution_model": "close_sell_next_adjacent_open",
+  "execution_windows": {"BUY": ["09:14:00", "09:16:00"], "SELL": ["14:56:00", "15:00:00"]},
+  "submit_at": {"BUY": "09:15:05", "SELL": "14:57:05"},
+  "instrument_rules": {
+    "stock_board_lot": {
+      "asset_type": "stock", "price_tick": 0.01, "buy_lot": 100, "min_buy_quantity": 100, "sell_lot": 100,
+      "odd_lot_sell_all": true, "t_plus_one": true, "commission_rate": 0.0000854, "min_commission": 5.0,
+      "stamp_duty_sell": 0.0005, "transfer_fee_rate": 0.00001, "buy_reserve_rate": null
+    },
+    "stock_star": {
+      "asset_type": "stock", "price_tick": 0.01, "buy_lot": 1, "min_buy_quantity": 200, "sell_lot": 1,
+      "odd_lot_sell_all": true, "t_plus_one": true, "commission_rate": 0.0000854, "min_commission": 5.0,
+      "stamp_duty_sell": 0.0005, "transfer_fee_rate": 0.00001, "buy_reserve_rate": null,
+      "min_sell_quantity": 200
+    },
+    "etf": {
+      "asset_type": "etf", "price_tick": 0.001, "buy_lot": 100, "min_buy_quantity": 100, "sell_lot": 1,
+      "odd_lot_sell_all": true, "t_plus_one": true, "commission_rate": 0.0001, "min_commission": 5.0,
+      "stamp_duty_sell": 0.0, "transfer_fee_rate": 0.0, "buy_reserve_rate": 0.001
+    }
+  }
+}

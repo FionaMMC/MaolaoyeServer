@@ -103,7 +103,7 @@ try {
     try {
         # A native stderr log line is not a failed Python command on PS 5.1.
         $ErrorActionPreference = "Continue"
-        & $PythonExe @arguments
+        & $PythonExe (Join-Path $PSScriptRoot "hydra_oms_notify.py") --command $Command --date $Date --root $InstallRoot -- @arguments
         $exitCode = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $previousErrorActionPreference

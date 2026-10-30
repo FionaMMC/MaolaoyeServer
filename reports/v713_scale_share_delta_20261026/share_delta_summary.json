@@ -1,0 +1,217 @@
+{
+  "experiment_id": "BASELINES-V713-SCALE-SHARE-DELTA-20261026-01",
+  "status": "COMPLETED_FEE_COUNTING_SENSITIVITY_NOT_EXECUTION_CERTIFICATION",
+  "formula": "large_end / (large_start/small_start * small_end) - 1",
+  "pairs": [
+    {
+      "variant": "archived_value_delta",
+      "scenario": "minimum_5",
+      "population": "all",
+      "relative_terminal_gap": {
+        "n": 114,
+        "min": -0.008535119193231022,
+        "p05": 0.000642606221326747,
+        "median": 0.008790529110471956,
+        "p95": 0.018716091357127672,
+        "max": 0.022403664504054843
+      },
+      "large_outperforms_fraction": 0.9649122807017544,
+      "cash_difference_median": 4583.539489541488
+    },
+    {
+      "variant": "archived_value_delta",
+      "scenario": "minimum_5",
+      "population": "clean",
+      "relative_terminal_gap": {
+        "n": 112,
+        "min": -0.002169482030422998,
+        "p05": 0.000786703370051789,
+        "median": 0.008848494358149828,
+        "p95": 0.01871804272448029,
+        "max": 0.022403664504054843
+      },
+      "large_outperforms_fraction": 0.9732142857142857,
+      "cash_difference_median": 4656.0326090939525
+    },
+    {
+      "variant": "share_delta_band_0.00",
+      "scenario": "minimum_5",
+      "population": "all",
+      "relative_terminal_gap": {
+        "n": 114,
+        "min": -0.01084562291836988,
+        "p05": -0.003655583976123744,
+        "median": 0.005582813049877733,
+        "p95": 0.014359604133971703,
+        "max": 0.017018667693218914
+      },
+      "large_outperforms_fraction": 0.8508771929824561,
+      "cash_difference_median": 2923.586658722166
+    },
+    {
+      "variant": "share_delta_band_0.00",
+      "scenario": "minimum_5",
+      "population": "clean",
+      "relative_terminal_gap": {
+        "n": 112,
+        "min": -0.01084562291836988,
+        "p05": -0.003356725760209356,
+        "median": 0.005707690748185668,
+        "p95": 0.01437834991937361,
+        "max": 0.017018667693218914
+      },
+      "large_outperforms_fraction": 0.8660714285714286,
+      "cash_difference_median": 2975.155165283372
+    },
+    {
+      "variant": "share_delta_band_0.00",
+      "scenario": "confirmed_20261025",
+      "population": "all",
+      "relative_terminal_gap": {
+        "n": 114,
+        "min": -0.010662084336967581,
+        "p05": -0.0037392557956741897,
+        "median": 0.005359811074840959,
+        "p95": 0.014659429353565972,
+        "max": 0.016716503666845073
+      },
+      "large_outperforms_fraction": 0.8596491228070176,
+      "cash_difference_median": 2921.558386318912
+    },
+    {
+      "variant": "share_delta_band_0.00",
+      "scenario": "confirmed_20261025",
+      "population": "clean",
+      "relative_terminal_gap": {
+        "n": 112,
+        "min": -0.010662084336967581,
+        "p05": -0.0034154751395648665,
+        "median": 0.0055475601602257285,
+        "p95": 0.01476344079783829,
+        "max": 0.016716503666845073
+      },
+      "large_outperforms_fraction": 0.875,
+      "cash_difference_median": 2976.3591709373704
+    }
+  ],
+  "legs": [
+    {
+      "variant": "archived_value_delta",
+      "scenario": "minimum_5",
+      "capital": 200000,
+      "windows": 114,
+      "relative_nav_deviation": {
+        "n": 114,
+        "min": -0.034306465722639845,
+        "p05": -0.031078279580415275,
+        "median": -0.0224808631646084,
+        "p95": -0.013902462620409381,
+        "max": -0.0033896413628557998
+      },
+      "tracking_error_median": 0.0037988650948747784,
+      "orders_per_month_median": 61.54166666666667,
+      "fees_median": 4315.166363152216,
+      "weight_deviation_median": null
+    },
+    {
+      "variant": "archived_value_delta",
+      "scenario": "minimum_5",
+      "capital": 400000,
+      "windows": 114,
+      "relative_nav_deviation": {
+        "n": 114,
+        "min": -0.01979184032929071,
+        "p05": -0.017738597391537214,
+        "median": -0.01421398639376098,
+        "p95": -0.009786614028017334,
+        "max": -0.008016543335180315
+      },
+      "tracking_error_median": 0.002004872711806438,
+      "orders_per_month_median": 61.583333333333336,
+      "fees_median": 4941.536793498746,
+      "weight_deviation_median": null
+    },
+    {
+      "variant": "share_delta_band_0.00",
+      "scenario": "minimum_5",
+      "capital": 200000,
+      "windows": 114,
+      "relative_nav_deviation": {
+        "n": 114,
+        "min": -0.028774869516620227,
+        "p05": -0.025738746180165455,
+        "median": -0.017247103997181157,
+        "p95": -0.008358931237078558,
+        "max": 0.0005063133625122784
+      },
+      "tracking_error_median": 0.0039388930611042525,
+      "orders_per_month_median": 41.041666666666664,
+      "fees_median": 3126.2791722030706,
+      "weight_deviation_median": 0.02673014192527947
+    },
+    {
+      "variant": "share_delta_band_0.00",
+      "scenario": "minimum_5",
+      "capital": 400000,
+      "windows": 114,
+      "relative_nav_deviation": {
+        "n": 114,
+        "min": -0.018010360936980607,
+        "p05": -0.016163204465125102,
+        "median": -0.012285907873028634,
+        "p95": -0.00701555898960925,
+        "max": -0.0050378393473423655
+      },
+      "tracking_error_median": 0.0020993727771635483,
+      "orders_per_month_median": 47.25,
+      "fees_median": 4106.496332169106,
+      "weight_deviation_median": 0.01330046404342249
+    },
+    {
+      "variant": "share_delta_band_0.00",
+      "scenario": "confirmed_20261025",
+      "capital": 200000,
+      "windows": 114,
+      "relative_nav_deviation": {
+        "n": 114,
+        "min": -0.028857542071505593,
+        "p05": -0.025798759149159207,
+        "median": -0.017346672949078767,
+        "p95": -0.008457967355816625,
+        "max": 0.00042937106532336955
+      },
+      "tracking_error_median": 0.0039224486210292075,
+      "orders_per_month_median": 41.041666666666664,
+      "fees_median": 3155.748863088136,
+      "weight_deviation_median": 0.026782999848186086
+    },
+    {
+      "variant": "share_delta_band_0.00",
+      "scenario": "confirmed_20261025",
+      "capital": 400000,
+      "windows": 114,
+      "relative_nav_deviation": {
+        "n": 114,
+        "min": -0.01793688111436098,
+        "p05": -0.016237978849869113,
+        "median": -0.012375994017276404,
+        "p95": -0.0073080238644829725,
+        "max": -0.005097149039221316
+      },
+      "tracking_error_median": 0.0020827199843415235,
+      "orders_per_month_median": 47.29166666666667,
+      "fees_median": 4145.082262210291,
+      "weight_deviation_median": 0.013278480472085682
+    }
+  ],
+  "qa_count": 15,
+  "qa_all_passed": true,
+  "limits": [
+    "same archived economic monthly ledger: adjusted-return valuation, month-end same-close sizing",
+    "fees as confirmed by the business owner on 2026-10-25, not yet checked against a broker statement; transfer fee is the statutory rate",
+    "dividend tax and broker-specific charges not modelled",
+    "no fills, slippage, T+1, suspensions, limit moves or rejections"
+  ],
+  "production_modified": false,
+  "orders_submitted": 0
+}

@@ -29,10 +29,16 @@ class AuthContext:
 OPERATOR_CLIENT_ID = "oms-operator"
 OPERATOR_PATHS = frozenset({
     "/oms/live/overview",
+    "/oms/live/v713/synthetic",
     "/oms/live/manual/orders",
     "/oms/live/manual/cancels",
     "/oms/live/dividends/preview",
     "/oms/live/dividends",
+    "/oms/live/control",
+    "/accounts/fee-adjustments",
+    "/accounts/capital-transfers",
+    "/accounts/corporate-action-issues",
+    "/accounts/corporate-action-resolutions",
 })
 
 
@@ -127,6 +133,8 @@ async def verify_api_key(
             "/hydra/canary/stage",
             "/oms/live/snapshot",
             "/oms/live/plan",
+            "/oms/live/plans",
+            "/oms/live/universe",
             "/oms/live/events",
             "/oms/live/status",
             "/oms/live/manual/pending",

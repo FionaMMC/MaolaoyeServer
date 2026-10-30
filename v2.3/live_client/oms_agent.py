@@ -8,6 +8,7 @@ server is unreachable it keeps working from the cached plan and replays events l
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from datetime import datetime, time, timedelta, timezone
 import json
 import logging
@@ -49,7 +50,7 @@ def _buy_cost(quantity: int, limit: float) -> float:
 
 class OmsAgent:
     def __init__(self, *, account_alias: str, gateway, server, journal, clock: Callable[[], datetime],
-                 symbols, sleep: Callable[[float], None] = _time.sleep, spool_dir: Path | None = None):
+                 symbols, sleep: Callable[[float], None] = _time.sleep, spool_dir: Path | None = None, cfg=None):
         self.account_alias = account_alias
         self.gateway = gateway
         self.server = server
@@ -58,22 +59,28 @@ class OmsAgent:
         self.symbols = sorted(symbols)
         self.sleep = sleep
         self.spool_dir = spool_dir or journal.path.parent / "oms-spool"
+        self.cfg = cfg
+        self.shared = cfg is not None and cfg.execution_profile == "shared_oms"
 
     # ── facts ─────────────────────────────────────────────────────────────
     def snapshot(self, kind: str, spool: bool = True) -> dict:
         now = self.clock().astimezone(CHINA)
         account = self.gateway.account_snapshot()
+        if self.shared:
+            self.refresh_universe()
+        symbols = sorted(set(self.symbols) | set(account.positions))
         orders = [self._order_wire(o) for o in self.gateway.day_orders()]
         payload = {
             "account_alias": self.account_alias, "kind": kind, "trade_date": now.strftime("%Y%m%d"),
             "taken_at": now.isoformat(), "available_cash": float(account.available_cash),
             "total_asset": float(account.total_asset),
+            "frozen_cash": account.frozen_cash,
             "positions": {s: int(q) for s, q in account.positions.items() if int(q)},
             "sellable": {s: int(q) for s, q in account.sellable_positions.items() if int(q)},
             "orders": [o for o in orders if o is not None],
             "trades": self.gateway.day_trades(),
-            "quotes": {s: {"last_price": float(q["last_price"]), "is_trading": bool(q.get("is_trading", True))}
-                       for s, q in self.gateway.quotes(self.symbols).items()},
+            "quotes": {s: {**q, "last_price": float(q["last_price"])}
+                       for s, q in self.gateway.quotes(symbols, as_of=now).items()},
         }
         try:
             result = self.server.post_oms_snapshot(payload)
@@ -121,6 +128,29 @@ class OmsAgent:
         return len(events)
 
     # ── plans ─────────────────────────────────────────────────────────────
+    def refresh_universe(self):
+        try:
+            self.symbols = sorted(set(self.symbols) | set(self.server.get_oms_universe(self.account_alias)["symbols"]))
+        except Exception as exc:
+            logger.warning("universe unavailable; using cached symbols: %s", exc)
+
+    def fetch_plans(self, trade_date: str, phase: str) -> list[dict]:
+        try:
+            bundle = self.server.get_oms_plans(self.account_alias, trade_date, phase)
+        except Exception as exc:
+            logger.warning("plan bundle unavailable; checking leased cached grants: %s", exc)
+            return self.journal.plans(trade_date, phase)
+        if bundle.get("schema_version") != 2:
+            raise ValueError("unsupported OMS bundle schema")
+        plans = bundle["plans"]
+        for plan in plans:
+            if (plan.get("account_alias") != self.account_alias
+                    or plan.get("account_fingerprint") != self.cfg.expected_account_sha256):
+                raise ValueError("plan bundle account identity mismatch")
+        self.journal.cache_bundle(trade_date, phase, plans)
+        self.symbols = sorted(set(self.symbols) | set(bundle.get("symbols", [])))
+        return self.journal.plans(trade_date, phase)
+
     def fetch_plan(self, trade_date: str, phase: str) -> dict | None:
         try:
             plan = self.server.get_oms_plan(self.account_alias, trade_date, phase)
@@ -134,11 +164,33 @@ class OmsAgent:
 
     def pre(self, trade_date: str) -> dict:
         result = self.snapshot("PRE")
-        cached = {phase: self.fetch_plan(trade_date, phase) is not None for phase in ("BUY", "SELL")}
+        cached = {phase: bool(self.fetch_plans(trade_date, phase)) if self.shared else self.fetch_plan(trade_date, phase) is not None
+                  for phase in ("BUY", "SELL")}
         return {"snapshot": result, "cached_plans": cached}
 
     # ── execution ─────────────────────────────────────────────────────────
+    def _unobserved_capacity(self, account, by_remark):
+        cash, sellable = float(account.available_cash), dict(account.sellable_positions)
+        today = self.clock().astimezone(CHINA).strftime("%Y%m%d")
+        for row in self.journal.submissions():
+            if row["state"] == "REJECTED" or row["client_order_id"] in by_remark:
+                continue
+            if row["trade_date"] != today:
+                if row["state"] in ("SUBMITTING", "UNKNOWN") and not self.journal.terminal_proof(row["client_order_id"]):
+                    raise RuntimeError("unresolved prior-day submission requires reconciliation")
+                continue
+            if self.journal.terminal_proof(row["client_order_id"]):
+                continue
+            if row["side"] == "BUY":
+                cash -= row["reserve_cash"]
+            else:
+                sellable[row["symbol"]] = max(0, sellable.get(row["symbol"], 0) - row["quantity"])
+        return cash, sellable
+
     def execute(self, trade_date: str, phase: str, dry_run: bool = False) -> dict:
+        if self.shared:
+            from live_client.oms_shared import execute_bundle
+            return execute_bundle(self, trade_date, phase, dry_run=dry_run)
         now = self.clock().astimezone(CHINA)
         if self.journal.hold_flag():
             return {"status": "HOLD_LOCAL"}
@@ -158,14 +210,20 @@ class OmsAgent:
         for order in self.gateway.day_orders():
             remark = (order.order_remark or "").strip()
             if OUR_REMARK.match(remark):
+                if remark in at_broker:
+                    raise RuntimeError("duplicate broker remark")
                 at_broker.setdefault(remark, order)
-        cash = float(account.available_cash)
+        cash, sellable = self._unobserved_capacity(account, at_broker)
+        submissions = {r["client_order_id"]: r for r in self.journal.submissions()}
         results = []
         for item in plan["orders"]:
             coid, symbol, side = item["client_order_id"], item["symbol"], item["side"]
             limit = float(item["limit_price"])
             intent = self.journal.intent(coid)
             if coid in at_broker:
+                from live_client.oms_shared import broker_matches
+                if not broker_matches(at_broker[coid], item, submissions.get(coid, item)["quantity"], account.account_id):
+                    raise RuntimeError("broker remark identity mismatch")
                 if intent is None or intent["state"] in ("SUBMITTING", "UNKNOWN"):
                     self.journal.mark(coid, "ACKED", str(at_broker[coid].order_id), "found at broker by remark")
                 results.append({"client_order_id": coid, "status": "ALREADY_AT_BROKER"})
@@ -182,14 +240,19 @@ class OmsAgent:
                 while quantity > 0 and _buy_cost(quantity, limit) > cash:
                     quantity -= LOT
             else:
-                quantity = min(quantity, int(account.sellable_positions.get(symbol, 0)))
+                quantity = min(quantity, int(sellable.get(symbol, 0)))
             if quantity <= 0:
                 results.append({"client_order_id": coid, "status": "SKIPPED_NO_ROOM"})
                 continue
             if dry_run:
                 results.append({"client_order_id": coid, "status": "DRY_RUN", "quantity": quantity})
                 continue
-            self.journal.mark(coid, "SUBMITTING", None, None)
+            from live_client.oms_shared import require_guard
+            allowed = self.cfg.allowed_symbols if self.cfg else set(self.symbols)
+            require_guard(self, item, quantity, allowed_symbols=allowed)
+            self.journal.mark(coid, "SUBMITTING", None, None, submission={**item,
+                "instance_id": self.cfg.instance_id if self.cfg else "legacy", "trade_date": trade_date,
+                "quantity": quantity, "reserve_cash": _buy_cost(quantity, limit) if side == "BUY" else 0.})
             outcome = self.gateway.submit_limit(symbol=symbol, side=side, quantity=quantity, limit_price=limit,
                                                 remark=coid)
             if outcome.status == "SUBMITTED":
@@ -200,6 +263,10 @@ class OmsAgent:
                 self.journal.mark(coid, "REJECTED", None, outcome.detail)
             else:
                 self.journal.mark(coid, "UNKNOWN", None, outcome.detail)
+                if side == "BUY":
+                    cash -= _buy_cost(quantity, limit)
+            if side == "SELL" and outcome.status != "REJECTED":
+                sellable[symbol] = sellable.get(symbol, 0) - quantity
             results.append({"client_order_id": coid, "status": outcome.status, "quantity": quantity})
         self.flush_events()
         return {"status": "DRY_RUN" if dry_run else "EXECUTED", "orders": results}
@@ -234,16 +301,25 @@ class OmsAgent:
         next morning refreshes ``executable``; the local HOLD file stops them regardless."""
         today = self.clock().astimezone(CHINA).strftime("%Y%m%d")
         try:
-            sessions = self.server.get_oms_status(self.account_alias).get("sessions") or []
+            status = self.server.get_oms_status(self.account_alias)
+            sessions = status.get("sessions") or []
+            if self.shared:
+                sessions = sessions + [s for strategy in status.get("strategies", []) for s in strategy.get("sessions", [])]
         except Exception as exc:
             logger.error("status unavailable (%s); upcoming plans not cached", exc)
             return []
         cached = []
+        seen = set()
         for item in sessions:
             if item["trade_date"] <= today or item["status"] != "PLANNED":
                 continue
+            key = (item["trade_date"], item["phase"])
+            if key in seen:
+                continue
+            seen.add(key)
             try:
-                if self.fetch_plan(item["trade_date"], item["phase"]) is not None:
+                found = self.fetch_plans(item["trade_date"], item["phase"]) if self.shared else self.fetch_plan(item["trade_date"], item["phase"])
+                if found:
                     cached.append(f"{item['trade_date']}:{item['phase']}")
             except Exception as exc:  # e.g. a journal conflict: keep the EOD result and report it
                 logger.error("plan %s %s not cached: %s", item["trade_date"], item["phase"], exc)
@@ -287,7 +363,8 @@ class OmsAgent:
         for order in orders:
             by_remark.setdefault((order.order_remark or "").strip(), order)
         by_broker_id = {str(order.order_id): order for order in orders}
-        cash = float(account.available_cash)
+        cash, sellable = self._unobserved_capacity(account, by_remark) if not self.shared else (float(account.available_cash), dict(account.sellable_positions))
+        account = replace(account, sellable_positions=sellable)
         results, held_back = [], []
         for item in pending:
             if item["kind"] == "CANCEL":
@@ -297,6 +374,9 @@ class OmsAgent:
             else:
                 outcome, cost = self._manual_order(item, trade_date, account, by_remark, cash)
                 cash -= cost
+                if not self.shared and item["side"] == "SELL" and outcome["status"] in ("SUBMITTED", "UNKNOWN"):
+                    symbol = item["symbol"]
+                    account.sellable_positions[symbol] = max(0, account.sellable_positions.get(symbol, 0) - item["quantity"])
                 results.append(outcome)
         if results:
             try:
@@ -325,11 +405,30 @@ class OmsAgent:
         limit, quantity = float(item["limit_price"]), int(item["quantity"])
         base = {"instruction_id": item["instruction_id"]}
         order = {"client_order_id": coid, "symbol": symbol, "side": side, "quantity": quantity, "limit_price": limit}
+        if self.cfg is not None and self.journal.hold_flag(item.get("instance_id", self.cfg.instance_id)):
+            return {**base, "status": "FAILED", "detail": "strategy HOLD"}, 0.
+        if self.shared:
+            from live_client.oms_shared import execute_bundle
+            grant = item.get("execution_plan")
+            if not isinstance(grant, dict) or grant.get("orders") != [order]:
+                return {**base, "status": "FAILED", "detail": "missing or mismatched strategy execution grant"}, 0.
+            self.journal.cache_plan(grant)
+            outcome = execute_bundle(self, trade_date, "MANUAL", plans=[grant])
+            results = [o for p in outcome.get("plans", []) for o in p.get("orders", [])]
+            result = results[0] if results else {"status": "FAILED", "detail": outcome["status"]}
+            status = {"ALREADY_AT_BROKER": "SUBMITTED", "SKIPPED_ACKED": "SUBMITTED", "SKIPPED_UNKNOWN": "UNKNOWN",
+                      "SKIPPED_SUBMITTING": "UNKNOWN"}.get(result["status"], result["status"])
+            if status not in {"SUBMITTED", "REJECTED", "UNKNOWN"}:
+                status = "FAILED"
+            return {**base, "status": status, "detail": result.get("detail", result["status"])}, 0.
         self.journal.cache_plan({"plan_sha256": "manual-" + coid, "session_id": "MANUAL:" + coid,
                                  "cycle_id": "MANUAL", "trade_date": trade_date, "phase": "MANUAL",
                                  "orders": [order], "executable": True, "frozen_target": {}})
         intent = self.journal.intent(coid)
         if coid in by_remark:
+            from live_client.oms_shared import broker_matches
+            if not broker_matches(by_remark[coid], order, quantity, account.account_id):
+                return {**base, "status": "FAILED", "detail": "broker remark identity mismatch"}, 0.
             if intent is None or intent["state"] in ("SUBMITTING", "UNKNOWN"):
                 self.journal.mark(coid, "ACKED", str(by_remark[coid].order_id), "found at broker by remark")
             return {**base, "status": "SUBMITTED", "detail": f"already at broker {by_remark[coid].order_id}"}, 0.
@@ -341,7 +440,13 @@ class OmsAgent:
         cost = _buy_cost(quantity, limit) if side == "BUY" else 0.
         if cost > cash:
             return {**base, "status": "FAILED", "detail": f"needs {cost:.2f}, available {cash:.2f}"}, 0.
-        self.journal.mark(coid, "SUBMITTING", None, None)
+        from live_client.oms_shared import require_guard
+        try:
+            require_guard(self, order, quantity, allowed_symbols=self.cfg.allowed_symbols if self.cfg else set(self.symbols))
+        except (ValueError, RuntimeError) as exc:
+            return {**base, "status": "FAILED", "detail": str(exc)}, 0.
+        self.journal.mark(coid, "SUBMITTING", None, None, submission={**order,
+            "instance_id": self.cfg.instance_id if self.cfg else "legacy", "trade_date": trade_date, "reserve_cash": cost})
         outcome = self.gateway.submit_limit(symbol=symbol, side=side, quantity=quantity, limit_price=limit,
                                             remark=coid)
         if outcome.status == "SUBMITTED":
@@ -389,6 +494,7 @@ def main(argv=None) -> int:
     from live_client.gateway import XtQMTGateway
     from live_client.http_client import LiveServerClient
     from live_client.oms_journal import OmsJournal
+    from live_client.oms_clock import RuntimeClock
 
     parser = argparse.ArgumentParser(prog="python -m live_client.oms_agent")
     parser.add_argument("command", choices=["pre", "sell", "buy", "cancel", "eod", "intraday", "upload-spool",
@@ -408,21 +514,25 @@ def main(argv=None) -> int:
         return 0
     if args.command in ("sell", "buy") and not args.dry_run:
         cfg.require_submission_enabled()
-    journal = OmsJournal(cfg.state_db.with_name("oms-agent.db"))
     try:
         with account_submission_lock(cfg.userdata_dir, cfg.expected_account_sha256,
                                      wait_seconds=LOCK_WAIT_SECONDS[args.command]):
+            runtime_clock = RuntimeClock(on_calibration=lambda evidence: logger.info(
+                "OMS_CLOCK_CALIBRATED %s", json.dumps(evidence, ensure_ascii=False)))
+            journal = OmsJournal(cfg.state_db.with_name("oms-agent.db"), clock=runtime_clock.now)
+            journal.bind(account_alias=cfg.account_alias, execution_domain=cfg.execution_domain,
+                         account_fingerprint=cfg.expected_account_sha256, client_id=cfg.task_prefix)
             gateway = XtQMTGateway(cfg)
             gateway.connect()
             try:
                 agent = OmsAgent(account_alias=cfg.account_alias, gateway=gateway, server=server, journal=journal,
-                                 clock=_china_now, symbols=sorted(HYDRA_LIVE_EXECUTABLE_SYMBOLS))
+                                 clock=runtime_clock.now, symbols=sorted(HYDRA_LIVE_EXECUTABLE_SYMBOLS), cfg=cfg)
                 if args.command == "pre":
                     result = agent.pre(args.date)
                 elif args.command in ("sell", "buy"):
                     phase = args.command.upper()
-                    if not args.dry_run:
-                        agent.wait_until(SUBMIT_AT[phase])
+                    if not args.dry_run and not agent.shared:
+                            agent.wait_until(SUBMIT_AT[phase])
                     result = agent.execute(args.date, phase, dry_run=args.dry_run)
                 elif args.command == "cancel":
                     result = agent.cancel_open()
