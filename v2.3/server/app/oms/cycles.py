@@ -18,12 +18,13 @@ from sqlalchemy import func, select
 from app.models import InstanceState
 from app.oms.ledger import OPEN_QMT_STATUSES as OPEN_BROKER_STATUSES, OrderLedger
 from app.oms.models import (OmsBrokerSnapshot, OmsCycle, OmsOrder, OmsReconciliation, OmsSession,
-                            OmsTargetVersion, OmsOverride)
+                            OmsTargetVersion, OmsOverride, V713StateRecord)
 from app.oms.planner import (Policy, Session, lot_target, plan_buy_session, plan_sell_session,
-                             session_schedule, policy_from_dict, policy_to_dict, get_instrument as instrument)
+                             earliest_execution_day, publication_plan, validate_initial_close_evidence,
+                             policy_from_dict, policy_to_dict, get_instrument as instrument)
 from app.oms.schemas import PlanOrder, PlanOut, SnapshotIn, plan_content_sha256
 from app.oms.states import TERMINAL, OrderState, transition
-from app.oms.account import instance_is_enabled, strategy_resources
+from app.oms.account import instance_is_enabled, open_reservations, order_instance_id, strategy_resources
 from app.oms.instruments import instrument_to_dict
 from app.services.ledger_transaction import begin_ledger_transaction
 
@@ -50,8 +51,32 @@ SELL_PLAN_CUTOFF = time(14, 45)     # the PRE snapshot that caches the day's sel
 
 def earliest_sell_day(now: str) -> str:
     """First day a cycle published at ``now`` can still sell: today before the 14:45 PRE, else tomorrow."""
-    local = datetime.fromisoformat(now).astimezone(CHINA)
-    return (local if local.time() < SELL_PLAN_CUTOFF else local + timedelta(days=1)).strftime("%Y%m%d")
+    return earliest_execution_day(now, "SELL")
+
+
+def validate_initial_cash_buy(session, inst: InstanceState) -> None:
+    """Read-only eligibility check; publication repeats it inside the account lock.
+
+    Broker-account holdings may belong to Hydra. Only this attributed strategy must
+    be empty, with no prior cycle, monthly state or manually attributed order history.
+    Unknown broker orders still require a clean, current-day PRE before any grant.
+    """
+    if inst.ledger_mode != "attributed":
+        raise CycleConflict("initial cash buy requires an attributed strategy ledger")
+    if any(int(qty) for qty in (inst.virtual_positions or {}).values()):
+        raise CycleConflict("initial cash buy requires an empty strategy position ledger")
+    if not math.isfinite(float(inst.virtual_cash)) or float(inst.virtual_cash) <= 0:
+        raise CycleConflict("initial cash buy requires positive strategy cash")
+    if (inst.strategy_state or {}).get("accounting_hold"):
+        raise CycleConflict("initial cash buy requires accounting review to be resolved")
+    for model in (OmsCycle, OmsTargetVersion, V713StateRecord):
+        if session.execute(select(model).where(model.instance_id == inst.instance_id).limit(1)).first():
+            raise CycleConflict("initial cash buy requires no prior cycle, target or monthly state")
+    # This also refuses an unattributed nonterminal OMS order; its owner and capacity are unknown.
+    open_reservations(session, inst.account_alias)
+    for order in session.execute(select(OmsOrder).where(OmsOrder.account_alias == inst.account_alias)).scalars():
+        if order_instance_id(session, order) == inst.instance_id:
+            raise CycleConflict("initial cash buy requires no prior strategy order history")
 
 
 class CycleService:
@@ -69,8 +94,13 @@ class CycleService:
                        policy: Policy | dict | None = None, metadata: dict | None = None,
                        provenance: dict | None = None, earliest_execution_date: str | None = None,
                        liquidate: bool = False, supersede: bool = False,
-                       reference_closes: dict | None = None, v713_state: dict | None = None) -> dict:
+                       reference_closes: dict | None = None, v713_state: dict | None = None,
+                       initial_cash_buy: bool = False, reference_close_evidence: dict | None = None) -> dict:
         policy = policy_from_dict(policy) if isinstance(policy, dict) else (policy or self.policy)
+        if type(initial_cash_buy) is not bool:
+            raise ValueError("initial_cash_buy must be boolean")
+        if initial_cash_buy and (liquidate or policy.strategy_id != "v713" or policy.anchor != "previous_close"):
+            raise ValueError("initial cash buy requires a non-liquidation V713 previous_close target")
         if liquidate:
             # An explicit all-cash target (V713 AUX): every held symbol is frozen at zero below.
             if weights:
@@ -80,6 +110,10 @@ class CycleService:
                 raise ValueError("target weights must be finite, non-negative and nonempty")
             if abs(sum(float(w) for w in weights.values()) - 1.0) > 1e-6:
                 raise ValueError("target weights must sum to one")
+        # Compare the same canonical prices that are persisted on first publication.
+        # Not-yet-listed/suspended zero-weight symbols may carry no close.
+        signal_closes = {s: float(p) for s, p in signal_closes.items()
+                         if p is not None and math.isfinite(float(p)) and float(p) > 0}
         with self.session_factory() as session:
             begin_ledger_transaction(session, "live", account_alias)
             inst = session.get(InstanceState, instance_id)
@@ -88,10 +122,6 @@ class CycleService:
             version_id = "tv_" + _sha({"instance": instance_id, "signal": signal_date, "weights": weights,
                                        "source": source_sha256})[:24]
             state_result = None
-            if v713_state is not None:
-                from app.oms.v713_stock_leg import record_state_in_session
-                state_result = record_state_in_session(session, instance_id=instance_id, payload=v713_state,
-                                                       target_version_id=version_id, now=now)
             previous = session.get(OmsTargetVersion, version_id)
             if previous is not None:
                 prior_cycle = session.execute(select(OmsCycle).where(
@@ -99,11 +129,36 @@ class CycleService:
                 if (previous.weights != weights or previous.signal_closes != signal_closes
                         or _sha(prior_cycle.policy) != _sha(policy_to_dict(policy))):
                     raise CycleConflict("target id already exists with different prices or policy")
+                prior_initial = prior_cycle.schedule[0]["phase"] == "BUY"
+                if prior_initial != initial_cash_buy:
+                    raise CycleConflict("target id already exists with a different initial cash buy mode")
+                if initial_cash_buy:
+                    if previous.calendar != sorted(set(calendar)):
+                        raise CycleConflict("initial cash buy target already exists with a different calendar")
+                    receipts = session.execute(select(OmsOverride).where(
+                        OmsOverride.account_alias == account_alias, OmsOverride.action == "INITIAL_CASH_ENTRY")).scalars()
+                    receipt = next((row for row in receipts if row.payload.get("target_version_id") == version_id), None)
+                    if receipt is None:
+                        raise CycleConflict("initial cash buy publication receipt is missing")
+                    evidence = validate_initial_close_evidence(reference_close_evidence,
+                        receipt.payload["reference_date"], prior_cycle.frozen_target, prior_cycle.created_at)
+                    if _sha(evidence) != receipt.payload["reference_evidence_sha256"]:
+                        raise CycleConflict("initial cash buy target already exists with different close evidence")
+                if v713_state is not None:
+                    from app.oms.v713_stock_leg import record_state_in_session
+                    state_result = record_state_in_session(session, instance_id=instance_id, payload=v713_state,
+                                                           target_version_id=version_id, now=now)
                 result = self._publication(session, prior_cycle)
                 if state_result is not None:
                     result["v713_state"] = state_result
                     session.commit()
                 return result
+            if initial_cash_buy:
+                validate_initial_cash_buy(session, inst)
+            if v713_state is not None:
+                from app.oms.v713_stock_leg import record_state_in_session
+                state_result = record_state_in_session(session, instance_id=instance_id, payload=v713_state,
+                                                       target_version_id=version_id, now=now)
             open_cycle = self._open_cycle(session, account_alias, instance_id)
             if open_cycle is not None:
                 if not supersede:
@@ -118,9 +173,6 @@ class CycleService:
             positions = {s: int(q) for s, q in (inst.virtual_positions or {}).items() if int(q)}
             if liquidate and not positions:
                 raise ValueError("nothing to liquidate: the instance holds no position")
-            # Not-yet-listed or suspended symbols carry no close; they may only appear with zero weight.
-            signal_closes = {s: float(p) for s, p in signal_closes.items()
-                             if p is not None and math.isfinite(float(p)) and float(p) > 0}
             needed = {s for s, w in weights.items() if w > 0} | set(positions)
             missing = sorted(s for s in needed if s not in signal_closes)
             if missing:
@@ -135,27 +187,22 @@ class CycleService:
             # Every security remains managed until its position and outstanding responsibility end.
             specs = {symbol: instrument_to_dict(instrument(symbol, policy)) for symbol, qty in frozen.items()
                      if qty > 0 or positions.get(symbol, 0) > 0}
-            # Published late (the runbook fallback), the cycle starts at the next pair still ahead.
-            schedule = session_schedule(calendar, signal_date, policy.window,
-                                        earliest_sell=max(earliest_sell_day(now), earliest_execution_date or ""))
+            start = publication_plan(policy=policy, calendar=calendar, signal_date=signal_date, now=now,
+                signal_closes=signal_closes, symbols=frozen, earliest_execution_date=earliest_execution_date,
+                reference_closes=reference_closes, initial_cash_buy=initial_cash_buy,
+                reference_close_evidence=reference_close_evidence)
+            schedule = start.schedule
             lot_gap = sum(max(0., (1 - policy.reserve) * w - frozen[s] * signal_closes.get(s, 0.) / nav)
                           for s, w in weights.items())
-            sell_anchor = {s: signal_closes[s] for s in frozen if s in signal_closes}
-            if policy.anchor == "previous_close":
-                # Option B prices the first session off the close just before it, like every later one.
-                before = max(d for d in sorted(set(calendar)) if d < schedule[0].trade_date)
-                if before != signal_date:
-                    if reference_closes is None:
-                        raise ValueError(f"previous-close anchors: the first session needs the {before} closes")
-                    missing = sorted(s for s in frozen if not (float(reference_closes.get(s) or 0) > 0))
-                    if missing:
-                        raise ValueError(f"reference closes missing for {missing}")
-                    sell_anchor = {s: float(reference_closes[s]) for s in frozen}
             state = dict(inst.strategy_state or {})
             state["oms_instruments"] = {**state.get("oms_instruments", {}), **specs}
             state["oms_policy"] = policy_to_dict(policy)
             if provenance is not None or metadata is not None:
                 state["oms_target_metadata"] = dict(provenance or metadata)
+            if initial_cash_buy:
+                state["oms_target_metadata"] = {**state.get("oms_target_metadata", {}),
+                    "initial_cash_buy": True, "reference_date": start.reference_date,
+                    "reference_evidence_sha256": _sha(start.reference_close_evidence)}
             inst.strategy_state = state
             inst.owned_symbols = sorted(set(inst.owned_symbols or ()) | set(frozen))
             for older in session.execute(select(OmsTargetVersion).where(
@@ -169,14 +216,23 @@ class CycleService:
             cycle = OmsCycle(cycle_id=f"C{cycle_no:05d}", cycle_no=cycle_no, target_version_id=version_id,
                              account_alias=account_alias, instance_id=instance_id, policy=policy_to_dict(policy),
                              nav_at_signal=nav, frozen_target=frozen,
-                             sell_anchor=sell_anchor,
-                             buy_anchor=None,
+                             sell_anchor=start.sell_anchor,
+                             buy_anchor=start.buy_anchor,
                              lot_gap=lot_gap, schedule=[asdict(x) for x in schedule], status="PENDING_APPROVAL",
                              created_at=now)
             session.add(cycle)
             session.flush()
             first = self._plan_session(session, cycle, schedule[0], positions=positions, sellable=positions,
                                        cash=cash, tradable=set(), basis=None, now=now)
+            if initial_cash_buy:
+                session.add(OmsOverride(account_alias=account_alias, action="INITIAL_CASH_ENTRY",
+                    payload={"instance_id": instance_id, "cycle_id": cycle.cycle_id,
+                        "target_version_id": version_id, "initial_cash_buy": True,
+                        "reference_date": start.reference_date,
+                        "reference_close_evidence": start.reference_close_evidence,
+                        "reference_evidence_sha256": _sha(start.reference_close_evidence)},
+                    reason="Explicit first cash-only V713 publication", operator="publication",
+                    created_at=now, effect={"cycle_id": cycle.cycle_id, "status": cycle.status}))
             session.commit()
             shares = [{"symbol": s, "weight": float(weights.get(s, 0.)), "close": signal_closes.get(s),
                        "target": frozen.get(s, 0), "held": positions.get(s, 0),
@@ -184,6 +240,9 @@ class CycleService:
             result = {"cycle_id": cycle.cycle_id, "target_version_id": version_id, "status": cycle.status,
                       "nav": nav, "lot_gap": lot_gap, "schedule": cycle.schedule, "shares": shares,
                       "first_session": first}
+            if initial_cash_buy:
+                result.update(initial_cash_buy=True, reference_date=start.reference_date,
+                              reference_evidence_sha256=_sha(start.reference_close_evidence))
             if state_result is not None:
                 result["v713_state"] = state_result
             return result
@@ -193,13 +252,16 @@ class CycleService:
         target = session.get(OmsTargetVersion, cycle.target_version_id)
         inst = session.get(InstanceState, cycle.instance_id)
         positions = inst.virtual_positions or {}
-        return {"cycle_id": cycle.cycle_id, "target_version_id": cycle.target_version_id,
+        result = {"cycle_id": cycle.cycle_id, "target_version_id": cycle.target_version_id,
                 "status": cycle.status, "nav": cycle.nav_at_signal, "lot_gap": cycle.lot_gap,
                 "schedule": cycle.schedule, "already_published": True,
                 "shares": [{"symbol": symbol, "weight": target.weights.get(symbol, 0.0),
                             "close": target.signal_closes.get(symbol), "target": quantity,
                             "held": positions.get(symbol, 0), "delta": quantity - positions.get(symbol, 0)}
                            for symbol, quantity in sorted(cycle.frozen_target.items())]}
+        if cycle.schedule[0]["phase"] == "BUY":
+            result["initial_cash_buy"] = True
+        return result
 
     def approve(self, cycle_id: str, approver: str, now: str) -> None:
         with self.session_factory() as session:
@@ -207,6 +269,11 @@ class CycleService:
             cycle = session.get(OmsCycle, cycle_id)
             if cycle is None or cycle.status != "PENDING_APPROVAL":
                 raise ValueError(f"cycle {cycle_id} is not awaiting approval")
+            if cycle.schedule[0]["phase"] == "BUY":
+                approved = datetime.fromisoformat(now)
+                deadline = datetime.strptime(cycle.schedule[0]["trade_date"] + "0900", "%Y%m%d%H%M").replace(tzinfo=CHINA)
+                if approved.utcoffset() is None or approved >= deadline:
+                    raise ValueError("initial cash buy must be approved before the first BUY day's 09:00 PRE")
             cycle.status, cycle.approved_by, cycle.approved_at = "ACTIVE", approver, now
             session.commit()
 
@@ -295,10 +362,22 @@ class CycleService:
                 OmsSession.status == "PLANNED")).scalars():
             today.status, today.closed_at = "CLOSED", now
         schedule = [Session(**x) for x in cycle.schedule]
+        initial_cash_buy = schedule[0].phase == "BUY"
         first_sell = schedule[0].trade_date
         if snap.trade_date < first_sell:
             # Before the first sell day nothing is scheduled; its plan was made at publish time.
             return []
+        if initial_cash_buy:
+            overdue_session = session.execute(select(OmsSession.session_id).where(
+                OmsSession.cycle_id == cycle.cycle_id, OmsSession.trade_date < snap.trade_date,
+                OmsSession.status == "PLANNED").limit(1)).first()
+            overdue_order = session.execute(select(OmsOrder.client_order_id).where(
+                OmsOrder.cycle_id == cycle.cycle_id, OmsOrder.trade_date < snap.trade_date,
+                OmsOrder.state.not_in([state.value for state in TERMINAL])).limit(1)).first()
+            if overdue_session or overdue_order:
+                cycle.status = "HELD"
+                logger.error("oms cycle %s HELD: earlier initial cash BUY needs EOD finalization", cycle.cycle_id)
+                return []
         wanted = [s for s, q in cycle.frozen_target.items() if int(q) > 0]
         if cycle.buy_anchor is None:
             if snap.trade_date != first_sell:
@@ -323,7 +402,17 @@ class CycleService:
                 logger.info("oms cycle %s: late buy anchors from the %s close for %s",
                             cycle.cycle_id, snap.trade_date, sorted(late))
                 cycle.buy_anchor = {**cycle.buy_anchor, **late}
-        if policy_from_dict(cycle.policy).anchor == "previous_close":
+        if initial_cash_buy:
+            # Every retry needs the preceding trading day's actual close, including across weekends.
+            # A missing individual quote defers that symbol; a complete data failure holds the cycle.
+            closes = self._closing_anchors(cycle, snap, wanted)
+            if wanted and not closes:
+                cycle.status = "HELD"
+                logger.error("oms cycle %s HELD: previous closes missing for initial cash BUY", cycle.cycle_id)
+                return []
+            cycle.buy_anchor = closes
+            cycle.sell_anchor = dict(closes)
+        elif policy_from_dict(cycle.policy).anchor == "previous_close":
             # Option B: the next session prices off tonight's close; a symbol without one keeps its last anchor.
             closes = self._closing_anchors(cycle, snap, sorted(cycle.frozen_target))
             cycle.sell_anchor = {**cycle.sell_anchor, **closes}
@@ -493,7 +582,8 @@ class CycleService:
                            orders=[PlanOrder(client_order_id=o.client_order_id, symbol=o.symbol, side=o.side,
                                              quantity=o.quantity, limit_price=o.limit_price) for o in orders])
             if wire_version >= 2:
-                return self._grant(session, plan, inst, cycle.policy, orders, now=now)
+                return self._grant(session, plan, inst, cycle.policy, orders, now=now,
+                                   initial_cash_cycle=cycle if cycle.schedule[0]["phase"] == "BUY" else None)
             # A legacy executor has no strategy resource contract and must never
             # trade a shared account, even if this particular phase has one plan.
             count = session.execute(select(func.count()).select_from(InstanceState).where(
@@ -503,7 +593,7 @@ class CycleService:
             return plan
 
     def _grant(self, session, plan: PlanOut, inst: InstanceState, policy: dict, orders: list[OmsOrder],
-               *, now: str | None = None) -> PlanOut:
+               *, now: str | None = None, initial_cash_cycle: OmsCycle | None = None) -> PlanOut:
         local = datetime.fromisoformat(now).astimezone(CHINA) if now else datetime.now(CHINA)
         frozen_policy = policy_to_dict(policy_from_dict(policy))
         from app.settings import HYDRA_LIVE_EXECUTABLE_SYMBOLS
@@ -538,6 +628,47 @@ class CycleService:
             recon_rows = session.execute(select(OmsReconciliation).where(
                 OmsReconciliation.snapshot_id == latest.snapshot_id)).scalars().all()
             fresh = fresh and bool(recon_rows) and all(row.passed for row in recon_rows)
+        if initial_cash_cycle is not None:
+            # The new universe must have been reconciled after publication and approval.
+            # A later ADHOC snapshot must not hide an otherwise valid 09:00 PRE receipt.
+            pre_passed = False
+            if initial_cash_cycle.approved_at:
+                after = max(datetime.fromisoformat(initial_cash_cycle.created_at),
+                            datetime.fromisoformat(initial_cash_cycle.approved_at))
+                for pre in session.execute(select(OmsBrokerSnapshot).where(
+                        OmsBrokerSnapshot.account_alias == plan.account_alias,
+                        OmsBrokerSnapshot.trade_date == plan.trade_date,
+                        OmsBrokerSnapshot.kind == "PRE").order_by(OmsBrokerSnapshot.taken_at.desc())).scalars():
+                    taken = datetime.fromisoformat(pre.taken_at).astimezone(CHINA)
+                    if not (taken >= after and taken.time() >= time(9)
+                            and 0 <= (local - taken).total_seconds() <= 1800):
+                        continue
+                    # Client clocks can lead the server: taken_at alone cannot establish
+                    # that this receipt arrived after publication and approval.
+                    try:
+                        received = datetime.fromisoformat(pre.received_at)
+                    except (TypeError, ValueError):
+                        continue
+                    if received.utcoffset() is None or not after <= received <= local:
+                        continue
+                    reconciliations = session.execute(select(OmsReconciliation).where(
+                        OmsReconciliation.snapshot_id == pre.snapshot_id)).scalars().all()
+                    if not reconciliations or not all(row.passed for row in reconciliations):
+                        continue
+                    for row in reconciliations:
+                        if row.cycle_id != initial_cash_cycle.cycle_id:
+                            continue
+                        try:
+                            reconciled = datetime.fromisoformat(row.created_at)
+                        except (TypeError, ValueError):
+                            continue
+                        if (reconciled.utcoffset() is not None
+                                and max(after, received) <= reconciled <= local):
+                            pre_passed = True
+                            break
+                    if pre_passed:
+                        break
+            fresh = fresh and pre_passed
         plan.executable = bool(plan.executable and instance_is_enabled(inst) and self.account_fingerprint
                                and local.strftime("%Y%m%d") == plan.trade_date and fresh and local <= lease)
         plan.plan_sha256 = plan_content_sha256(plan.model_dump(mode="json"))

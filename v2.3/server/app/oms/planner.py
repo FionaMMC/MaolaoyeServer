@@ -6,7 +6,7 @@ so the backtest and production compute identical lot targets, limits and orders.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, fields
-from datetime import date, time
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 import math
 from typing import Mapping, Sequence
@@ -394,3 +394,103 @@ def session_schedule(calendar: Sequence[str], signal_date: str, window: int,
             sessions.append(Session(seq, d, "SELL", attempt))
             attempt += 1
     return sessions
+
+
+@dataclass(frozen=True)
+class PublicationPlan:
+    """The shared preview/publication decision, before any database mutation."""
+    schedule: list[Session]
+    sell_anchor: dict[str, float]
+    buy_anchor: dict[str, float] | None
+    reference_date: str | None
+    reference_close_evidence: dict | None = None
+
+
+def earliest_execution_day(now: str, phase: str) -> str:
+    """A newly published plan must precede that phase's scheduled PRE snapshot."""
+    stamp = datetime.fromisoformat(now)
+    if stamp.utcoffset() is None:
+        raise ValueError("publication timestamp must carry a timezone")
+    local = stamp.astimezone(timezone(timedelta(hours=8)))
+    cutoff = {"BUY": time(9), "SELL": time(14, 45)}[phase]
+    return (local if local.time() < cutoff else local + timedelta(days=1)).strftime("%Y%m%d")
+
+
+def validate_initial_close_evidence(evidence: dict | None, reference_date: str, symbols, now: str) -> dict:
+    """Validate dated, unadjusted closes; a flat price map cannot prove the price date."""
+    if not isinstance(evidence, dict) or evidence.get("trade_date") != reference_date:
+        raise ValueError(f"initial cash buy needs dated close evidence for {reference_date}")
+    china = timezone(timedelta(hours=8))
+    try:
+        taken = datetime.fromisoformat(evidence["taken_at"])
+        published = datetime.fromisoformat(now)
+        if (taken.utcoffset() is None or taken.astimezone(china).strftime("%Y%m%d") != reference_date
+                or taken.astimezone(china).time() < time(15) or taken > published):
+            raise ValueError("invalid evidence time")
+        quotes = evidence["quotes"]
+        normalized = {}
+        for symbol in symbols:
+            quote = quotes[symbol]
+            price = float(quote["last_price"])
+            source = datetime.fromisoformat(quote["source_time"])
+            if (not math.isfinite(price) or price <= 0 or isinstance(quote["last_price"], bool)
+                    or source.utcoffset() is None or source.astimezone(china).strftime("%Y%m%d") != reference_date
+                    or source.astimezone(china).time() < time(15) or source > taken
+                    or quote.get("adjustment") != "none"
+                    or quote.get("price_source") not in {"raw_tick", "raw_daily_close"}):
+                raise ValueError(f"invalid close for {symbol}")
+            normalized[symbol] = {"last_price": price, "source_time": source.astimezone(china).isoformat(),
+                                  "adjustment": "none", "price_source": quote["price_source"]}
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"invalid initial cash buy close evidence for {reference_date}: {exc}") from exc
+    return {"trade_date": reference_date, "taken_at": taken.astimezone(china).isoformat(), "quotes": normalized}
+
+
+def publication_plan(*, policy: Policy, calendar: Sequence[str], signal_date: str, now: str,
+                     signal_closes: Mapping[str, float], symbols, earliest_execution_date: str | None = None,
+                     reference_closes: dict | None = None, initial_cash_buy: bool = False,
+                     reference_close_evidence: dict | None = None) -> PublicationPlan:
+    """Pure schedule and anchor selection shared by dry-run and committed publication.
+
+    Initial cash entry is an explicit V713-only path. Its first BUY and all retries
+    use trading days, including Mondays; ordinary close-sell cycles are unchanged.
+    Strategy eligibility is checked separately under the account transaction lock.
+    """
+    if type(initial_cash_buy) is not bool:
+        raise ValueError("initial_cash_buy must be boolean")
+    days = sorted(set(calendar))
+    symbols = list(symbols)
+    if initial_cash_buy:
+        if (policy.strategy_id != "v713" or policy.anchor != "previous_close"
+                or not policy.policy_id.startswith("V713_STOCKLEG_") or not policy.require_instrument_specs):
+            raise ValueError("initial cash buy requires an explicit V713_STOCKLEG previous_close policy")
+        if any(get_instrument(symbol, policy).asset_type != "stock" for symbol in symbols):
+            raise ValueError("initial cash buy accepts only stock-leg instruments")
+        first = max(earliest_execution_day(now, "BUY"), earliest_execution_date or "")
+        eligible = [day for day in days if day > signal_date and day >= first]
+        if len(eligible) < policy.window:
+            raise ValueError("calendar shorter than initial cash buy execution window")
+        schedule = [Session(i + 1, day, "BUY", None) for i, day in enumerate(eligible[:policy.window])]
+        previous = [day for day in days if day < schedule[0].trade_date]
+        if not previous:
+            raise ValueError("calendar missing the trading day before initial cash buy")
+        reference_date = previous[-1]
+        evidence = validate_initial_close_evidence(reference_close_evidence, reference_date, symbols, now)
+        anchors = {s: quote["last_price"] for s, quote in evidence["quotes"].items()}
+        if reference_date == signal_date and any(anchors[s] != float(signal_closes[s]) for s in symbols):
+            raise ValueError("initial cash buy signal closes differ from the dated signal-day evidence")
+        return PublicationPlan(schedule, dict(anchors), dict(anchors), reference_date, evidence)
+    schedule = session_schedule(days, signal_date, policy.window,
+        earliest_sell=max(earliest_execution_day(now, "SELL"), earliest_execution_date or ""))
+    sell_anchor = {s: float(signal_closes[s]) for s in symbols if s in signal_closes}
+    reference_date = None
+    if policy.anchor == "previous_close":
+        reference_date = max(day for day in days if day < schedule[0].trade_date)
+        if reference_date != signal_date:
+            if reference_closes is None:
+                raise ValueError(f"previous-close anchors: the first session needs the {reference_date} closes")
+            missing = sorted(s for s in symbols if not (float(reference_closes.get(s) or 0) > 0))
+            if missing:
+                raise ValueError(f"reference closes missing for {missing}")
+            sell_anchor = {s: float(reference_closes[s]) for s in symbols}
+    return PublicationPlan(schedule, sell_anchor, None, reference_date)
